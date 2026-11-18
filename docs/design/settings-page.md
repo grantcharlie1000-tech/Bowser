@@ -81,9 +81,9 @@ start URL, so a fragment navigation would cut it off.
    Only Bowser's own entry points create an internal tab.
 
 Commands: `save` (text), `reset`, `openfile`, `autoupdate` (on), `history` (on), `downloadask` (on), `downloadfolder`, `section` (text),
-`checkupdates`, `restartupdate`, `privacy`, `profiles`, `import`, `refresh`, `setdefault`. (The
-chrome sources never name the password store, `chrome_host/guard.rs`, so the page has no Passwords
-row; it stays in the main menu.) The snapshot
+`checkupdates`, `restartupdate`, `privacy`, `profiles`, `import`, `refresh`, `setdefault`. Saved
+passwords, addresses and cards have their own section (`passwords`, `bowser://settings/passwords`;
+wire in `src/chrome_host/passwords_page.rs`, see docs/passwords-autofill.md). The snapshot
 (`{"t":"snap","p":"settings","d":{..}}`) carries the profile settings, `historyEnabled`, `guest`,
 `profile`, `avatar`, `version`, the update state (`update`, `updateVersion`, `lastCheck`,
 `checkResult`, `checking`), `efficiencyActive`, `defaultBrowser` (`yes`/`no`/`unknown`, read-only),

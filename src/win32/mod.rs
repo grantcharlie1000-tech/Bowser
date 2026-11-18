@@ -49,6 +49,8 @@ mod panel_widgets;
 pub mod panel_webapp;
 pub mod passwords_import;
 mod passwords_panel;
+pub(crate) mod autofill_ui;
+pub(crate) mod passwords_section;
 pub(crate) mod privacy_panel;
 mod protection; // blocking, cookie notices, history retention, website appearance (thread T3)
 mod profile_rename;

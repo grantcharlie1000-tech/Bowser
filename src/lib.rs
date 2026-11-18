@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod app;
+pub mod autofill; // addresses, cards and the in-page field detector for form autofill
 pub mod background_write; // small files replaced on a writer thread, never on the UI thread
 pub mod blocker;
 pub mod bookmark_extras;

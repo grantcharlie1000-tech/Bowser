@@ -28,8 +28,8 @@ tools), Passwords & passkeys `key`) | Restart to update `refresh` (only
 once a build is downloaded) | Settings `gear` (opens `bowser://settings` in a tab; the gear turns one
 tooth while the row is selected, docs/design/settings-page.md) | Exit `close`. Moved to Settings: the
 profile list (Manage profiles), Import from another browser, the Privacy dashboard, Check for updates and
-Update automatically. Passwords stay in the native menu: `chrome_host/guard.rs` keeps that word out of
-the HTML chrome.
+Update automatically. Passwords open the settings page's Passwords and autofill section
+(docs/passwords-autofill.md).
 
 Every child menu of the main menu cascades: it opens beside the row that opened it and the parent
 stays on screen (Right or Enter opens it, Left or Esc closes one level; the keys swap when submenus

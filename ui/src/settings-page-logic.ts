@@ -697,6 +697,7 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'bookmarks', title: 'Bookmarks', nav: 'Bookmarks', lead: '' },
   { key: 'keyboard', title: 'Keyboard', nav: 'Keyboard', lead: '' },
   { key: 'commands', title: 'Commands', nav: 'Commands', lead: '', aliases: 'quick commands' },
+  { key: 'passwords', title: 'Passwords and autofill', nav: 'Passwords', lead: '', aliases: 'autofill addresses cards payment methods credit card generator import export passkeys' },
   { key: 'downloads', title: 'Downloads', nav: 'Downloads', lead: '' },
   { key: 'media', title: 'Media', nav: 'Media', lead: '' },
   { key: 'extensions', title: 'Extensions', nav: 'Extensions', lead: '' },
@@ -800,6 +801,9 @@ export const AREAS: readonly AreaSpec[] = [
     group('security', 'Security', 'privacy', ['secHttps', 'secBase', 'secJs']),
     group('spoilers', 'Spoiler protection', 'privacy', ['spoilerProtection', 'spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'spoilerFeed', 'spoilerNote']),
   ] },
+  { key: 'passwords', title: 'Passwords and autofill', nav: 'Passwords', lead: '', aliases: 'autofill addresses payment cards generator import export', parts: ['passwords'], groups: [
+    group('passwords', 'Passwords and autofill', 'passwords', ['passwords']),
+  ] },
   { key: 'address', title: 'Browsing', nav: 'Browsing', lead: '', aliases: 'address bar bookmarks page tools translate reader screenshots feeds', parts: ['address', 'bookmarks', 'pagetools'], groups: [
     group('address', 'Address bar', 'address', ['addrAutocomplete', 'addrSelect', 'addrEncoded', 'addrExpansion']),
     group('suggestions', 'Address bar suggestions', 'address', ['ddTyping', 'ddBadge', 'ddTypedHistory', 'ddTypedSearches', 'ddHistoryButton', 'ddMax', 'ddPriorityBookmarks', 'ddPriorityDirect', 'ddSources']),
@@ -891,7 +895,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'addrAutocomplete', 'bmNewTab', 'translateOffer', 'feedsOpen',
   ...PAGE_TOOLS_CORE, // --- page tools (T7) ---
   'kbEnabled', 'ctrlTabMru', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'shiftRightClickContext',
-  'extensions',
+  'extensions', 'passwords',
   'efficiency', 'sleep', 'sleepAfter', 'media',
   'autoUpdate', 'updateStatus', 'version', 'file', 'reset',
 ]);
@@ -1086,6 +1090,7 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'downloadDir', section: 'downloads', label: 'Download folder', description: '', keywords: 'download folder directory save path where change location Download folder' },
   { id: 'downloadAsk', section: 'downloads', label: 'Ask where', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above.' },
   { id: 'media', section: 'media', label: 'Playback', aria: 'Media support', description: '', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode Media support Runs on this device only and sends nothing.' },
+  { id: 'passwords', section: 'passwords', label: 'Passwords and autofill', description: '', keywords: 'password passwords saved logins sign-in credentials autofill auto fill form address addresses name email phone card cards credit debit payment checkout generator generate strong import export csv chrome edge firefox safari 1password bitwarden lastpass dashlane nordpass proton keepass passkeys weak reused' },
   { id: 'extensions', section: 'extensions', label: 'Extensions', description: '', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable installed Extensions Turn extensions on or off, or remove one.' },
   { id: 'autoUpdate', section: 'updates', label: 'Automatic updates', aria: 'Update automatically', description: '', keywords: 'auto update upgrade version Update automatically Checks in the background and installs the update the next time Bowser starts. Applies to every profile.' },
   { id: 'updateStatus', section: 'updates', label: 'Status', aria: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade Bowser updates' },

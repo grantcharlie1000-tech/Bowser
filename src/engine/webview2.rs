@@ -624,7 +624,10 @@ fn web_url_from_source(source: &str) -> Option<Url> {
 }
 
 /// Bounded, page-side detection only: no credential data is exposed from native code to JS.
-const LOGIN_DETECTION_SCRIPT: &str = r#"(()=>{if(window.top!==window||!window.chrome?.webview)return;let sent=false;const visible=e=>e&&e.getClientRects().length>0;document.addEventListener('focusin',e=>{const p=e.target;if(p instanceof HTMLInputElement&&p.type==='password'&&visible(p)&&!sent){sent=true;window.chrome.webview.postMessage({kind:'login-form-seen'})}},true);document.addEventListener('submit',e=>{const f=e.target;if(!(f instanceof HTMLFormElement))return;const p=[...f.querySelectorAll('input[type=password]')].find(visible);if(!p)return;const u=f.querySelector('input[autocomplete=username],input[type=email],input[name*=user i],input[type=text]');window.chrome.webview.postMessage({kind:'login-submitted',user:u?.value||'',pass:p.value})},true)})();"#;
+/// The sign-in and autofill detector (src/autofill/page.js with its field classifier). It offers a
+/// fill button in recognised fields and reports submitted sign-in and checkout forms; it never
+/// receives saved data, which reaches a page only through a fill script after the user's choice.
+const LOGIN_DETECTION_SCRIPT: &str = crate::autofill::PAGE_SCRIPT;
 
 unsafe fn bounded_wide_len(value: PWSTR, max_units: usize) -> Option<usize> {
     if value.is_null() {
@@ -5617,6 +5620,8 @@ unsafe fn configure_controller(
 
             let last_form_seen = Rc::new(Cell::new(None::<Instant>));
             let last_login_submitted = Rc::new(Cell::new(None::<Instant>));
+            let last_autofill_request = Rc::new(Cell::new(None::<Instant>));
+            let last_autofill_submitted = Rc::new(Cell::new(None::<Instant>));
             let mut token = 0;
             webview.add_WebMessageReceived(
                 &WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
@@ -5660,12 +5665,16 @@ unsafe fn configure_controller(
                     drop(json);
                     drop(raw_message);
                     let now = Instant::now();
-                    let last = match message.kind {
-                        crate::passwords::LoginMessageKind::FormSeen => &last_form_seen,
-                        crate::passwords::LoginMessageKind::Submitted => &last_login_submitted,
+                    // A fill request follows a click, so it is only debounced; the others are
+                    // limited to one every two seconds.
+                    let (last, gap) = match message.kind {
+                        crate::passwords::LoginMessageKind::FormSeen => (&last_form_seen, Duration::from_secs(2)),
+                        crate::passwords::LoginMessageKind::Submitted => (&last_login_submitted, Duration::from_secs(2)),
+                        crate::passwords::LoginMessageKind::AutofillRequest => (&last_autofill_request, Duration::from_millis(250)),
+                        crate::passwords::LoginMessageKind::AutofillSubmitted => (&last_autofill_submitted, Duration::from_secs(2)),
                     };
                     if last.get().is_some_and(|previous| {
-                        now.duration_since(previous) < Duration::from_secs(2)
+                        now.duration_since(previous) < gap
                     }) {
                         return Ok(());
                     }

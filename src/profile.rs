@@ -502,6 +502,11 @@ impl Profile {
         self.root.join(PASSWORDS_FILE_NAME)
     }
 
+    /// Saved addresses and payment cards for form autofill, DPAPI-protected like the passwords.
+    pub fn autofill_file(&self) -> PathBuf {
+        self.root.join(crate::autofill::FILE_NAME)
+    }
+
     /// Host-only request counters for the Privacy dashboard.
     pub fn privacy_stats_file(&self) -> PathBuf {
         self.root.join(crate::privacy_stats::FILE_NAME)
@@ -1774,6 +1779,7 @@ mod tests {
                 ("workspaces", profile.workspaces_file()),
                 ("search provider", profile.search_provider_file()),
                 ("passwords", profile.passwords_file()),
+                ("autofill", profile.autofill_file()),
                 ("privacy stats", profile.privacy_stats_file()),
                 ("permissions", profile.permissions_file()),
                 ("site prefs", profile.site_prefs_file()),

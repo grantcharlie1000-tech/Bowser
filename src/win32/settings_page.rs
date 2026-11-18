@@ -36,6 +36,7 @@ use crate::{
         commands_page as cmdpage,
         address_page as address_wire,
         page_tools_page as pt_wire, // --- page tools (T7) ---
+        passwords_page as pw_wire,
     },
     internal_page::{InternalPage, Section},
     split_view::Pane,
@@ -92,6 +93,9 @@ struct Runtime {
     address: Option<String>,
     /// Last Page tools snapshot sent (src/chrome_host/page_tools_page.rs).
     pagetools: Option<String>,
+    /// A fresh Passwords and autofill snapshot is due (src/chrome_host/passwords_page.rs). It is
+    /// never cached: it may carry a one-shot secret the page asked for.
+    pw_due: bool,
     /// A section to show (`settingsgo`), sent once the page is ready and shown.
     go: Option<Option<Section>>,
     focus_pending: bool,
@@ -126,7 +130,7 @@ fn rect_size(rect: RECT) -> RECT {
 
 /// Whether this window can draw the settings page: its HTML chrome is on, the chrome environment
 /// exists and the page's host has not failed. Otherwise Settings is the native window.
-fn available(owner: HWND) -> bool {
+pub(crate) fn available(owner: HWND) -> bool {
     chrome_host::html_ui_enabled()
         && super::window::html_environment(owner).is_some()
         && !with(owner, |rt| rt.failed).unwrap_or(false)
@@ -291,6 +295,7 @@ fn ensure_host(owner: HWND) {
                     rt.snapshot = None;
                     rt.address = None;
                     rt.pagetools = None;
+                    rt.pw_due = true;
                     rt.privacy = None;
                     rt.commands = None;
                     crate::commands::set_capturing(false); // a reloaded page is not waiting for a key
@@ -359,6 +364,7 @@ fn queue(owner: HWND, command: Queued) {
 /// Closes the host (window closing or chrome failure).
 pub(crate) fn close(owner: HWND) {
     super::store::close(owner);
+    super::passwords_section::forget(owner);
     let removed = RUNTIMES.with(|runtimes| runtimes.try_borrow_mut().ok().and_then(|mut all| all.remove(&(owner.0 as isize))));
     if let Some(runtime) = removed {
         if let Some(host) = runtime.host {
@@ -455,6 +461,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             rt.privacy_due = true;
             rt.ext_due = true;
             rt.cmd_due = true;
+            rt.pw_due = true;
         });
         let (address_ack, address_error) = with(owner, |rt| (rt.ack, rt.error.clone())).unwrap_or((Ack::None, String::new()));
         let settings = refresh_settings.insert(RefreshSettings::read(crate::profile::active().ok()));
@@ -539,6 +546,11 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 rt.cmd_conflict = None;
             });
         }
+    }
+    // Passwords and autofill: read afresh from the vault and wallet whenever it is due.
+    if with(owner, |rt| std::mem::take(&mut rt.pw_due)).unwrap_or(false) {
+        let guest = crate::profile::active().is_ok_and(|profile| profile.is_guest());
+        let _ = host.post_json(&super::passwords_section::snapshot(owner, guest));
     }
     if let Some(section) = with(owner, |rt| rt.go.take()).flatten() {
         let _ = host.post_json(&wire::go_json(section));
@@ -734,7 +746,10 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
                     else if let Some(action) = ext::map_command(&fields) { run_extension(owner, app, action); }
                     continue;
                 }
-                if let Some(action) = wire::map_command(&fields) {
+                if let Some(action) = pw_wire::map_command(&fields) {
+                    super::passwords_section::run(owner, action);
+                    let _ = with(owner, |rt| rt.pw_due = true);
+                } else if let Some(action) = wire::map_command(&fields) {
                     run(owner, app, tab, action);
                 } else if let Some(action) = ext::map_command(&fields) {
                     run_extension(owner, app, action);

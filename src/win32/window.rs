@@ -3364,7 +3364,7 @@ unsafe extern "system" fn window_proc(
             WM_LOGIN_MESSAGE => {
                 if let Some(app) = app {
                     for (tab_id, message) in App::take_login_messages(app) {
-                        passwords_panel::handle_login_message(hwnd, app, tab_id, message);
+                        super::autofill_ui::handle_page_message(hwnd, app, tab_id, message);
                     }
                 }
                 LRESULT(0)
@@ -7644,13 +7644,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 }
             }
             DEVTOOLS => App::open_dev_tools(app),
-            PASSWORDS => {
-                if let Err(error) = passwords_panel::open(hwnd) {
-                    show_error_message(&format!(
-                        "Passwords & Passkeys could not be opened: {error}"
-                    ));
-                }
-            }
+            PASSWORDS => super::autofill_ui::open_manager(hwnd, app),
             BLOCKER => App::toggle_blocker(app),
             // bowser://settings in a tab (the native window when this window has no HTML chrome).
             SETTINGS => super::settings_page::open(hwnd, app, None, false),
@@ -12973,14 +12967,8 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
             apply_sidebar_bounds(hwnd, app);
         }
         Command::AddBookmark => add_current_bookmark(hwnd, app),
-        Command::OpenPasswords => {
-            if let Err(error) = passwords_panel::open(hwnd) {
-                show_error_message(&format!(
-                    "Passwords & Passkeys could not be opened: {error}"
-                ));
-            }
-        }
-        Command::FillPassword => passwords_panel::offer_fill(hwnd, app),
+        Command::OpenPasswords => super::autofill_ui::open_manager(hwnd, app),
+        Command::FillPassword => super::autofill_ui::offer_fill(hwnd, app),
         Command::OpenPrivacyDashboard => privacy_panel::open(hwnd, app),
         Command::ZoomIn => App::zoom_active(app, crate::site_prefs::ZoomStep::In),
         Command::ZoomOut => App::zoom_active(app, crate::site_prefs::ZoomStep::Out),

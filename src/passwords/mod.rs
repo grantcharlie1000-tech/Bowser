@@ -8,6 +8,11 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+mod generator;
+mod providers;
+pub use generator::{DEFAULT_LENGTH, GeneratorOptions, MAX_LENGTH, MIN_LENGTH, Strength, generate_strong, strength};
+pub use providers::Provider;
+
 const MAGIC: &[u8; 8] = b"BWSRPW01";
 const VERSION: u32 = 2;
 const LEGACY_VERSION: u32 = 1;
@@ -102,7 +107,15 @@ impl CredentialId {
     fn of(index: usize, record: &Record) -> Self {
         Self { index, key: record_key(record) }
     }
+
+    /// The id as it travels to the settings page: 53 bits, so a JavaScript number holds it exactly.
+    /// [`PasswordStore::find_wire`] turns it back into an id against the vault as it is then.
+    pub fn wire(self) -> u64 {
+        self.key & WIRE_MASK
+    }
 }
+
+const WIRE_MASK: u64 = (1 << 53) - 1;
 
 /// Which login a record is: its origin and username (a vault holds at most one entry for each).
 fn record_key(record: &Record) -> u64 {
@@ -120,6 +133,10 @@ pub struct CredentialSummary {
     pub origin: String,
     pub host: String,
     pub username: String,
+    /// The password's strength (0 very weak to 4 very strong), scored when the list was made.
+    pub strength: u8,
+    /// Whether another saved login uses the same password.
+    pub reused: bool,
 }
 
 /// Non-secret result for comparing a submitted login with an entry for the same site and user.
@@ -182,6 +199,7 @@ pub struct PreviewRow {
 pub struct ImportPlan {
     rows: Vec<(Option<Record>, Classification)>,
     preview: Vec<PreviewRow>,
+    provider: Provider,
 }
 impl fmt::Debug for ImportPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -193,6 +211,11 @@ impl fmt::Debug for ImportPlan {
 impl ImportPlan {
     pub fn rows(&self) -> &[PreviewRow] {
         &self.preview
+    }
+
+    /// The password manager or browser whose export this plan was read from.
+    pub fn provider(&self) -> Provider {
+        self.provider
     }
 }
 
@@ -370,6 +393,41 @@ impl PasswordStore {
         Ok(SecretString::new(self.records[index].password.clone()))
     }
 
+    /// The login a settings-page id (`CredentialId::wire`) names, if the vault still has it.
+    pub fn find_wire(&self, wire: u64) -> Option<CredentialId> {
+        self.records
+            .iter()
+            .enumerate()
+            .find(|(_, record)| record_key(record) & WIRE_MASK == wire)
+            .map(|(index, record)| CredentialId::of(index, record))
+    }
+
+    /// The sites the user chose "Never" for, as canonical origins.
+    pub fn never_sites(&self) -> &[String] {
+        &self.never_sites
+    }
+
+    /// Every login as a CSV in the common `name,url,username,password,note` layout that Chrome,
+    /// Edge, Firefox, Bitwarden, 1Password and most other managers import. The buffer zeroizes on
+    /// drop; whoever writes it to disk must warn that the file is plain text.
+    pub fn export_csv(&self) -> Zeroizing<String> {
+        let mut out = Zeroizing::new(String::from("name,url,username,password,note\r\n"));
+        for record in &self.records {
+            let host = url::Url::parse(&record.url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_default();
+            for (index, value) in [host.as_str(), &record.url, &record.username, &record.password, ""].iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                push_csv_field(&mut out, value);
+            }
+            out.push_str("\r\n");
+        }
+        out
+    }
+
     /// Adds a new HTTPS credential, or an HTTP credential for localhost.
     pub fn add(
         &mut self,
@@ -506,6 +564,10 @@ impl PasswordStore {
         &self,
         records: impl Iterator<Item = (usize, &'a Record)>,
     ) -> Vec<CredentialSummary> {
+        let mut uses: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for record in &self.records {
+            *uses.entry(record.password.as_str()).or_default() += 1;
+        }
         records
             .map(|(index, record)| {
                 let host = url::Url::parse(&record.url)
@@ -517,6 +579,8 @@ impl PasswordStore {
                     origin: record.url.clone(),
                     host,
                     username: record.username.clone(),
+                    strength: strength(&record.password).0,
+                    reused: uses.get(record.password.as_str()).is_some_and(|&count| count > 1),
                 }
             })
             .collect()
@@ -536,39 +600,35 @@ impl PasswordStore {
             .into_iter()
             .map(|s| normalize_header(&s))
             .collect::<Vec<_>>();
-        let url_col = find_header(
-            &headers,
-            &["url", "uri", "website", "loginurl", "loginuri", "hostname"],
-        );
-        let user_col = find_header(
-            &headers,
-            &["username", "user", "login", "loginusername", "email"],
-        );
-        let pass_col = find_header(&headers, &["password", "pass", "loginpassword"]);
-        let (Some(url_col), Some(user_col), Some(pass_col)) = (url_col, user_col, pass_col) else {
+        let provider = providers::detect(&headers);
+        let url_cols = providers::columns(&headers, providers::URL_COLUMNS);
+        let user_cols = providers::columns(&headers, providers::USER_COLUMNS);
+        let pass_cols = providers::columns(&headers, providers::PASSWORD_COLUMNS);
+        if url_cols.is_empty() || user_cols.is_empty() || pass_cols.is_empty() {
             return Err(PasswordError::UnsupportedHeaders);
-        };
+        }
         if table.len().saturating_sub(1) > MAX_IMPORT_ROWS {
             return Err(PasswordError::TooManyRows);
         }
         // A blank line is not a login, so it is not a rejected row either.
         table.retain(|fields| !(fields.len() == 1 && fields[0].trim().is_empty()));
         let parsed = table.iter().map(|fields| {
+            // The password is taken as written: leading or trailing spaces may be part of it.
+            let password = pass_cols
+                .iter()
+                .filter_map(|&column| fields.get(column))
+                .find(|value| !value.is_empty())
+                .cloned()
+                .unwrap_or_default();
             ParsedCredential::new(
-                fields
-                    .get(url_col)
-                    .map(|value| value.trim())
-                    .unwrap_or("")
-                    .to_owned(),
-                fields
-                    .get(user_col)
-                    .map(|value| value.trim())
-                    .unwrap_or("")
-                    .to_owned(),
-                fields.get(pass_col).cloned().unwrap_or_default(),
+                providers::with_scheme(providers::first_value(fields, &url_cols)),
+                providers::first_value(fields, &user_cols).to_owned(),
+                password,
             )
         });
-        self.preview_credentials(parsed)
+        let mut plan = self.preview_credentials(parsed)?;
+        plan.provider = provider;
+        Ok(plan)
     }
 
     /// Classifies parsed rows from CSV or another local adapter against this vault and each earlier
@@ -614,7 +674,7 @@ impl PasswordStore {
             });
             rows.push((record, class));
         }
-        Ok(ImportPlan { rows, preview })
+        Ok(ImportPlan { rows, preview, provider: providers::GENERIC })
     }
 
     /// Add only new entries. Existing exact duplicates and differing credentials are always skipped.
@@ -644,30 +704,7 @@ impl PasswordStore {
 
     fn persist(&self) -> Result<(), PasswordError> {
         let plain = encode_store(&self.records, &self.never_sites)?;
-        let encrypted = dpapi_protect(&plain)?;
-        let parent = self.path.parent().ok_or(PasswordError::Io)?;
-        fs::create_dir_all(parent)?;
-        let leaf = self
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Passwords.dat");
-        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temp = parent.join(format!(".{leaf}.{}.{}.tmp", std::process::id(), sequence));
-        let result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            file.write_all(&encrypted)?;
-            file.sync_all()?;
-            drop(file);
-            replace_file(&temp, &self.path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temp);
-        }
-        result
+        write_protected(&self.path, &plain)
     }
 }
 
@@ -705,6 +742,62 @@ fn replace_file(
     destination: &std::path::Path,
 ) -> Result<(), PasswordError> {
     fs::rename(temp, destination).map_err(|_| PasswordError::Io)
+}
+
+/// Appends one CSV field, quoted when it holds a comma, quote, line break or leading/trailing
+/// space. Values are never altered: a password must import back exactly as it was saved.
+fn push_csv_field(out: &mut String, value: &str) {
+    let needs_quotes = value.contains([',', '"', '\n', '\r'])
+        || value.starts_with(' ')
+        || value.ends_with(' ');
+    if !needs_quotes {
+        out.push_str(value);
+        return;
+    }
+    out.push('"');
+    for c in value.chars() {
+        if c == '"' {
+            out.push('"');
+        }
+        out.push(c);
+    }
+    out.push('"');
+}
+
+/// Reads a DPAPI-protected file of at most `max` bytes for the current Windows user. `Ok(None)`
+/// when the file does not exist yet. Shared by the password vault and the autofill wallet.
+pub(crate) fn read_protected(path: &std::path::Path, max: usize) -> Result<Option<Zeroizing<Vec<u8>>>, PasswordError> {
+    let encrypted = match fs::read(path) {
+        Ok(encrypted) => encrypted,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if encrypted.len() > max {
+        return Err(PasswordError::InvalidStore);
+    }
+    Ok(Some(Zeroizing::new(dpapi_unprotect(&encrypted)?)))
+}
+
+/// Encrypts `plain` for the current Windows user and replaces `path` atomically (write a sibling
+/// temp file, flush it, then swap it in), so a crash never leaves half a file.
+pub(crate) fn write_protected(path: &std::path::Path, plain: &[u8]) -> Result<(), PasswordError> {
+    let encrypted = dpapi_protect(plain)?;
+    let parent = path.parent().ok_or(PasswordError::Io)?;
+    fs::create_dir_all(parent)?;
+    let leaf = path.file_name().and_then(|name| name.to_str()).unwrap_or("Vault.dat");
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{leaf}.{}.{}.tmp", std::process::id(), sequence));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(&encrypted)?;
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result
 }
 
 fn valid_record(url: &str, username: &str, password: &str) -> bool {
@@ -795,6 +888,25 @@ const MAX_PAGE_USERNAME_BYTES: usize = 4096;
 pub enum LoginMessageKind {
     FormSeen,
     Submitted,
+    /// The user pressed the fill button (or Alt+Down) in a recognised field.
+    AutofillRequest,
+    /// A form with address, contact or card fields was submitted.
+    AutofillSubmitted,
+}
+
+/// Most entries an `autofill-submitted` message may carry, and most bytes in one value.
+const MAX_FORM_ENTRIES: usize = 24;
+const MAX_FORM_VALUE_BYTES: usize = 1024;
+/// Page coordinates beyond this are nonsense and refused.
+const MAX_PAGE_COORDINATE: i64 = 1_000_000;
+
+/// Where the requesting field is, in CSS pixels of the page's viewport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 /// Validated page data. Secret fields zeroize on drop and Debug never includes their contents.
@@ -803,6 +915,10 @@ pub struct LoginMessage {
     pub(crate) origin: String,
     pub(crate) username: Option<SecretString>,
     pub(crate) password: Option<SecretString>,
+    /// `AutofillRequest`: the field's kind and where it is.
+    pub(crate) field: Option<(crate::autofill::FieldKind, FieldRect)>,
+    /// `AutofillSubmitted`: the form's values by field kind (never passwords or security codes).
+    pub(crate) values: Vec<(crate::autofill::FieldKind, SecretString)>,
 }
 
 impl fmt::Debug for LoginMessage {
@@ -812,6 +928,8 @@ impl fmt::Debug for LoginMessage {
             .field("origin", &self.origin)
             .field("username", &self.username.as_ref().map(|_| "[PRESENT]"))
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("field", &self.field)
+            .field("values", &self.values.iter().map(|(kind, _)| kind.token()).collect::<Vec<_>>())
             .finish()
     }
 }
@@ -855,6 +973,8 @@ fn parse_login_message(json: &str, origin: String) -> Option<LoginMessage> {
                 origin,
                 username: None,
                 password: None,
+                field: None,
+                values: Vec::new(),
             })
         }
         "login-submitted" => {
@@ -890,10 +1010,100 @@ fn parse_login_message(json: &str, origin: String) -> Option<LoginMessage> {
                 origin,
                 username: Some(SecretString::new(std::mem::take(&mut *username))),
                 password: Some(SecretString::new(std::mem::take(&mut *password))),
+                field: None,
+                values: Vec::new(),
+            })
+        }
+        "autofill-request" => {
+            let next_key = |at: &mut usize, name: &str| -> Option<()> {
+                expect_json_byte(json, at, b',')?;
+                let key = parse_json_string(json, at)?;
+                expect_json_byte(json, at, b':')?;
+                (key.as_str() == name).then_some(())
+            };
+            next_key(&mut at, "field")?;
+            let token = parse_json_string(json, &mut at)?;
+            let kind = crate::autofill::FieldKind::from_token(&token)?;
+            let mut numbers = [0i32; 4];
+            for (slot, name) in numbers.iter_mut().zip(["x", "y", "w", "h"]) {
+                next_key(&mut at, name)?;
+                *slot = parse_json_int(json, &mut at)?;
+            }
+            expect_json_byte(json, &mut at, b'}')?;
+            skip_json_space(json, &mut at);
+            let [x, y, w, h] = numbers;
+            (at == json.len() && w >= 0 && h >= 0).then_some(LoginMessage {
+                kind: LoginMessageKind::AutofillRequest,
+                origin,
+                username: None,
+                password: None,
+                field: Some((kind, FieldRect { x, y, w, h })),
+                values: Vec::new(),
+            })
+        }
+        "autofill-submitted" => {
+            expect_json_byte(json, &mut at, b',')?;
+            if parse_json_string(json, &mut at)?.as_str() != "f" {
+                return None;
+            }
+            expect_json_byte(json, &mut at, b':')?;
+            expect_json_byte(json, &mut at, b'{')?;
+            let mut values: Vec<(crate::autofill::FieldKind, SecretString)> = Vec::new();
+            skip_json_space(json, &mut at);
+            if json.as_bytes().get(at) == Some(&b'}') {
+                return None;
+            }
+            loop {
+                let key = parse_json_string(json, &mut at)?;
+                let kind = crate::autofill::FieldKind::from_token(&key).filter(|kind| kind.capturable())?;
+                expect_json_byte(json, &mut at, b':')?;
+                let mut value = parse_json_string(json, &mut at)?;
+                if value.len() > MAX_FORM_VALUE_BYTES || values.iter().any(|(k, _)| *k == kind) || values.len() >= MAX_FORM_ENTRIES {
+                    return None;
+                }
+                values.push((kind, SecretString::new(std::mem::take(&mut *value))));
+                skip_json_space(json, &mut at);
+                match json.as_bytes().get(at) {
+                    Some(b',') => at += 1,
+                    Some(b'}') => {
+                        at += 1;
+                        break;
+                    }
+                    _ => return None,
+                }
+            }
+            expect_json_byte(json, &mut at, b'}')?;
+            skip_json_space(json, &mut at);
+            (at == json.len()).then_some(LoginMessage {
+                kind: LoginMessageKind::AutofillSubmitted,
+                origin,
+                username: None,
+                password: None,
+                field: None,
+                values,
             })
         }
         _ => None,
     }
+}
+
+/// A JSON integer of at most seven digits (page coordinates), optionally negative.
+fn parse_json_int(json: &str, at: &mut usize) -> Option<i32> {
+    skip_json_space(json, at);
+    let bytes = json.as_bytes();
+    let start = *at;
+    if bytes.get(*at) == Some(&b'-') {
+        *at += 1;
+    }
+    let digits = *at;
+    while bytes.get(*at).is_some_and(u8::is_ascii_digit) && *at - digits < 8 {
+        *at += 1;
+    }
+    if *at == digits || bytes.get(*at).is_some_and(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E')) {
+        return None;
+    }
+    let value: i64 = json.get(start..*at)?.parse().ok()?;
+    (value.abs() <= MAX_PAGE_COORDINATE).then_some(value as i32)
 }
 
 fn skip_json_space(json: &str, at: &mut usize) {
@@ -993,51 +1203,6 @@ fn parse_json_hex_unit(bytes: &[u8], at: &mut usize) -> Option<u16> {
     Some(value)
 }
 
-/// Builds a top-document-only fill script. The output itself is a zeroizing secret buffer because
-/// it contains the password until WebView2 copies the script for execution.
-pub(crate) fn password_fill_script(
-    origin: &str,
-    username: &str,
-    password: &str,
-) -> Zeroizing<String> {
-    let capacity = origin
-        .len()
-        .saturating_add(username.len())
-        .saturating_add(password.len())
-        .saturating_mul(6)
-        .saturating_add(1200);
-    let mut script = Zeroizing::new(String::with_capacity(capacity));
-    script.push_str("(()=>{if(window.top!==window)return false;if(location.origin!==");
-    append_js_string(&mut script, origin);
-    script.push_str(")return false;const v=e=>{if(!e||e.hidden||e.disabled||e.readOnly)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)>0};const p=[...document.querySelectorAll('input[type=password]')].find(e=>e.type==='password'&&v(e));if(!p)return false;const sel='input[autocomplete=username],input[type=email],input[type=text]';const before=e=>!!(e.compareDocumentPosition(p)&Node.DOCUMENT_POSITION_FOLLOWING);const isUser=e=>(e.type==='text'||e.type==='email')&&e!==p&&v(e);const u=p.form?[...p.form.querySelectorAll(sel)].filter(e=>isUser(e)&&before(e)).at(-1):p.parentElement?[...p.parentElement.querySelectorAll('input[type=email],input[type=text]')].filter(e=>isUser(e)&&before(e)).at(-1):null;const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;if(u){s.call(u,");
-    append_js_string(&mut script, username);
-    script.push_str(");u.dispatchEvent(new Event('input',{bubbles:true}));u.dispatchEvent(new Event('change',{bubbles:true}));}s.call(p,");
-    append_js_string(&mut script, password);
-    script.push_str(");p.dispatchEvent(new Event('input',{bubbles:true}));p.dispatchEvent(new Event('change',{bubbles:true}));return true})()");
-    script
-}
-
-fn append_js_string(output: &mut String, value: &str) {
-    output.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            '\u{2028}' => output.push_str("\\u2028"),
-            '\u{2029}' => output.push_str("\\u2029"),
-            character if character.is_control() => {
-                use std::fmt::Write as _;
-                let _ = write!(output, "\\u{:04x}", character as u32);
-            }
-            character => output.push(character),
-        }
-    }
-    output.push('"');
-}
-
 /// Generates a password with the Windows system-preferred BCrypt CSPRNG and rejection sampling.
 /// The caller supplies a unique set of printable ASCII characters and a length from 8 to 256.
 pub fn generate_password(length: usize, charset: &[u8]) -> Result<SecretString, PasswordError> {
@@ -1108,9 +1273,6 @@ fn normalize_header(s: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
-}
-fn find_header(headers: &[String], aliases: &[&str]) -> Option<usize> {
-    headers.iter().position(|h| aliases.contains(&h.as_str()))
 }
 
 fn parse_csv(input: &[u8]) -> Result<Vec<Vec<String>>, PasswordError> {
@@ -1418,6 +1580,42 @@ fn dpapi_unprotect(_: &[u8]) -> Result<Vec<u8>, PasswordError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn autofill_messages_accept_only_their_exact_shapes() {
+        let top = "https://shop.example/checkout";
+        let ok = |json: &str| validate_login_message(json, top, top, true);
+        let request = ok(r#"{"kind":"autofill-request","field":"cc-number","x":-4,"y":120,"w":300,"h":32}"#).unwrap();
+        assert_eq!(request.kind, LoginMessageKind::AutofillRequest);
+        assert_eq!(request.field, Some((crate::autofill::FieldKind::CcNumber, FieldRect { x: -4, y: 120, w: 300, h: 32 })));
+        for bad in [
+            r#"{"kind":"autofill-request","field":"constructor","x":0,"y":0,"w":1,"h":1}"#,
+            r#"{"kind":"autofill-request","field":"email","x":0,"y":0,"w":1}"#,
+            r#"{"kind":"autofill-request","field":"email","x":1.5,"y":0,"w":1,"h":1}"#,
+            r#"{"kind":"autofill-request","field":"email","x":0,"y":0,"w":-1,"h":1}"#,
+            r#"{"kind":"autofill-request","field":"email","y":0,"x":0,"w":1,"h":1}"#,
+            r#"{"kind":"autofill-request","field":"email","x":99999999,"y":0,"w":1,"h":1}"#,
+            r#"{"kind":"autofill-request","field":"email","x":0,"y":0,"w":1,"h":1,"z":1}"#,
+        ] {
+            assert!(ok(bad).is_none(), "{bad}");
+        }
+        let form = ok(r#"{"kind":"autofill-submitted","f":{"given-name":"Jane","postal-code":"LS1 1AA","cc-number":"4242424242424242"}}"#).unwrap();
+        assert_eq!(form.kind, LoginMessageKind::AutofillSubmitted);
+        assert_eq!(form.values.iter().map(|(k, v)| (k.token(), &**v)).collect::<Vec<_>>(),
+            vec![("given-name", "Jane"), ("postal-code", "LS1 1AA"), ("cc-number", "4242424242424242")]);
+        assert!(!format!("{form:?}").contains("Jane"));
+        for bad in [
+            r#"{"kind":"autofill-submitted","f":{}}"#,
+            r#"{"kind":"autofill-submitted","f":{"cc-csc":"123"}}"#,
+            r#"{"kind":"autofill-submitted","f":{"current-password":"x"}}"#,
+            r#"{"kind":"autofill-submitted","f":{"email":"a","email":"b"}}"#,
+            r#"{"kind":"autofill-submitted","f":{"email":"a"},"x":1}"#,
+            r#"{"kind":"autofill-submitted","f":{"email":1}}"#,
+        ] {
+            assert!(ok(bad).is_none(), "{bad}");
+        }
+        assert!(validate_login_message(r#"{"kind":"autofill-request","field":"email","x":0,"y":0,"w":1,"h":1}"#, top, top, false).is_none());
+    }
+
     /// SEC-4: the page picks the username, so it must not be able to name another site in the
     /// save prompt or push the real one out of view.
     #[test]
@@ -1560,25 +1758,18 @@ mod tests {
     }
 
     #[test]
-    fn fill_script_checks_origin_and_only_uses_a_safe_same_form_username_field() {
-        let script = password_fill_script(
+    fn login_fill_scripts_check_the_origin_and_escape_the_username() {
+        use crate::autofill::{FieldKind, FillMode, fill_script};
+        let script = fill_script(
             "https://example.test",
-            "alice\";alert(1)//",
-            "synthetic-pass",
+            FillMode::Login,
+            &[(FieldKind::Username, "alice\";alert(1)//"), (FieldKind::CurrentPassword, "synthetic-pass")],
         );
-        assert!(script.starts_with("(()=>{if(window.top!==window)return false;if(location.origin!==\"https://example.test\")return false;"));
+        assert!(script.starts_with("(()=>{if(window.top!==window)return false;const O=\"https://example.test\";if(location.origin!==O)return false;"));
         assert!(script.contains("alice\\\";alert(1)//"));
-        assert!(script.contains("e.type==='password'"));
-        assert!(script.contains("p.form.querySelectorAll(sel)"));
-        assert!(
-            script
-                .contains("p.parentElement.querySelectorAll('input[type=email],input[type=text]')")
-        );
-        assert!(script.contains("getBoundingClientRect"));
-        assert!(script.contains("getComputedStyle"));
-        assert!(script.contains("e.type==='text'||e.type==='email'"));
-        assert!(!script.contains("input[type=search]"));
-        assert!(!script.contains("p.focus()"));
+        // Only visible, recognised fields in the focused field's form are filled.
+        assert!(script.contains("bwVis") && script.contains("getComputedStyle") && script.contains("bwScope"));
+        assert!(script.contains("search"), "search boxes are classified as never-fill");
     }
 
     #[test]

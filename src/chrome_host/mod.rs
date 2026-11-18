@@ -1,13 +1,12 @@
 //! HTML chrome host: the WebView2 toolbar bridge, its wire protocol and embedded assets.
 //! See docs/html-chrome-protocol.md.
 
+pub mod passwords_page; // the settings page's Passwords and autofill section (src/autofill, src/passwords)
 pub mod page_tools_page; // the settings page's Page tools section (src/page_tools.rs)
 pub mod address_page; // the address bar, search and bookmark options (src/address_settings.rs)
 pub mod assets;
 #[cfg(test)]
 mod fingerprint;
-#[cfg(test)]
-mod guard;
 pub mod host;
 pub mod handshake;
 pub mod json;

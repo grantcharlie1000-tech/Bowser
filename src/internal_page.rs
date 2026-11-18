@@ -59,6 +59,8 @@ pub enum Section {
     Bookmarks,
     Keyboard,
     Commands,
+    /// Saved passwords, addresses and cards, the generator and import/export (src/autofill).
+    Passwords,
     Downloads,
     Media,
     Extensions,
@@ -67,7 +69,7 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Profile,
         Self::Appearance,
         Self::Tabs,
@@ -81,6 +83,7 @@ impl Section {
         Self::Bookmarks,
         Self::Keyboard,
         Self::Commands,
+        Self::Passwords,
         Self::Downloads,
         Self::Media,
         Self::Extensions,
@@ -104,6 +107,7 @@ impl Section {
             Self::Bookmarks => "bookmarks",
             Self::Keyboard => "keyboard",
             Self::Commands => "commands",
+            Self::Passwords => "passwords",
             Self::Downloads => "downloads",
             Self::Media => "media",
             Self::Extensions => "extensions",
@@ -299,7 +303,7 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 18, "page tools (T7) and stacks (T10) joined the sixteen");
+        assert_eq!(Section::ALL.len(), 19, "page tools (T7), stacks (T10) and passwords joined the sixteen");
         assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
     }
 
