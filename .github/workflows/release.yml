@@ -1,16 +1,24 @@
 name: Release guarded Bowser
 
-# One workflow for every release. Manual only. Dispatch on main with the exact commit:
+# One workflow for every release. It starts by itself when a push to main changes
+# Cargo.toml (the merged version-bump PR), or by hand on main with the exact commit:
 #   gh workflow run release.yml --ref main -f commit=<sha> -f dry_run=false
+# A push that releases nothing new (version already pinned, or already tagged on
+# an ancestor) passes the gate quietly and skips every other job.
 # The release identity is read from the source, never typed here: version from
 # Cargo.toml/Cargo.lock, revision from src/updater.rs PIN_REVISION, tag "v"+version.
 # The gate, three parallel Windows verification jobs (Rust, UI, build+smoke) and
 # the verdict job must all pass on that exact commit before the publish job,
 # which is the only job with write permission, can run. dry_run=true runs
-# everything except publish. stable/release.json is never edited here
-# (see docs/releasing.md). A failed run is redispatched, never partially re-run:
-# the publisher requires the candidate's run id and attempt to be its own.
+# everything except publish. stable/release.json on main is never edited
+# here; after publication the pin job opens the stable pin PR for a human to
+# merge (see docs/releasing.md). A failed run is redispatched, never partially
+# re-run: the publisher requires the candidate's run id and attempt to be its own.
+# One run waits per concurrency group: a newer queued run replaces an older one.
 on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
   workflow_dispatch:
     inputs:
       commit:
@@ -32,7 +40,7 @@ concurrency:
 
 jobs:
   gate:
-    if: github.repository == 'grantcharlie1000-tech/Bowser' && github.event_name == 'workflow_dispatch'
+    if: github.repository == 'grantcharlie1000-tech/Bowser' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -43,6 +51,9 @@ jobs:
       version: ${{ steps.gate.outputs.version }}
       revision: ${{ steps.gate.outputs.revision }}
       tag: ${{ steps.gate.outputs.tag }}
+      commit: ${{ steps.gate.outputs.commit }}
+      dry_run: ${{ steps.gate.outputs.dry_run }}
+      skip: ${{ steps.gate.outputs.skip }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -53,8 +64,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_COMMIT: ${{ inputs.commit }}
-          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          # A push has no inputs: it releases its own commit and is never a dry run.
+          INPUT_COMMIT: ${{ github.event_name == 'push' && github.sha || inputs.commit }}
+          INPUT_DRY_RUN: ${{ github.event_name == 'push' && 'false' || inputs.dry_run }}
         run: |
           python3 - <<'PY'
           import base64, json, os, pathlib, re, subprocess, tomllib, urllib.error, urllib.request
@@ -128,11 +140,13 @@ jobs:
           problem = pin_problem(json.loads(pathlib.Path('stable/release.json').read_text()), 'checkout')
           if problem:
               not_ready.append(problem)
+          live_pin = None
           live = api('contents/stable/release.json?ref=main')
           if not live or live.get('encoding') != 'base64':
               not_ready.append('could not read the live main stable pin')
           else:
-              problem = pin_problem(json.loads(base64.b64decode(live['content'])), 'live main')
+              live_pin = json.loads(base64.b64decode(live['content']))
+              problem = pin_problem(live_pin, 'live main')
               if problem:
                   not_ready.append(problem)
 
@@ -142,11 +156,13 @@ jobs:
           if entry not in pathlib.Path('.github/workflows/stable-package.yml').read_text():
               not_ready.append(f'stable-package.yml mark-latest allow-list lacks {entry} (run tools/release.py bump)')
 
+          tag_target = None
           ref = api(f'git/ref/tags/{TAG}')
           if ref:
               obj, depth = ref['object'], 0
               while obj['type'] == 'tag' and depth < 8:
                   obj, depth = api(f"git/tags/{obj['sha']}")['object'], depth + 1
+              tag_target = obj['sha']
               if obj['type'] != 'commit' or obj['sha'] != commit:
                   not_ready.append(f'tag {TAG} already exists and targets {obj["sha"]}, not {commit}; never retarget')
               else:
@@ -154,13 +170,28 @@ jobs:
           else:
               notes.append(f'tag {TAG} does not exist yet')
 
-          ready = not fatal and not not_ready
+          # A push to main only releases a new version. Quietly skip a push whose
+          # version is already pinned, or already released from an ancestor.
+          skip = False
+          if env['GITHUB_EVENT_NAME'] == 'push' and not fatal:
+              pinned = vtuple(live_pin.get('version')) if isinstance(live_pin, dict) else None
+              if pinned is not None and vtuple(VERSION) is not None and pinned >= vtuple(VERSION):
+                  skip = True
+                  notes.append(f"nothing to release: Cargo {VERSION} is not above the pinned {live_pin.get('version')}")
+              elif tag_target and tag_target != commit:
+                  cmp = api(f'compare/{tag_target}...{commit}')
+                  if cmp and cmp.get('status') == 'ahead':
+                      skip = True
+                      notes.append(f'nothing to release: {TAG} was already released from ancestor {tag_target}')
+          if skip:
+              not_ready = []
+          ready = not fatal and not not_ready and not skip
           publish = ready and not dry_run
           lines = [f'## Release gate {TAG} (dry_run={str(dry_run).lower()})', f'- commit: `{commit}`', f"- ref: `{env['GITHUB_REF']}`"]
           lines += [f'- {n}' for n in notes]
           lines += [f'- FATAL: {p}' for p in fatal]
           lines += [f'- NOT READY: {p}' for p in not_ready]
-          lines.append(f'- releasable: **{str(ready).lower()}**; publish job enabled: **{str(publish).lower()}**')
+          lines.append(f'- releasable: **{str(ready).lower()}**; publish job enabled: **{str(publish).lower()}**' + ('; skipped: nothing new to release' if skip else ''))
           text = '\n'.join(lines)
           print(text)
           with open(env['GITHUB_STEP_SUMMARY'], 'a') as out:
@@ -168,9 +199,10 @@ jobs:
           with open(env['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'ready={str(ready).lower()}\npublish={str(publish).lower()}\n')
               out.write(f'version={VERSION}\nrevision={REVISION}\ntag={TAG}\n')
+              out.write(f'commit={commit}\ndry_run={str(dry_run).lower()}\nskip={str(skip).lower()}\n')
           if fatal:
               raise SystemExit('Gate failed: ' + '; '.join(fatal))
-          if not dry_run and not ready:
+          if not dry_run and not ready and not skip:
               raise SystemExit('Not releasable: ' + '; '.join(not_ready))
           PY
 
@@ -179,7 +211,7 @@ jobs:
   # rebuilt, smoked and hashed on one runner and bound to its smoke report.
   rust:
     needs: gate
-    if: needs.gate.result == 'success'
+    if: needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:
@@ -192,7 +224,7 @@ jobs:
     env:
       BOWSER_UPDATE_URL: ''
       BOWSER_UPDATE_PUBKEY: ''
-      RELEASE_COMMIT: ${{ inputs.commit }}
+      RELEASE_COMMIT: ${{ needs.gate.outputs.commit }}
     steps:
       - name: Preserve fingerprinted source bytes
         run: git config --global core.autocrlf false
@@ -243,7 +275,7 @@ jobs:
 
   ui:
     needs: gate
-    if: needs.gate.result == 'success'
+    if: needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:
@@ -252,7 +284,7 @@ jobs:
       run:
         shell: pwsh
     env:
-      RELEASE_COMMIT: ${{ inputs.commit }}
+      RELEASE_COMMIT: ${{ needs.gate.outputs.commit }}
     steps:
       - name: Preserve fingerprinted source bytes
         run: git config --global core.autocrlf false
@@ -305,7 +337,7 @@ jobs:
 
   build:
     needs: gate
-    if: needs.gate.result == 'success'
+    if: needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:
@@ -319,8 +351,8 @@ jobs:
     env:
       BOWSER_UPDATE_URL: ''
       BOWSER_UPDATE_PUBKEY: ''
-      RELEASE_COMMIT: ${{ inputs.commit }}
-      DRY_RUN: ${{ inputs.dry_run }}
+      RELEASE_COMMIT: ${{ needs.gate.outputs.commit }}
+      DRY_RUN: ${{ needs.gate.outputs.dry_run }}
       RELEASE_VERSION: ${{ needs.gate.outputs.version }}
       RELEASE_REVISION: ${{ needs.gate.outputs.revision }}
     steps:
@@ -445,7 +477,7 @@ jobs:
 
   verdict:
     needs: [gate, rust, ui, build]
-    if: always() && needs.gate.result == 'success'
+    if: always() && needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -459,7 +491,7 @@ jobs:
           RUST_RUSTC: ${{ needs.rust.outputs.rustc }}
           BUILD_RUSTC: ${{ needs.build.outputs.rustc }}
           GATE_READY: ${{ needs.gate.outputs.ready }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          DRY_RUN: ${{ needs.gate.outputs.dry_run }}
           TAG: ${{ needs.gate.outputs.tag }}
         run: |
           set -euo pipefail
@@ -486,9 +518,9 @@ jobs:
       needs.gate.result == 'success' && needs.build.result == 'success' &&
       needs.verdict.result == 'success' &&
       needs.gate.outputs.publish == 'true' && needs.gate.outputs.ready == 'true' &&
-      inputs.dry_run == false &&
+      needs.gate.outputs.dry_run == 'false' && needs.gate.outputs.skip == 'false' &&
       github.repository == 'grantcharlie1000-tech/Bowser' &&
-      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 20
     # Only this main-only, non-dry-run job receives the ephemeral release
@@ -512,8 +544,8 @@ jobs:
       - name: Validate, draft by id, upload, download-verify by asset id, publish by id
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ inputs.commit }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_COMMIT: ${{ needs.gate.outputs.commit }}
+          DRY_RUN: ${{ needs.gate.outputs.dry_run }}
           RELEASE_TAG: ${{ needs.gate.outputs.tag }}
           RELEASE_VERSION: ${{ needs.gate.outputs.version }}
           RELEASE_REVISION: ${{ needs.gate.outputs.revision }}
@@ -527,7 +559,7 @@ jobs:
           if ($version -cnotmatch '^\d+\.\d+\.\d+$' -or $tag -cne "v$version" -or $env:RELEASE_REVISION -cnotmatch '^[1-9]\d*$') { throw 'Invalid release identity from gate.' }
           $revision = [int]$env:RELEASE_REVISION
           if ($env:DRY_RUN -cne 'false') { throw 'A dry run must never reach the publisher.' }
-          if ($env:GITHUB_REPOSITORY -cne $repo -or $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or $env:GITHUB_REF -cne 'refs/heads/main') { throw 'Only a main workflow_dispatch may publish.' }
+          if ($env:GITHUB_REPOSITORY -cne $repo -or ($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -and $env:GITHUB_EVENT_NAME -cne 'push') -or $env:GITHUB_REF -cne 'refs/heads/main') { throw 'Only a main push or workflow_dispatch may publish.' }
           $source = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $source -cne $env:GITHUB_SHA -or $source -cne $env:RELEASE_COMMIT) { throw 'Publisher checkout SHA mismatch.' }
           $m = Get-Content candidate/build-metadata.json -Raw | ConvertFrom-Json
@@ -656,10 +688,132 @@ jobs:
             ''
             "Source $source; SHA256 $($m.sha256); bytes $($m.bytes). Stable pin unchanged."
             ''
-            'Values for the stable pin PR (stable/release.json), after the independent download check in docs/releasing.md:'
+            'The pin job opens the stable pin PR with these values after downloading and re-hashing the public assets:'
             ''
             '```json'
             $pin
             '```'
           ) | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           $pin
+
+  # Opens the stable pin PR; a human merges it, which is the production switch
+  # (a GITHUB_TOKEN merge would not run stable-package's push verification, so
+  # this job never merges or enables auto-merge). It runs no repository code:
+  # it re-downloads the public assets, re-hashes them, and writes
+  # stable/release.json on a new branch from main with a compare-and-swap.
+  pin:
+    needs: [gate, publish]
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Verify public assets, write the pin branch, start its checks, open the PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.gate.outputs.version }}
+          RELEASE_REVISION: ${{ needs.gate.outputs.revision }}
+          RELEASE_COMMIT: ${{ needs.gate.outputs.commit }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, os, re, urllib.error, urllib.request
+
+          REPO = 'grantcharlie1000-tech/Bowser'
+          FIELDS = ['version', 'revision', 'commit', 'tag', 'repository', 'asset', 'sha256', 'bytes']
+          env = os.environ
+          tag, version, commit = env['RELEASE_TAG'], env['RELEASE_VERSION'], env['RELEASE_COMMIT']
+          if not re.fullmatch(r'v\d+\.\d+\.\d+', tag) or tag != f'v{version}':
+              raise SystemExit(f'invalid tag {tag!r}')
+          if not re.fullmatch(r'[1-9]\d*', env['RELEASE_REVISION']) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+              raise SystemExit('invalid revision or commit')
+          revision = int(env['RELEASE_REVISION'])
+          vt = lambda v: tuple(int(x) for x in re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', str(v)).groups())
+
+          def call(method, path, body=None, accept='application/vnd.github+json'):
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{REPO}/{path}', method=method,
+                  data=None if body is None else json.dumps(body).encode(),
+                  headers={'Authorization': f"Bearer {env['GH_TOKEN']}", 'Accept': accept,
+                           'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json'})
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as resp:
+                      data = resp.read()
+                      return resp.status, (json.loads(data) if data else None)
+              except urllib.error.HTTPError as err:
+                  return err.code, None
+
+          def public(url):
+              req = urllib.request.Request(url, headers={'User-Agent': 'bowser-release-pin'})
+              with urllib.request.urlopen(req, timeout=300) as resp:
+                  return resp.read()
+
+          # 1. Independent check of what the public actually downloads.
+          base = f'https://github.com/{REPO}/releases/download/{tag}'
+          meta = json.loads(public(f'{base}/build-metadata.json').decode('utf-8-sig'))
+          exe = public(f'{base}/Bowser.exe')
+          pin = {'version': version, 'revision': revision, 'commit': commit, 'tag': tag, 'repository': REPO,
+                 'asset': 'Bowser.exe', 'sha256': hashlib.sha256(exe).hexdigest(), 'bytes': len(exe)}
+          for field in FIELDS:
+              if str(meta.get(field)) != str(pin[field]):
+                  raise SystemExit(f'public metadata {field}={meta.get(field)!r} != {pin[field]!r}')
+          if meta.get('features') != 'html-chrome-default' or meta.get('smoke_passed') is not True:
+              raise SystemExit('public metadata lacks html-chrome-default smoke provenance')
+          content = json.dumps(pin, indent=4) + '\n'
+
+          # 2. Branch from main only if main contains the release and still pins an older one.
+          status, head = call('GET', 'git/ref/heads/main')
+          if status != 200:
+              raise SystemExit('cannot read main')
+          main_sha = head['object']['sha']
+          status, cmp = call('GET', f'compare/{commit}...{main_sha}')
+          if status != 200 or cmp.get('status') not in ('identical', 'ahead'):
+              raise SystemExit(f'released commit {commit} is not on main {main_sha}')
+          status, old = call('GET', f'contents/stable/release.json?ref={main_sha}')
+          if status != 200:
+              raise SystemExit('cannot read the main pin')
+          old_pin = json.loads(base64.b64decode(old['content']))
+          if not (vt(old_pin['version']) < vt(version) and int(old_pin['revision']) < revision):
+              raise SystemExit(f"main already pins {old_pin['tag']} revision {old_pin['revision']}; nothing to do")
+
+          branch = f'release/pin-{tag}'
+          status, _ = call('POST', 'git/refs', {'ref': f'refs/heads/{branch}', 'sha': main_sha})
+          if status == 201:
+              status, put = call('PUT', 'contents/stable/release.json', {
+                  'message': f'Pin Stable to {tag}\n\nrevision {revision}, commit {commit}, sha256 {pin["sha256"]}, {pin["bytes"]} bytes.',
+                  'content': base64.b64encode(content.encode()).decode(), 'sha': old['sha'], 'branch': branch})
+              if status != 200:
+                  raise SystemExit(f'writing the pin failed ({status}); inspect branch {branch}')
+          else:
+              # Rerun: accept an existing branch only if it already holds exactly this pin.
+              status, existing = call('GET', f'contents/stable/release.json?ref={branch}')
+              if status != 200 or base64.b64decode(existing['content']).decode() != content:
+                  raise SystemExit(f'branch {branch} exists with a different pin; inspect it, never force')
+
+          # 3. Checks: events from GITHUB_TOKEN do not trigger pull_request, but dispatches run.
+          for workflow in ('windows-verify.yml', 'stable-package.yml'):
+              status, _ = call('POST', f'actions/workflows/{workflow}/dispatches', {'ref': branch})
+              if status != 204:
+                  raise SystemExit(f'could not start {workflow} on {branch} ({status})')
+
+          # 4. Open the PR (needs "Allow GitHub Actions to create pull requests").
+          body = (f'Moves Stable to **{tag}** (revision {revision}).\n\n'
+                  f'- build commit `{commit}`\n- Bowser.exe sha256 `{pin["sha256"]}`, {pin["bytes"]} bytes, '
+                  'downloaded from the public release and re-hashed by the release run\n\n'
+                  'Merging this is what makes installed Bowser offer the update. Merge by hand: '
+                  'stable-package then verifies the package again and marks the release latest.')
+          status, pr = call('POST', 'pulls', {'title': f'Pin Stable to {tag}', 'head': branch, 'base': 'main', 'body': body})
+          with open(env['GITHUB_STEP_SUMMARY'], 'a') as out:
+              if status == 201:
+                  out.write(f"## Stable pin PR opened: {pr['html_url']}\n\nChecks were started on `{branch}`; merge it when they pass.\n")
+              else:
+                  out.write(f'## Pin branch `{branch}` is ready; open the PR by hand\n\n'
+                            f'https://github.com/{REPO}/compare/main...{branch}?expand=1\n\n'
+                            f'(Creating it from Actions returned {status}; enable "Allow GitHub Actions to create '
+                            'and approve pull requests" in Settings > Actions to have it opened automatically.)\n')
+          print(f'pin branch {branch} ready; PR status {status}')
+          PY

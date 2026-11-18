@@ -1,22 +1,21 @@
 # Releasing Bowser and moving the stable pin
 
-One release takes three short steps and two human merges. Every release uses
-the same workflow, `.github/workflows/release.yml`; the version, pin revision
-and tag are read from the source, so there is no per-release workflow to write.
-Production changes only when a human merges the `stable/release.json` PR.
+A release needs one command and two clicks: run `tools/release.py bump`, merge
+the version-bump PR, then merge the stable pin PR that the release opens. Every
+release uses `.github/workflows/release.yml`. The version, pin revision and tag
+are read from the source. Production changes only when a person merges the
+`stable/release.json` PR.
 
 Use `$R = 'grantcharlie1000-tech/Bowser'` and `X.Y.Z` for the new version below.
 
-| Step | What runs | Expected time (estimate) |
-| --- | --- | --- |
-| 1. Version-bump PR | `windows-verify` (Rust, UI and build jobs in parallel) | ~10 min |
-| 2. Release dispatch | `release.yml` gate, three parallel Windows jobs, publish | ~12 min |
-| 3. Stable pin PR | `windows-verify` pin-only check, `stable-package` | ~1 min |
-| After merge | `stable-package` push verification and `mark-latest` | ~1 min |
+| Step | Who | What runs | Expected time (estimate) |
+| --- | --- | --- | --- |
+| 1. Version-bump PR | you: run `bump`, open the PR, merge | `windows-verify` `bump` check | ~1 min |
+| 2. Release | automatic on merge | `release.yml`: gate, three parallel Windows jobs, publish, pin | ~8 min |
+| 3. Stable pin PR | opened automatically; you merge | `windows-verify` pin check, `stable-package` | ~1 min |
+| After merge | automatic | `stable-package` push verification and `mark-latest` | ~1 min |
 
-Before this, v0.0.31 took about 88 minutes of serial CI: a full Windows run on
-the pin PR, a separate `windows-verify` dispatch on main, a mandatory dry run,
-and a 17-minute single-job release run.
+Before this, v0.0.31 took about 88 minutes of serial CI and about six manual steps.
 
 ## 0. Preconditions
 
@@ -34,68 +33,77 @@ cargo test --locked --lib updater::
 ```
 
 The script changes exactly `Cargo.toml`, the bowser entry in `Cargo.lock`,
-`PIN_REVISION` in `src/updater.rs` (+1), and adds the one exact
-`{tag, version, revision}` entry to the `mark-latest` allow-list in
-`.github/workflows/stable-package.yml`. Do not change the stable pin. Open the
-PR, wait for `windows-verify`, and merge with a merge commit. That main commit
-is `<BUILD_SHA>`.
+`PIN_REVISION` in `src/updater.rs` (+1), and the exact `{tag, version, revision}`
+entry in the `mark-latest` allow-list of `.github/workflows/stable-package.yml`.
+Commit only those changes and open the PR.
 
-## 2. Release
+`windows-verify` runs the base branch's own `tools/release.py bump X.Y.Z` and
+requires the result to match the PR tree byte for byte. If it matches, the
+check passes in about a minute, because step 2 runs the full Windows
+verification on the merged commit before it publishes anything. A PR with any
+other change gets the full Windows run. Merge with a merge commit.
 
-```powershell
-gh workflow run release.yml --repo $R --ref main -f commit=<BUILD_SHA> -f dry_run=false
-gh run watch <RUN_ID> --repo $R --exit-status
-```
+## 2. Release (automatic)
 
-The gate (about 10 s) refuses to publish unless: the commit is main's head and
-clean; Cargo.toml and Cargo.lock agree; the version and `PIN_REVISION` are both
-above the live pin; the allow-list entry exists; and no tag points elsewhere.
-Three Windows jobs then run in parallel on that exact commit:
+The merge pushes a `Cargo.toml` change to main, which starts `release.yml` on
+that exact commit. You can also start it by hand:
+`gh workflow run release.yml --repo $R --ref main -f commit=<sha> -f dry_run=false`
+(with `-f dry_run=true` to check without publishing).
 
-- `rust`: native theme check, both feature sets of `cargo test`, and Clippy.
-- `ui`: typecheck, lint, the CJK baseline, the full UI suite, and Shield.
-- `build`: reproducible UI rebuild, release build and native smoke, then it records the build metadata.
+The gate (about 10 s) decides:
+- **Nothing to release.** On a push whose version is already pinned, or
+  already tagged on an ancestor (a later dependency-only push), it passes
+  quietly and skips every other job.
+- **Not releasable.** It fails loudly if the commit is not main's clean head,
+  Cargo.toml and Cargo.lock disagree, `PIN_REVISION` is not above the live pin,
+  the allow-list entry is missing, or the tag points at another commit.
+- **Releasable.** Three Windows jobs run in parallel on the commit:
+  - `rust`: native theme check, both feature sets of `cargo test`, and Clippy.
+  - `ui`: typecheck, lint, the CJK baseline, the full UI suite, and Shield.
+  - `build`: reproducible UI rebuild, release build and native smoke, then it records the build metadata.
 
-The `verdict` job requires all three to pass and the same `rustc` in tests and
-build. Only then does `publish` run. It is the only job with write permission.
-It creates a draft, uploads the files, downloads them back by asset id and
-verifies them, then publishes with `make_latest=false`. The run summary prints
-the pin values.
+  `verdict` requires all three to pass and the same `rustc` in tests and build.
+  `publish`, the only job allowed to write releases, creates a draft. It
+  uploads the files, downloads them back by asset id and verifies them, then
+  publishes with `make_latest=false`.
 
-You do not need a separate `windows-verify` dispatch on main or a dry run first:
-the release jobs are a superset of `windows-verify` on the exact commit. Use
-`-f dry_run=true` only when you want a check without publishing.
+Then the `pin` job downloads the public `Bowser.exe` and `build-metadata.json`
+again and hashes the executable. It requires them to agree with the release
+identity, and requires the released commit to be on main and main to still pin
+an older release. It then creates `release/pin-vX.Y.Z` from main's head with a
+one-commit `stable/release.json` change, using the old file's blob sha as a
+compare-and-swap. It dispatches `windows-verify` and `stable-package` on that
+branch and opens the PR. If the repository does not allow Actions to create
+pull requests, the run summary links to the ready branch. Open the PR there
+yourself, or enable Settings > Actions > General > "Allow GitHub Actions to
+create and approve pull requests". A rerun reuses an identical branch and stops
+on a different one; it never forces.
 
-A failed run is dispatched again, never partially re-run: the publisher
-requires the candidate's run id and attempt to be its own. If the run fails
-after the publish job has started, inspect the remote state first. Existing
-drafts stop publication. Never delete, replace, retag or blindly retry them.
+Only one release run waits at a time: a newer queued run replaces an older
+one. A failed run is dispatched again, never partially re-run: the publisher
+requires the candidate's run id and attempt to be its own. If a run fails after
+the publish job has started, inspect the remote state first. Existing drafts
+stop publication. Never delete, replace, retag or blindly retry them.
 
 ## 3. Stable pin PR: the production switch
 
-On a branch from main:
-
-```powershell
-python tools/release.py pin vX.Y.Z
-```
-
-This downloads the published `Bowser.exe` and `build-metadata.json` itself and
-hashes the executable. It requires the metadata to agree with the hash, the
-byte length, the tag, the version, `PIN_REVISION` and the build commit. Then
-it rewrites only `stable/release.json`, keeping the field order and four-space
-indent. Commit that one file and open the PR.
-
-Because only `stable/release.json` changed, `windows-verify` skips the Windows
-build. Its `changes` job runs `tools/release.py check-pin` instead, which applies
-the rules of the Rust test `the_shown_version_follows_the_pinned_release` plus
-revision == `PIN_REVISION` and the allow-list entry. A PR that touches any other
-file gets the full Windows run. `stable-package` installs the public package in
-isolation. Merge when both pass.
+Review the PR the pin job opened. Its only change is `stable/release.json`, so
+`windows-verify` skips the Windows build. It runs `tools/release.py check-pin`
+instead, which checks the rules of the Rust test
+`the_shown_version_follows_the_pinned_release`, that the revision equals
+`PIN_REVISION`, and the allow-list entry. `stable-package` installs the public
+package in isolation. Merge by hand when both pass. The workflow never merges
+or enables auto-merge: a merge by the workflow token would not start the push
+verification.
 
 After the merge, the push run of `stable-package` verifies the package again.
-Its `mark-latest` job then promotes only the exact allow-listed release, after
+Its `mark-latest` job promotes only the exact allow-listed release, after
 rechecking the public bytes and the pin, and verifies the public
 latest-download route. Publishing the files alone is not a stable rollout.
+
+To pin by hand instead (for example, if the pin job failed), run
+`python tools/release.py pin vX.Y.Z` on a branch from main. It does the same
+download and hash checks. Commit the one changed file and open the PR.
 
 ## Rollback
 
