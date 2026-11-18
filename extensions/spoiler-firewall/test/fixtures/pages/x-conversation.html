@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>someone on X: "Was anyone else a bad student before uni?" / X</title><link rel="stylesheet" href="/pages/common.css">
+<style>article{display:block;padding:6px;border-bottom:1px solid #eee}</style></head>
+<body><div data-testid="primaryColumn"><section role="region" aria-label="Timeline: Conversation" id="conv">
+<!-- An ordinary conversation in which one reply makes the usual "GTA 6 before ..." joke. Before the fix, that reply heated
+     the whole conversation: every post with a picture (here the post being replied to) was covered as GTA VI content. -->
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear" id="root"><div data-testid="User-Name"><a href="/someone">someone</a></div><div data-testid="tweetText"><span>Was anyone else a really bad student before uni? Share your worst report card.</span></div><div data-testid="tweetPhoto"><img src="/static/pic.svg" alt="Image" width="300" height="200"></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield" id="joke"><div data-testid="tweetText"><span class="sentinel">GTA 6 is going to come out before I graduate lol</span></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear"><div data-testid="tweetText"><span>i was actually a really bad student until i went to uni and locked in 🤣 i couldn't get into NUS/NTU so only australia would take me</span></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear" id="photo-reply"><div data-testid="tweetText"><span>my graduation photo, finally done after the final exam</span></div><div data-testid="tweetPhoto"><img src="/static/pic.svg" alt="Image" width="300" height="200"></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear"><div data-testid="tweetText"><span>same, I was dying in maths class every single day, the end of every term was a nightmare</span></div></article></div>
+</section></div>
+<script src="/pages/common.js"></script>
+</body></html>

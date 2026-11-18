@@ -251,12 +251,12 @@ SFW.classify = (function () {
   function newAcc() {
     return {
       F: false, E: false, C: false, c: false, M: false, S: false, G: false, L: false, L2: false, LS: false, Cn: false,
-      names: new Set(), Wn: false, Wo: false, Wp: false, Wr: false, roleCore: false,
+      names: new Set(), Wn: false, Wo: false, Wp: false, Wr: false, Wd: false, Wpd: false, roleCore: false,
       shapeCore: false, shapeG: false, shapeRole: false, shapeGen: false, shapeId: false, Wrock: false,
     };
   }
   function merge(a, b) {
-    for (const k of ["F", "E", "C", "c", "M", "S", "G", "L", "L2", "LS", "Cn", "Wn", "Wo", "Wp", "Wr", "roleCore", "shapeCore", "shapeG", "shapeRole", "shapeGen", "shapeId", "Wrock"]) if (b[k]) a[k] = true;
+    for (const k of ["F", "E", "C", "c", "M", "S", "G", "L", "L2", "LS", "Cn", "Wn", "Wo", "Wp", "Wr", "Wd", "Wpd", "roleCore", "shapeCore", "shapeG", "shapeRole", "shapeGen", "shapeId", "Wrock"]) if (b[k]) a[k] = true;
     for (const x of b.names) a.names.add(x);
   }
 
@@ -319,7 +319,7 @@ SFW.classify = (function () {
       const k = h.t.kind;
       if (k === "name") { A.Wn = true; A.names.add(h.t.c); }
       else if (k === "org") { A.Wo = true; if (ORG_OK[h.t.c] === 1 && !v.s.startsWith("online", h.e)) A.Wrock = true; }
-      else if (k === "place") A.Wp = true;
+      else if (k === "place") { A.Wp = true; if (h.t.distinct) A.Wpd = true; }
       else if (k === "role") {
         A.Wr = true;
         if (h.t.c === "femaleprotag" || h.t.c === "femaleprotagonist") A.roleCore = true;
@@ -420,6 +420,20 @@ SFW.classify = (function () {
         }
       }
     }
+    // "<distinctive name> dies / 's death / betrays": the verb straight after the name (a surname in between, as in
+    // "Lucia Santos betrayed investors", is a real person in the news)
+    if (sverbs.length && liveWeak.length) {
+      dn: for (let a = 0; a < liveWeak.length; a++) {
+        const nm = liveWeak[a];
+        if (!nm.t.distinct || nm.t.kind !== "name") continue;
+        for (let b = 0; b < sverbs.length; b++) {
+          const vb = sverbs[b];
+          if (v.sid[vb.s] !== v.sid[nm.s] || vb.s < nm.e) continue;
+          const gap = v.s.slice(nm.e, vb.s);
+          if (gap.length <= 3 && /^(?:[^a-z0-9]*s?[^a-z0-9]*)$/.test(gap)) { A.Wd = true; break dn; }
+        }
+      }
+    }
     // "<name> is the rat/traitor/..." (identity reveal) with a live weak name in the same sentence
     if (sidents.length && liveWeak.length) {
       id: for (let a = 0; a < liveWeak.length; a++) {
@@ -491,6 +505,12 @@ SFW.classify = (function () {
     if (A.Wrock && A.L && (A.Cn || A.L2 || st.launchLike)) up(0.92); // "GTA/Rockstar/R* leak: the ending", in any context
     if (st.launchLike && A.L && A.Wr) up(0.92);
     if (st.launchLike && A.LS && A.Wn) up(0.92); // "Lucia ... spoiler" in the launch window
+    if (st.launchLike && A.Wrock && (A.Wn || A.Wr) && A.Cn) up(0.92); // "R* really killed off Jason"
+    // a distinctive name (Lucia, Duval) straight before a death / betrayal verb in the launch window ("Lucia dies 😭")
+    if (st.launchLike && A.Wd) up(0.6);
+    // the game's setting with a story cue or a game-register word in the launch window ("Vice City ending", "the last
+    // mission in Vice City"); the bare place name stays weak (the Miami Heat's "Vice City" jerseys, the old game)
+    if (st.launchLike && A.Wpd && (A.C || A.G)) up(0.6);
     // unnamed "<someone> dies ... final mission/at the end" with a game-register word
     if (A.shapeGen) {
       if (st.launchLike) { up(0.92); shape = true; } else up(0.5);

@@ -465,7 +465,7 @@ SFW.normalize = (function () {
 //   anti           "no spoilers"-style phrases that cancel the overlapping spoiler cue
 //   shapeVerb/shapeEnd   cold-context spoiler-shaped sentence parts
 SFW.lexicon = (function () {
-  const VERSION = "2026.11.17-1";
+  const VERSION = "2026.11.18-1";
   const L = (s) => s.split("|");
 
   // ---------------------------------------------------------------- franchise
@@ -541,7 +541,9 @@ SFW.lexicon = (function () {
       "\u30b8\u30a7\u30a4\u30bd\u30f3|\u30eb\u30b7\u30a2|\u6770\u68ee|\u5091\u68ee|\u9732\u897f\u4e9a|\u9732\u897f\u4e9e|\u5362\u897f\u4e9a|\u76e7\u897f\u4e9e|\u9732\u897f\u5a05|\uc81c\uc774\uc2a8|\ub8e8\uc2dc\uc544|\u062c\u064a\u0633\u0648\u0646|\u0644\u0648\u0633\u064a\u0627|\u0e40\u0e08\u0e2a\u0e31\u0e19|\u0e25\u0e39\u0e40\u0e0b\u0e35\u0e22"
   );
   // low-information names: only anchors when the context is already warm
-  const WEAK_NAME_LOW = L("cal|raul|brian");
+  const WEAK_NAME_LOW = L("cal|raul|brian|boobie");
+  // rare enough that "<name> + a story cue" in the launch window points at the game (Jason is everyone's colleague)
+  const WEAK_NAME_DISTINCT = L("lucia|duval|dre'quan|dre quan|\u043b\u044e\u0441\u0438\u044f|\u043b\u044e\u0441\u0438\u0438|\u043b\u044e\u0441\u0438\u044e|\u043b\u044e\u0441\u0438\u0435\u0439|\u043b\u0443\u0441\u0438\u044f|\u30eb\u30b7\u30a2|\u9732\u897f\u4e9a|\u9732\u897f\u4e9e|\u5362\u897f\u4e9a|\u76e7\u897f\u4e9e|\u9732\u897f\u5a05|\ub8e8\uc2dc\uc544|\u0644\u0648\u0633\u064a\u0627|\u0e25\u0e39\u0e40\u0e0b\u0e35\u0e22");
   const WEAK_ORG = L("gta|grand theft auto|gta online|rockstar|rockstar games|rockstar north|take two|take two interactive|take-two");
   const WEAK_PLACE = L("vice city|ambrosia|\u043b\u0435\u043e\u043d\u0438\u0434\u0430");
   const WEAK_ROLE = L(
@@ -628,7 +630,7 @@ SFW.lexicon = (function () {
   );
   const SHAPE_VERB_X = L(
     // en: gerunds, nouns, idioms
-    "dying|death|deaths|dead|doesnt survive|doesnt make it|didnt survive|didnt make it|wont survive|wont make it|cant survive|doesn't survive|doesn't make it|didn't survive|didn't make it|won't survive|won't make it|can't survive|gets killed off|killed off|kill off|kills off|" +
+    "dying|death|deaths|doesnt survive|doesnt make it|didnt survive|didnt make it|wont survive|wont make it|cant survive|doesn't survive|doesn't make it|didn't survive|didn't make it|won't survive|won't make it|can't survive|gets killed off|killed off|kill off|kills off|" +
       "betrayal|betraying|betrays|being the mole|is the mole|was the mole|being the rat|was the rat|being the traitor|was the traitor|is the snitch|" +
       "surviving|survival|working with the cops|working with the feds|has been dead|been dead the whole|is revealed as|revealed as the|is the real|gets betrayed|got betrayed|" +
       "was working with|is working with|turns out to be|turned out to be|ends up dead|ends up dying|is secretly|was secretly|" +
@@ -679,7 +681,7 @@ SFW.lexicon = (function () {
       "assassins creed|call of duty|half life|uncharted|fire emblem|octopath|baldurs gate|dragon age|the sims|minecraft|pokemon|hollow knight|starfield|" +
       "saints row|watch dogs|just cause|sleeping dogs|payday|borderlands|diablo|overwatch|" +
       "opera|donizetti|verdi|puccini|medea|argonauts|greek myth|shakespeare|season finale|series finale|netflix|hbo|disney|marvel|dc comics|" +
-      "friday the 13th|freddy vs jason|nightmare on elm|slasher|the sopranos|breaking bad|game of thrones|stranger things|squid game|yellowjackets|oppenheimer|" +
+      "friday the 13th|freddy vs jason|family guy|american dad|the simpsons|south park|bobs burgers|rick and morty|the office|grey s anatomy|greys anatomy|the walking dead|nightmare on elm|slasher|the sopranos|breaking bad|game of thrones|stranger things|squid game|yellowjackets|oppenheimer|" +
       "telenovela|novela|pelicula|filme|film|movie|horrorfilm|horrorfilms|sitcom|tv show|anime|manga|\u6620\u753b|13\u65e5\u306e\u91d1\u66dc\u65e5|\u7535\u5f71|\u96fb\u5f71|\uc601\ud654|\u0444\u0438\u043b\u044c\u043c|\u0444\u0438\u043b\u044c\u043c\u0435|\u0441\u0435\u0440\u0438\u0430\u043b|" +
       "the warriors|manhunt|max payne|la noire|midnight club|album|singer|song|concert|energy drink|restaurant|chef|" +
       "rockstar energy|rockstar records"
@@ -1065,14 +1067,14 @@ SFW.lexicon = (function () {
     // weak entities
     function weak(list, kind, hotOnly) {
       for (const s of list) {
-        const t = add(s, "weak", { kind: kind, low: hotOnly.has(s) });
+        const t = add(s, "weak", { kind: kind, low: hotOnly.has(s), distinct: (kind === "name" || kind === "place") && distinctSet.has(s) });
         if (!t) continue;
         weakKeys.add(t.c);
         rankSets.entityWeak.add(t.c);
         anchorOf(t, hotOnly.has(s));
       }
     }
-    const lowSet = new Set(WEAK_NAME_LOW), noneSet = new Set();
+    const lowSet = new Set(WEAK_NAME_LOW), noneSet = new Set(), distinctSet = new Set(WEAK_NAME_DISTINCT.concat(["vice city", "\u043b\u0435\u043e\u043d\u0438\u0434\u0430"]));
     weak(WEAK_NAME.concat(EXT.entityWeak), "name", lowSet);
     weak(WEAK_ORG, "org", noneSet);
     weak(WEAK_PLACE, "place", noneSet);
@@ -1440,12 +1442,12 @@ SFW.classify = (function () {
   function newAcc() {
     return {
       F: false, E: false, C: false, c: false, M: false, S: false, G: false, L: false, L2: false, LS: false, Cn: false,
-      names: new Set(), Wn: false, Wo: false, Wp: false, Wr: false, roleCore: false,
+      names: new Set(), Wn: false, Wo: false, Wp: false, Wr: false, Wd: false, Wpd: false, roleCore: false,
       shapeCore: false, shapeG: false, shapeRole: false, shapeGen: false, shapeId: false, Wrock: false,
     };
   }
   function merge(a, b) {
-    for (const k of ["F", "E", "C", "c", "M", "S", "G", "L", "L2", "LS", "Cn", "Wn", "Wo", "Wp", "Wr", "roleCore", "shapeCore", "shapeG", "shapeRole", "shapeGen", "shapeId", "Wrock"]) if (b[k]) a[k] = true;
+    for (const k of ["F", "E", "C", "c", "M", "S", "G", "L", "L2", "LS", "Cn", "Wn", "Wo", "Wp", "Wr", "Wd", "Wpd", "roleCore", "shapeCore", "shapeG", "shapeRole", "shapeGen", "shapeId", "Wrock"]) if (b[k]) a[k] = true;
     for (const x of b.names) a.names.add(x);
   }
 
@@ -1508,7 +1510,7 @@ SFW.classify = (function () {
       const k = h.t.kind;
       if (k === "name") { A.Wn = true; A.names.add(h.t.c); }
       else if (k === "org") { A.Wo = true; if (ORG_OK[h.t.c] === 1 && !v.s.startsWith("online", h.e)) A.Wrock = true; }
-      else if (k === "place") A.Wp = true;
+      else if (k === "place") { A.Wp = true; if (h.t.distinct) A.Wpd = true; }
       else if (k === "role") {
         A.Wr = true;
         if (h.t.c === "femaleprotag" || h.t.c === "femaleprotagonist") A.roleCore = true;
@@ -1609,6 +1611,20 @@ SFW.classify = (function () {
         }
       }
     }
+    // "<distinctive name> dies / 's death / betrays": the verb straight after the name (a surname in between, as in
+    // "Lucia Santos betrayed investors", is a real person in the news)
+    if (sverbs.length && liveWeak.length) {
+      dn: for (let a = 0; a < liveWeak.length; a++) {
+        const nm = liveWeak[a];
+        if (!nm.t.distinct || nm.t.kind !== "name") continue;
+        for (let b = 0; b < sverbs.length; b++) {
+          const vb = sverbs[b];
+          if (v.sid[vb.s] !== v.sid[nm.s] || vb.s < nm.e) continue;
+          const gap = v.s.slice(nm.e, vb.s);
+          if (gap.length <= 3 && /^(?:[^a-z0-9]*s?[^a-z0-9]*)$/.test(gap)) { A.Wd = true; break dn; }
+        }
+      }
+    }
     // "<name> is the rat/traitor/..." (identity reveal) with a live weak name in the same sentence
     if (sidents.length && liveWeak.length) {
       id: for (let a = 0; a < liveWeak.length; a++) {
@@ -1680,6 +1696,12 @@ SFW.classify = (function () {
     if (A.Wrock && A.L && (A.Cn || A.L2 || st.launchLike)) up(0.92); // "GTA/Rockstar/R* leak: the ending", in any context
     if (st.launchLike && A.L && A.Wr) up(0.92);
     if (st.launchLike && A.LS && A.Wn) up(0.92); // "Lucia ... spoiler" in the launch window
+    if (st.launchLike && A.Wrock && (A.Wn || A.Wr) && A.Cn) up(0.92); // "R* really killed off Jason"
+    // a distinctive name (Lucia, Duval) straight before a death / betrayal verb in the launch window ("Lucia dies \ud83d\ude2d")
+    if (st.launchLike && A.Wd) up(0.6);
+    // the game's setting with a story cue or a game-register word in the launch window ("Vice City ending", "the last
+    // mission in Vice City"); the bare place name stays weak (the Miami Heat's "Vice City" jerseys, the old game)
+    if (st.launchLike && A.Wpd && (A.C || A.G)) up(0.6);
     // unnamed "<someone> dies ... final mission/at the end" with a game-register word
     if (A.shapeGen) {
       if (st.launchLike) { up(0.92); shape = true; } else up(0.5);
@@ -1932,7 +1954,11 @@ SFW.policy = (function () {
     const flagged = lvl !== "none";
     const anyCue = f.cue || f.cueWeak;
 
-    if (hasMedia && (hot >= 1 || flagged)) return "shield";
+    // Media in GTA context, or next to words that point at GTA VI, is covered. In Strict / Balanced a "risk" level alone
+    // (one common first name like Jason / Raul / Brian, or a bare "spoiler alert" about something else) is not GTA
+    // evidence: it covered every photo post that named a Jason. Lockdown keeps covering on any flag.
+    if (hasMedia && hot >= 1) return "shield";
+    if (hasMedia && flagged && (mode === "lockdown" || lvl === "spoiler" || lvl === "mention" || f.franchise || f.entity)) return "shield";
     // text beyond the classifier's per-call cap/time budget was not looked at: budget overrun fails closed (DESIGN 4.5)
     if (result.truncated === true) return "shield";
 
@@ -1987,8 +2013,13 @@ SFW.policy = (function () {
 //   item     selector list of units (adapter selectors merged with the generic fallback)
 //   own      adapter-specific item selectors only (priority when resolving a unit)
 //   thread   selector for the thread / conversation root whose context defines hotness for everything inside
-//   context  selectors (searched inside the thread root, else document-wide) whose text/value defines hotness:
-//            subreddit name, video title, search box value ...
+//   context  PAGE-LEVEL selectors whose text/value defines hotness for the whole page: search box value, page or
+//            channel heading, subreddit name. Never a selector that matches every post of a feed: one post that names
+//            the game must not turn every other post on the page into a suspect.
+//   threadContext  selectors searched inside a thread root (defaults to context): the thread's own title / caption
+//   threadFirst    the thread root's first adapter item is its head (the post being replied to) and defines the
+//            thread's hotness. Only for real thread pages (threadUrl) or per-post roots: on a feed, the "first item"
+//            of <main> is just whichever post happens to be on top.
 //   media    media selector (adapter specific + generic)
 //   attrs    extra attribute names whose text is part of a unit's text (custom-element data attributes)
 //   hotUrl   0 cold | 1 warm | 2 hot, from the URL alone (query / path slug / subreddit) via SFW.classify
@@ -2042,7 +2073,7 @@ SFW.adapters = (function () {
     id: "x", threadUrl: /\/status\/\d+/, hosts: /(^|\.)(x|twitter)\.com$/i, highRisk: true,
     item: ["article[data-testid=tweet]", "[data-testid=cellInnerDiv]", "[data-testid=typeaheadResult]", "[data-testid=trend]", "[data-testid=UserCell]", "[data-testid='card.wrapper']", "[data-testid=conversation]", "[data-testid=DMDrawer] [role=listitem]", "[role=listbox] [role=option]"],
     thread: ["[aria-label^='Timeline: Conversation']", "[data-testid=primaryColumn] section[role=region]"],
-    context: ["[data-testid=SearchBox_Search_Input]", "[data-testid=tweetText]"],
+    context: ["[data-testid=SearchBox_Search_Input]"], threadFirst: true,
     media: ["[data-testid=tweetPhoto]", "[data-testid=videoPlayer]", "[data-testid='card.layoutLarge.media']", "[data-testid='card.layoutSmall.media']"],
     attrs: [],
     hotUrl: classifyUrl,
@@ -2053,7 +2084,8 @@ SFW.adapters = (function () {
     item: ["shreddit-post", "shreddit-comment", "faceplate-tracker", "search-telemetry-tracker", "reddit-search-large", "shreddit-search-suggestion",
       ".thing", "div.search-result", "li.search-result", "li[role=presentation]", "[data-testid=post-container]", "[data-testid=comment]", "div.Comment", "div.Post"],
     thread: ["shreddit-post", "div.thing.link", "#siteTable > .thing", "[data-testid=post-container]", "main"],
-    context: ["shreddit-post[post-title]", "shreddit-subreddit-header", "h1", "[data-testid=subreddit-name]", "#header-bottom-left .redditname", "input[name=q]", "faceplate-search-input"],
+    context: ["shreddit-subreddit-header", "[data-testid=subreddit-name]", "#header-bottom-left .redditname", "input[name=q]", "faceplate-search-input"],
+    threadContext: ["shreddit-post[post-title]", "h1"], threadFirst: true,
     media: ["shreddit-player", "shreddit-aspect-ratio", "gallery-carousel", "[slot=post-media-container]", "a.thumbnail", "img.preview"],
     attrs: ["post-title", "subreddit-prefixed-name", "subreddit-name", "permalink", "content-href", "author", "aria-label", "title", "alt"],
     hotUrl: redditHot,
@@ -2065,7 +2097,7 @@ SFW.adapters = (function () {
       "ytd-grid-video-renderer", "ytd-channel-renderer", "ytd-shelf-renderer", "ytm-shorts-lockup-view-model", "yt-lockup-view-model", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", "ytd-player",
       ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer"],
     thread: ["ytd-watch-flexy", "ytd-watch-grid", "ytd-search", "ytd-browse"],
-    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-channel-name"],
+    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-watch-metadata ytd-channel-name"],
     media: ["ytd-thumbnail", "yt-image", "yt-img-shadow", "#movie_player", ".ytp-cued-thumbnail-overlay-image"],
     attrs: ["title", "aria-label", "alt"],
     hotUrl: classifyUrl,
@@ -2139,8 +2171,9 @@ SFW.adapters = (function () {
   def({
     id: "tiktok", hosts: /(^|\.)tiktok\.com$/i, highRisk: true,
     item: ["[data-e2e=recommend-list-item-container]", "[data-e2e=search-card-item]", "[data-e2e=search_top-item]", "[data-e2e=user-post-item]", "[data-e2e^=comment-level]", "[data-e2e=comment-item]", "[data-e2e=search-user-container]", "div[class*=DivItemContainer]", "div[class*=DivCommentItemContainer]", "[data-e2e=browse-video-desc]", "[data-e2e=video-desc]"],
-    thread: ["[data-e2e=browse-video]", "[data-e2e=video-detail]", "[data-e2e=search-card-list]"],
-    context: ["[data-e2e=browse-video-desc]", "[data-e2e=video-desc]", "input[type=search]", "input[data-e2e=search-user-input]"],
+    thread: ["[data-e2e=browse-video]", "[data-e2e=video-detail]"],
+    context: ["[data-e2e=browse-video-desc]", "input[type=search]", "input[data-e2e=search-user-input]"],
+    threadContext: ["[data-e2e=browse-video-desc]", "[data-e2e=video-desc]"],
     media: ["video", "img", "[data-e2e=video-player]"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
@@ -2155,20 +2188,21 @@ SFW.adapters = (function () {
   def({
     id: "facebook", hosts: /(^|\.)(facebook\.com|fb\.com|fb\.watch)$/i, highRisk: true,
     item: ["[role=article]", "div[role=feed] > div", "div[data-pagelet^=FeedUnit]", "div[data-pagelet*=Feed]", "div[aria-posinset]", "[role=listitem]", "li[role=presentation]", "[role=option]", "a[href*='/watch/?v=']", "a[href*='/reel/']"],
-    thread: ["[role=article]", "div[role=main]"],
-    context: ["input[type=search]", "div[data-ad-preview=message]", "h1"],
+    thread: ["[role=article]"],
+    context: ["input[type=search]", "h1"],
+    threadContext: ["div[data-ad-preview=message]", "h1"],
     media: ["video", "img", "div[data-visualcompletion=media-vc-image]"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "threads", hosts: /(^|\.)threads\.(net|com)$/i, highRisk: true,
+    id: "threads", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)threads\.(net|com)$/i, highRisk: true,
     item: ["div[data-pressable-container=true]", "[data-pagelet^=threads_post]", "article", "div[role=listitem]", "a[href*='/post/']"],
     thread: ["div[role=main]", "main"], context: ["input[type=search]", "h1"],
     media: ["video", "img"], attrs: ["alt", "aria-label", "title"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "bluesky", hosts: /(^|\.)bsky\.(app|social)$/i, highRisk: true,
+    id: "bluesky", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)bsky\.(app|social)$/i, highRisk: true,
     item: ["[data-testid^=feedItem-by-]", "[data-testid^=postThreadItem-by-]", "[data-testid^=searchResult]", "[data-testid=searchAutoCompleteResult]", "[data-testid^=profileCard]", "[data-testid=postText]", "[role=link][aria-label*=post]"],
     thread: ["[data-testid=postThreadScreen]", "[data-testid=searchScreen]", "main"],
     context: ["input[type=search]", "[data-testid=searchTextInput]"],
@@ -2196,28 +2230,28 @@ SFW.adapters = (function () {
   // until it was checked, URLs and titles are classified cold, and the OCR allowlist (src/spoiler_ocr.rs, hosts/chrome)
   // covers the same hosts. Top-level image documents (https://i.imgur.com/x.png) are handled by the runtime.
   def({
-    id: "imgur", hosts: /(^|\.)imgur\.com$/i, highRisk: true,
+    id: "imgur", threadUrl: /^\/(gallery|a|t)\//, threadFirst: true, hosts: /(^|\.)imgur\.com$/i, highRisk: true,
     item: ["div.Post", "div.post-container", "[class*=Gallery-Content]", "[class*=PostContent]", "div.Comment", "[class*=Comment-]", "div.post"],
     thread: ["div.Gallery", "[class*=Gallery-Content]", "main"], context: ["h1", "[class*=Gallery-Title]", "input[type=search]"],
     media: ["[class*=PostImage]", "[class*=imageContainer]", "video"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "fourchan", hosts: /(^|\.)(4chan|4channel|4cdn)\.org$/i, highRisk: true,
+    id: "fourchan", threadFirst: true, hosts: /(^|\.)(4chan|4channel|4cdn)\.org$/i, highRisk: true,
     item: [".postContainer", ".post", ".thread", ".catalog-thread", "div.thread", ".teaser", ".fileText"],
     thread: [".thread", "#threads", "form[name=delform]"], context: ["#boardNavDesktop", ".subject", "title", "input[type=search]"],
     media: [".fileThumb", ".file", "img", "video"], attrs: ["alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "gtaforums", hosts: /(^|\.)gtaforums\.com$/i, highRisk: true,
+    id: "gtaforums", threadUrl: /\/topic\//, threadFirst: true, hosts: /(^|\.)gtaforums\.com$/i, highRisk: true,
     item: ["article.cPost", "article[id^=elComment_]", ".ipsComment", "li.ipsDataItem", ".ipsStreamItem", "[data-commentid]", ".cTopic"],
     thread: ["[data-controller='core.front.core.commentFeed']", ".cTopic", "main"], context: ["h1", ".ipsType_pageTitle", "input[type=search]"],
     media: [".ipsImage", ".ipsAttachLink_image", "video", "img"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "resetera", hosts: /(^|\.)resetera\.com$/i, highRisk: true,
+    id: "resetera", threadUrl: /\/threads\//, threadFirst: true, hosts: /(^|\.)resetera\.com$/i, highRisk: true,
     item: ["article.message", ".message", "li.structItem", ".structItem", ".block-row", ".message-body"],
     thread: [".block--messages", ".p-body-pageContent", "main"], context: ["h1.p-title-value", "h1", "input[name=keywords]"],
     media: [".bbImage", ".bbMediaWrapper", "video", "img"], attrs: ["alt", "title", "aria-label"],
@@ -2233,12 +2267,12 @@ SFW.adapters = (function () {
   def({
     id: "kick", hosts: /(^|\.)kick\.com$/i, highRisk: true,
     item: ["[class*=chat-entry]", "[data-chat-entry]", "[class*=stream-card]", "[class*=video-card]", "[role=listitem]", "[role=option]", "article"],
-    thread: ["main", "#chatroom", "[class*=chatroom]"], context: ["h1", "[class*=stream-title]", "input[type=search]"],
+    thread: ["main", "#chatroom", "[class*=chatroom]"], context: ["h1", "input[type=search]"],
     media: ["video", "img", "[class*=thumbnail]"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "tumblr", hosts: /(^|\.)tumblr\.com$/i, highRisk: true,
+    id: "tumblr", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)tumblr\.com$/i, highRisk: true,
     item: ["article", "[data-id]", "[role=article]", "div.post", ".post_container", "li.post", "[class*=post_]"],
     thread: ["main", "#posts", "[data-testid=timeline]"], context: ["h1", "[data-testid=blog-title]", "input[type=search]"],
     media: ["figure", "[data-testid=imageBlock]", "[class*=photo]", "video", "img"], attrs: ["alt", "title", "aria-label"],
@@ -2323,6 +2357,8 @@ SFW.adapters = (function () {
       item: join(item),
       thread: join(valid(def.thread, doc)),
       context: join(valid(def.context, doc)),
+      threadContext: join(valid(def.threadContext || def.context, doc)),
+      threadFirst: !!def.threadFirst,
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
       hotUrl: def.hotUrl,
@@ -5297,8 +5333,11 @@ SFW.runtime = (function () {
       let text = "";
       let first = null;
       try {
-        if (adapter.own) first = nQS(root, adapter.own);
-        const els = adapter.context ? Array.prototype.slice.call(nQSA(root, adapter.context), 0, 6) : [];
+        // the head post defines the thread only where the root really is one thread (adapter.threadFirst): the first item
+        // of a feed container is just whichever post is on top, and must not heat every other post below it
+        if (adapter.own && adapter.threadFirst) first = nQS(root, adapter.own);
+        const tctx = adapter.threadContext || adapter.context;
+        const els = tctx ? Array.prototype.slice.call(nQSA(root, tctx), 0, 6) : [];
         text = contextText(els, 6);
         if (first) text += " " + extract(first, true, true).text.slice(0, 2000);
         else if (root.shadowRoot) text += "";
@@ -5386,15 +5425,15 @@ SFW.runtime = (function () {
         reply = th.ti.shield && th.ti.first !== u;
         if (!th.ti.resolved && adapter.highRisk && doc.readyState !== "complete" && th.ti.first !== u) wait = th.root;
       }
-      // feed warmth (>= 3 recent shields that carried a franchise / strong-entity signal) is a weak hint: media-bearing items are
-      // not shielded for it alone, only items that carry some signal of their own (policy "hot" with hasMedia false)
-      let warmOnly = false;
-      const w = isWarm();
-      if (w && hot < 1) { hot = 1; warmOnly = true; }
+      // Feed warmth (>= 3 recent GTA shields) does NOT heat other posts. During the launch window every feed is "warm" within
+      // seconds, and treating it as GTA context shielded any post that said "dying", "the end", "story" or "last" (and re-ran
+      // the whole page on every warm/cold flip). Posts are judged on their own words; real GTA context comes from the page,
+      // the thread head or a shielded neighbour block.
+      const warmOnly = false;
       // local heat: a plain block next to a shielded sibling inside a small parent (the rest of a spoiler that was
       // split across sibling blocks) is evaluated as if inside a spoiler thread
       const nb = !isOwn(u) && hasShieldedNeighbor(u);
-      if (nb) { if (hot < 1) hot = 1; reply = true; warmOnly = false; }
+      if (nb) { if (hot < 1) hot = 1; reply = true; }
       const fp = cfp + "|" + hot + (reply ? "r" : "") + (nb ? "n" : "") + (warmOnly ? "w" : "") + "|" + cfg.mode + (deep ? "d" : "s") + ocrKey + "|" + S.lexicon.version;
       const c = U.get(u);
       if (wait) return { u, dec: "pending", wait, fp, cfp, hot };
@@ -5647,7 +5686,7 @@ SFW.runtime = (function () {
         const was = warm;
         shieldTimes.push(now());
         warm = isWarm();
-        if (warm && !was) { T_SET(() => { if (booted) rescanAll(); }, 0); }
+        if (warm && !was) report("feed.warm"); // statistics only (see decide: warmth is not context)
       }
     }
 

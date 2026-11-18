@@ -12,7 +12,7 @@
 //   anti           "no spoilers"-style phrases that cancel the overlapping spoiler cue
 //   shapeVerb/shapeEnd   cold-context spoiler-shaped sentence parts
 SFW.lexicon = (function () {
-  const VERSION = "2026.11.17-1";
+  const VERSION = "2026.11.18-1";
   const L = (s) => s.split("|");
 
   // ---------------------------------------------------------------- franchise
@@ -88,7 +88,9 @@ SFW.lexicon = (function () {
       "ジェイソン|ルシア|杰森|傑森|露西亚|露西亞|卢西亚|盧西亞|露西娅|제이슨|루시아|جيسون|لوسيا|เจสัน|ลูเซีย"
   );
   // low-information names: only anchors when the context is already warm
-  const WEAK_NAME_LOW = L("cal|raul|brian");
+  const WEAK_NAME_LOW = L("cal|raul|brian|boobie");
+  // rare enough that "<name> + a story cue" in the launch window points at the game (Jason is everyone's colleague)
+  const WEAK_NAME_DISTINCT = L("lucia|duval|dre'quan|dre quan|люсия|люсии|люсию|люсией|лусия|ルシア|露西亚|露西亞|卢西亚|盧西亞|露西娅|루시아|لوسيا|ลูเซีย");
   const WEAK_ORG = L("gta|grand theft auto|gta online|rockstar|rockstar games|rockstar north|take two|take two interactive|take-two");
   const WEAK_PLACE = L("vice city|ambrosia|леонида");
   const WEAK_ROLE = L(
@@ -175,7 +177,7 @@ SFW.lexicon = (function () {
   );
   const SHAPE_VERB_X = L(
     // en: gerunds, nouns, idioms
-    "dying|death|deaths|dead|doesnt survive|doesnt make it|didnt survive|didnt make it|wont survive|wont make it|cant survive|doesn't survive|doesn't make it|didn't survive|didn't make it|won't survive|won't make it|can't survive|gets killed off|killed off|kill off|kills off|" +
+    "dying|death|deaths|doesnt survive|doesnt make it|didnt survive|didnt make it|wont survive|wont make it|cant survive|doesn't survive|doesn't make it|didn't survive|didn't make it|won't survive|won't make it|can't survive|gets killed off|killed off|kill off|kills off|" +
       "betrayal|betraying|betrays|being the mole|is the mole|was the mole|being the rat|was the rat|being the traitor|was the traitor|is the snitch|" +
       "surviving|survival|working with the cops|working with the feds|has been dead|been dead the whole|is revealed as|revealed as the|is the real|gets betrayed|got betrayed|" +
       "was working with|is working with|turns out to be|turned out to be|ends up dead|ends up dying|is secretly|was secretly|" +
@@ -226,7 +228,7 @@ SFW.lexicon = (function () {
       "assassins creed|call of duty|half life|uncharted|fire emblem|octopath|baldurs gate|dragon age|the sims|minecraft|pokemon|hollow knight|starfield|" +
       "saints row|watch dogs|just cause|sleeping dogs|payday|borderlands|diablo|overwatch|" +
       "opera|donizetti|verdi|puccini|medea|argonauts|greek myth|shakespeare|season finale|series finale|netflix|hbo|disney|marvel|dc comics|" +
-      "friday the 13th|freddy vs jason|nightmare on elm|slasher|the sopranos|breaking bad|game of thrones|stranger things|squid game|yellowjackets|oppenheimer|" +
+      "friday the 13th|freddy vs jason|family guy|american dad|the simpsons|south park|bobs burgers|rick and morty|the office|grey s anatomy|greys anatomy|the walking dead|nightmare on elm|slasher|the sopranos|breaking bad|game of thrones|stranger things|squid game|yellowjackets|oppenheimer|" +
       "telenovela|novela|pelicula|filme|film|movie|horrorfilm|horrorfilms|sitcom|tv show|anime|manga|映画|13日の金曜日|电影|電影|영화|фильм|фильме|сериал|" +
       "the warriors|manhunt|max payne|la noire|midnight club|album|singer|song|concert|energy drink|restaurant|chef|" +
       "rockstar energy|rockstar records"
@@ -612,14 +614,14 @@ SFW.lexicon = (function () {
     // weak entities
     function weak(list, kind, hotOnly) {
       for (const s of list) {
-        const t = add(s, "weak", { kind: kind, low: hotOnly.has(s) });
+        const t = add(s, "weak", { kind: kind, low: hotOnly.has(s), distinct: (kind === "name" || kind === "place") && distinctSet.has(s) });
         if (!t) continue;
         weakKeys.add(t.c);
         rankSets.entityWeak.add(t.c);
         anchorOf(t, hotOnly.has(s));
       }
     }
-    const lowSet = new Set(WEAK_NAME_LOW), noneSet = new Set();
+    const lowSet = new Set(WEAK_NAME_LOW), noneSet = new Set(), distinctSet = new Set(WEAK_NAME_DISTINCT.concat(["vice city", "леонида"]));
     weak(WEAK_NAME.concat(EXT.entityWeak), "name", lowSet);
     weak(WEAK_ORG, "org", noneSet);
     weak(WEAK_PLACE, "place", noneSet);

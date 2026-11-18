@@ -65,7 +65,12 @@ untouched). Native *pulls* with `ExecuteScript`:
 2. A tab with protection and OCR on subscribes `WebResourceResponseReceived`. An image response (content type
    `image/*` except SVG, status 200, GET, Content-Length 256 bytes to 5 MB, or unknown and capped while reading)
    whose host is on the allowlist while the tab's top-level site is on it too is read with `GetContent` (the
-   IStream is copied on the UI thread) and queued for a worker. The response event needs no resource filter and never
+   IStream is copied on the UI thread) and parked in memory, unscanned (`ocr::Parked`: 600 bodies / 64 MB per
+   cache, oldest out first). It is queued for a worker only when the page asks about that URL (a drain names it,
+   or a held request is already waiting for it): the page asks only for media near the viewport whose post is not
+   already decided by its words, so most images a feed loads are never scanned. Scanning every image response
+   kept a core busy for as long as a feed was scrolled. Known-small URLs (X avatars in their `_normal` / `_mini` /
+   `_bigger` variants, emoji, hashflags) are not read at all and answer `skipped`. The response event needs no resource filter and never
    holds a request, so the tab adds none: an image filter makes every matching request wait for Bowser's UI thread
    (the blocker's `WebResourceRequested` handler), and with filters for YouTube, ytimg, twimg and the other listed hosts
    that made the whole browser crawl. Only if a navigation to a listed site completes without one response event (a

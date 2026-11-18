@@ -336,7 +336,7 @@ await test("warm feed: three weak-name shields (Jason/Lucia in other stories) do
   numbers.warmWeakOrdinaryShielded = r.ordinaryShielded;
 });
 
-await test("warm feed: franchise shields do make it warm, but media-bearing posts with no signal of their own are not shielded", async () => {
+await test("warm feed: franchise shields make it warm (statistics only); ordinary posts, with or without media or an everyday cue word, are not shielded", async () => {
   const posts = [];
   for (let i = 0; i < 30; i++) {
     if (i === 4) for (const t of STRONG) posts.push({ kind: "strong", t });
@@ -349,7 +349,9 @@ await test("warm feed: franchise shields do make it warm, but media-bearing post
   assert.equal(r.mediaShielded, 0, "neutral media posts are not collateral of a warm feed");
   assert.equal(r.ordinaryShielded, 0);
   assert.ok(r.mediaReleased >= 1, "their media is released, not quarantined forever");
-  assert.equal(r.mediaweakShielded, 1, "a media post that carries a weak cue of its own is still covered while the feed is warm");
+  // Revision 3: warmth is no longer context. In launch week every feed is warm, and "Final exams start Monday" with a photo
+  // was covered as GTA VI content.
+  assert.equal(r.mediaweakShielded, 0, "an everyday cue word next to a photo is not GTA context, warm feed or not");
 });
 
 // ---------------------------------------------------------------------------------------------------------------

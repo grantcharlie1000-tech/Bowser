@@ -7,7 +7,7 @@ import os from "node:os";
 const HERE = dirname(fileURLToPath(import.meta.url));
 try { os.setPriority(process.pid, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch (e) { /* ignore */ }
 let code = 0;
-for (const script of ["zero-flash.mjs", "interaction.mjs", "page-runtime.mjs", "theme.mjs", "bowser-feed.mjs", "cards.mjs"]) {
+for (const script of ["zero-flash.mjs", "interaction.mjs", "page-runtime.mjs", "theme.mjs", "bowser-feed.mjs", "cards.mjs", "heat.mjs"]) {
   const r = spawnSync(process.execPath, [join(HERE, script), ...process.argv.slice(2)], { stdio: "inherit" });
   if (r.status !== 0) code = r.status || 1;
 }

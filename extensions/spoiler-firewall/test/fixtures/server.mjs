@@ -17,6 +17,8 @@ const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": 
 // Pretty URLs so adapters (which read location.pathname / search) see realistic paths.
 export const REWRITES = {
   "/home": "/pages/x-timeline.html",
+  "/launch/home": "/pages/x-launch-home.html",
+  "/someone/status/1234567890": "/pages/x-conversation.html",
   "/r/pics/comments/abc/some_post/": "/pages/reddit-new.html",
   "/r/pics/": "/pages/reddit-old.html",
   "/watch": "/pages/youtube-watch.html",

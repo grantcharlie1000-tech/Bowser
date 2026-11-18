@@ -1844,8 +1844,11 @@ SFW.runtime = (function () {
       let text = "";
       let first = null;
       try {
-        if (adapter.own) first = nQS(root, adapter.own);
-        const els = adapter.context ? Array.prototype.slice.call(nQSA(root, adapter.context), 0, 6) : [];
+        // the head post defines the thread only where the root really is one thread (adapter.threadFirst): the first item
+        // of a feed container is just whichever post is on top, and must not heat every other post below it
+        if (adapter.own && adapter.threadFirst) first = nQS(root, adapter.own);
+        const tctx = adapter.threadContext || adapter.context;
+        const els = tctx ? Array.prototype.slice.call(nQSA(root, tctx), 0, 6) : [];
         text = contextText(els, 6);
         if (first) text += " " + extract(first, true, true).text.slice(0, 2000);
         else if (root.shadowRoot) text += "";
@@ -1933,15 +1936,15 @@ SFW.runtime = (function () {
         reply = th.ti.shield && th.ti.first !== u;
         if (!th.ti.resolved && adapter.highRisk && doc.readyState !== "complete" && th.ti.first !== u) wait = th.root;
       }
-      // feed warmth (>= 3 recent shields that carried a franchise / strong-entity signal) is a weak hint: media-bearing items are
-      // not shielded for it alone, only items that carry some signal of their own (policy "hot" with hasMedia false)
-      let warmOnly = false;
-      const w = isWarm();
-      if (w && hot < 1) { hot = 1; warmOnly = true; }
+      // Feed warmth (>= 3 recent GTA shields) does NOT heat other posts. During the launch window every feed is "warm" within
+      // seconds, and treating it as GTA context shielded any post that said "dying", "the end", "story" or "last" (and re-ran
+      // the whole page on every warm/cold flip). Posts are judged on their own words; real GTA context comes from the page,
+      // the thread head or a shielded neighbour block.
+      const warmOnly = false;
       // local heat: a plain block next to a shielded sibling inside a small parent (the rest of a spoiler that was
       // split across sibling blocks) is evaluated as if inside a spoiler thread
       const nb = !isOwn(u) && hasShieldedNeighbor(u);
-      if (nb) { if (hot < 1) hot = 1; reply = true; warmOnly = false; }
+      if (nb) { if (hot < 1) hot = 1; reply = true; }
       const fp = cfp + "|" + hot + (reply ? "r" : "") + (nb ? "n" : "") + (warmOnly ? "w" : "") + "|" + cfg.mode + (deep ? "d" : "s") + ocrKey + "|" + S.lexicon.version;
       const c = U.get(u);
       if (wait) return { u, dec: "pending", wait, fp, cfp, hot };
@@ -2194,7 +2197,7 @@ SFW.runtime = (function () {
         const was = warm;
         shieldTimes.push(now());
         warm = isWarm();
-        if (warm && !was) { T_SET(() => { if (booted) rescanAll(); }, 0); }
+        if (warm && !was) report("feed.warm"); // statistics only (see decide: warmth is not context)
       }
     }
 
