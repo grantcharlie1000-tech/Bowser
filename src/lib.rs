@@ -45,6 +45,7 @@ pub mod profile;
 pub mod reader;
 pub mod translate;
 pub mod search_engines;
+pub mod self_install; // a downloaded release build moves itself into the install folder the updater keeps
 pub mod session;
 pub mod settings;
 pub mod settings_privacy; // blocker level, history retention, website appearance, private theme (T3)

@@ -62,7 +62,7 @@ pub(crate) fn create_desktop_shortcut(profile: &Profile) -> Result<(), String> {
         .map_err(|error| format!("Windows refused to save it ({error})."))
 }
 
-fn write_link(exe: &Path, arguments: &str, description: &str, app_id: Option<&str>, file: &Path) -> windows::core::Result<()> {
+pub(crate) fn write_link(exe: &Path, arguments: &str, description: &str, app_id: Option<&str>, file: &Path) -> windows::core::Result<()> {
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         link.SetPath(&HSTRING::from(exe.as_os_str()))?;
