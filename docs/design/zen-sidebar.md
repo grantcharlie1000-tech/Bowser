@@ -35,13 +35,14 @@ sidebar keeps it, and Ctrl+S, the sidebar's pin button or Settings > Layout > Pi
 between the two.
 
 - Geometry (`chrome::layout::float_zen_column`, applied by `compute_arranged_auto_hide` whenever the Zen
-  column is out of the layout): the card (`Layout::float_island`) is the column inset by
-  `ZEN_FLOAT_MARGIN` (4 DIP) on every side, so a strip of page shows all round it. Everything inside
-  stays the `ISLAND_INSET` (8 DIP) from the column's sides it already had, which leaves it 4 DIP inside
-  the card's `ZEN_FLOAT_RADIUS` (10 DIP) corners: a square host corner that far in is always inside the
-  curve. The title row, the window buttons and the toolbar move down by the same 8 DIP, the window
-  buttons end where the toolbar does instead of at the window's edge, and the tabs give up that height
-  at their top. The page never moves.
+  column is out of the layout): the card (`Layout::float_island`) keeps `ZEN_FLOAT_MARGIN` (6 DIP) of
+  page between itself and the page's top, bottom and outer edges (inside the window's resize rim, so the
+  gap is always page, never window frame) and on its inner side. Everything in it sits `ZEN_FLOAT_PAD`
+  (6 DIP) in from its edge, which is inside its `ZEN_FLOAT_RADIUS` (10 DIP) corners: a square host
+  corner that far in is always inside the curve. The title row (drag space and the window buttons at
+  its end) comes first, the toolbar keeps its two rows across the content width, and the tabs run from
+  a row gap under it to the bottom padding. The page never moves; what slides (and keeps the card up
+  while the pointer is on it) is still the whole docked column.
 - Paint (`ChromeSurface::paint_float_island`, on the click-through layered overlay that already sits
   above every child window): a two-layer shadow (a wide key shadow dropped 6 DIP, a tight ambient
   edge), the solid window colour inside anti-aliased rounded corners, and a hairline edge 16% of the way
