@@ -1011,26 +1011,45 @@
   opacity: 0.5;
 }
 
-/* The drawn window frame would be a second outline inside the tile's own: the tile's edge is the frame. */
-.sp-art-frame {
-  display: none;
+/* The drawing's parts, in the chrome's own neutrals (no accent: the chosen tile's ring is the only colour). */
+.sp-art-island {
+  fill: color-mix(in srgb, var(--bw-text) 7%, transparent);
 }
 
-.sp-art-dot,
-.sp-art-tab {
-  fill: color-mix(in srgb, var(--bw-text) 26%, transparent);
+.sp-art-island.is-on {
+  fill: color-mix(in srgb, var(--bw-text) 22%, transparent);
 }
 
 .sp-art-pill {
-  fill: color-mix(in srgb, var(--bw-text) 16%, transparent);
+  fill: color-mix(in srgb, var(--bw-text) 12%, transparent);
 }
 
-.sp-art-tab.is-on {
-  fill: var(--bw-accent);
+.sp-art-fav {
+  fill: color-mix(in srgb, var(--bw-text) 55%, transparent);
+}
+
+.sp-art-line,
+.sp-art-mark {
+  fill: color-mix(in srgb, var(--bw-text) 38%, transparent);
 }
 
 .sp-art-page {
-  fill: color-mix(in srgb, var(--bw-text) 8%, transparent);
+  fill: color-mix(in srgb, var(--bw-text) 9%, var(--sp-page));
+  stroke: color-mix(in srgb, var(--bw-text) 10%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sp-art-head {
+  fill: color-mix(in srgb, var(--bw-text) 34%, transparent);
+}
+
+.sp-art-text {
+  fill: color-mix(in srgb, var(--bw-text) 18%, transparent);
+}
+
+.sp-art-pic {
+  fill: color-mix(in srgb, var(--bw-text) 13%, transparent);
 }
 
 .sp-tile-name {

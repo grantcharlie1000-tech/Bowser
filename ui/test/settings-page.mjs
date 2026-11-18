@@ -1816,7 +1816,7 @@ test('layout: the snapshot carries the Layout block, refuses anything else, and 
   const text = logic.saveText({ ...draft, tabLayout: 'bottom', sidePanelPosition: 'right', layout: { ...draft.layout, tabBarVisible: false, addressBarPosition: 'bottom', showTitleBar: true, statusBar: 'hidden', uiDensity: 'compact', compactMenus: true, uiZoom: 150, saved: layoutLogic.layoutConfigKey(layoutLogic.presetConfig('bottom')) } });
   assert.match(text, /^tab_layout=bottom\n/);
   assert.match(text, /\nside_panel_position=right\n/);
-  assert.ok(text.endsWith('\ntab_bar_visible=false\naddress_bar_position=bottom\naddress_bar_visible=true\nshow_title_bar=true\nstatus_bar=hidden\nui_density=compact\ncompact_menus=true\nui_zoom=150\nlayout_saved=tabs=bottom,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true'), text);
+  assert.ok(text.endsWith('\ntab_bar_visible=false\naddress_bar_position=bottom\naddress_bar_visible=true\nshow_title_bar=true\nstatus_bar=hidden\nui_density=compact\ncompact_menus=true\nui_zoom=150\nlayout_saved=tabs=bottom,tabbar=true,address=bottom,addressbar=true,panel=left,status=overlay,title=false\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true'), text);
   for (const broken of [{ uiZoom: 30 }, { statusBar: 'show' }, { addressBarPosition: 'left' }, { saved: 'nope' }]) {
     assert.equal(logic.saveText({ ...draft, layout: { ...draft.layout, ...broken } }), null, JSON.stringify(broken));
   }
@@ -1855,6 +1855,7 @@ test('layout: presets choose a configuration, the edges derive from the tab layo
   assert.equal(L.presetConfig('vertical-right').tabLayout, 'vertical-right');
   assert.equal(L.presetConfig('vertical-right').sidePanelPosition, 'right');
   assert.equal(L.presetConfig('bottom').tabLayout, 'bottom');
+  assert.equal(L.presetConfig('bottom').addressBarPosition, 'bottom');
   for (const preset of L.PRESETS) {
     const key = L.layoutConfigKey(L.presetConfig(preset));
     assert.deepEqual(L.parseLayoutConfig(key), L.presetConfig(preset), preset);
@@ -1950,8 +1951,9 @@ test('layout: the page shows the preset thumbnails, which alone place the bars; 
   assert.match(sent[0].text, /^tab_layout=bottom\n/);
   assert.match(sent[0].text, /\nside_panel_position=left\n/);
   assert.match(sent[0].text, /\nstatus_bar=overlay\n/);
+  assert.match(sent[0].text, /\naddress_bar_position=bottom\n/, 'Bottom puts the address bar down with the tabs');
   assert.match(sent[0].text, /\nlayout_saved=\n/, 'a preset is not Saved');
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'bottom', ack: 'saved' } });
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'bottom', layout: { ...fixture.snap.d.layout, addressBarPosition: 'bottom' }, ack: 'saved' } });
   assert.equal(tiles[4].getAttribute('aria-checked'), 'true');
   sent.length = 0;
   tiles[0].click();
