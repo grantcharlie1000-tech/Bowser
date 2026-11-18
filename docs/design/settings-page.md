@@ -180,11 +180,18 @@ The table below is what each section's rows are, not where the page draws them:
 | `updates` | Updates | Update automatically, status card with Check for updates or Restart to update |
 | `about` | About Bowser | version, Open settings file, Reset settings (in-page confirm; history, the update switch and bookmarks are not touched), Default browser (status, "Make Bowser the default browser") |
 
-Hierarchy is three steps: the section title (Subtitle 20/28), a group heading above its card (Body
-Strong 14/20 in the secondary text colour), and the rows inside the card. Space separates them,
-always as a margin on the element below: 16px from a section title to its first group, 8px from a
-group heading to its card, 24px between groups, 56px between sections, an inset hairline between
-rows, so a card reads as one object rather than a stack of strips. Every group keeps its heading,
+Hierarchy is three steps: the section title beside its glyph (Subtitle 20/28), a group card whose
+title sits inside it beside a small glyph (Body Strong 14/20, as Zen's Account and Sync cards do),
+and the rows inside the card. Glyphs are plain, in the text colour, with no tile behind them. Space separates them, always as a margin on the
+element below: 16px from a section title to its first card, 16px between cards, 48px between
+sections, an inset hairline between rows, so a card reads as one object rather than a stack of
+strips. Each group's glyph is `GROUP_ICONS` in `settings-page.ts`. **More** is a quiet button under the
+cards, not another card. The nav has a divider before Extensions, System and About.
+
+While Bowser is known not to be the default browser, a one-line nudge opens both Simple and All
+(never search results or a sub-page), as Zen's does: "Psst, Bowser isn't your default." and **Make
+default**, nothing more. While it shows, the Default browser row it stands for is not drawn a second
+time (it is still the row a search finds). The glyph helper is `ui/src/settings-tiles.ts`. Every group keeps its heading,
 over one row or many, unless it only repeats the section title (Extensions). Each row: label, one-line description, control (switch, segmented, select,
 slider, button). Under the description, a row may carry one quiet note with its own 12px glyph,
 never a badge: "Applies after restart" (`restart` in `ROWS`) or "Has no effect yet. Bowser keeps
@@ -222,6 +229,9 @@ Only `--bw-*` tokens (`ui/src/styles/tokens.css`) and local `--sp-*` values deri
 | `--sp-card-edge` | `--bw-hairline` | card border |
 | `--sp-nav-active` | `--bw-accent-soft` | nav indicator wash |
 | `--sp-mark` | text-grade `<mark>` wash, accent 28% | search hits |
+| `--sp-r-card` | 12px | cards and every box inside them: the page also points `--bw-r-control`, `-row`, `-island` and `-overlay` at it, so buttons, fields, menus and segmented controls match the cards (switches stay capsules) |
+| `--sp-card-shadow` | two soft black shadows (lighter in light) | cards |
+| `--sp-glow` | accent 12% | the page's top-right wash |
 
 ## Motion
 

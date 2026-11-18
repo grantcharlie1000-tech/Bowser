@@ -9,6 +9,7 @@ import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
 import { attachSegmentThumb } from './segment-thumb';
 import { installTooltips } from './tooltip';
+import { glyphTile } from './settings-tiles';
 import { selectField, type SelectField } from './panels/select';
 import { radioGroup, textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
@@ -76,6 +77,21 @@ const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   pagetools: 'image', // --- page tools (T7) ---
   passwords: 'key',
   stacks: 'tab-group', // --- T10 --- (drawn in the Tabs and start page area, never in the nav on its own)
+};
+/** Each group's glyph, beside its title (settings.css, "Group cards"). */
+const GROUP_ICONS: Readonly<Record<string, IconName>> = {
+  profiles: 'person', startup: 'enter', search: 'search', searchField: 'address-bar', searchScopes: 'grid',
+  downloads: 'folder-download', defaultBrowser: 'globe',
+  theme: 'droplet', layout: 'sidebar', toolbar: 'customize', text: 'zoom-in', bookmarksBar: 'bookmark', window: 'window', panels: 'app-tile',
+  tabBar: 'tab-switch', newTabs: 'plus', groups: 'tab-group', startPage: 'home', closing: 'close', pinned: 'pin', selecting: 'volume',
+  blocking: 'block', history: 'clock', siteData: 'cookie', security: 'lock', spoilers: 'eye',
+  passwords: 'key',
+  address: 'address-bar', suggestions: 'search', bookmarks: 'bookmark', translate: 'translate', capture: 'capture', reader: 'reader', pageTools: 'pip', feeds: 'bell',
+  keyboard: 'keyboard', keys: 'command', commands: 'quick-commands',
+  extensions: 'puzzle',
+  performance: 'workspace-bolt', media: 'play',
+  updates: 'download', about: 'info',
+  'simple-start': 'search', 'simple-look': 'droplet', 'simple-privacy': 'shield', 'simple-browser': 'person',
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 /** Whether a key press lands in a field that takes text (an input, a textarea, a select or an editable node). */
@@ -292,7 +308,20 @@ export function startSettingsPage(root: HTMLElement): void {
   empty.hidden = true;
   const emptyText = el('p');
   empty.append(icon('search', { size: 24 }), emptyText);
-  column.append(banner);
+  // The nudge at the top (Simple and All, never in search results or on a sub-page), as Zen does it:
+  // one line and one button, only while Bowser is known not to be the default browser. The Default
+  // browser row stays the control that search finds.
+  const hero = el('section', 'sp-hero');
+  hero.setAttribute('aria-labelledby', 'sp-hero-title');
+  const heroTitle = el('p', 'sp-hero-title');
+  heroTitle.id = 'sp-hero-title';
+  heroTitle.textContent = 'Psst, Bowser isn\u2019t your default.';
+  const heroAction = textButton('Make default', () => cmd({ a: 'setdefault' }), { primary: true, aria: 'Make Bowser the default browser' });
+  heroAction.classList.add('sp-hero-action');
+  hero.append(heroTitle, heroAction);
+  const paintHero = (state: SettingsSnapshot['defaultBrowser']): void => { hero.hidden = state !== 'no'; };
+  paintHero('unknown');
+  column.append(banner, hero);
   main.append(column);
 
   const count = el('p', 'sp-sr');
@@ -352,7 +381,7 @@ export function startSettingsPage(root: HTMLElement): void {
     area.dataset.area = spec.key;
     const heading = el('h2', 'sp-h');
     heading.id = `sp-h-${spec.key}`;
-    heading.textContent = spec.title;
+    heading.append(glyphTile(NAV_ICONS[spec.key], 'sp-h-tile', 18), document.createTextNode(spec.title));
     area.setAttribute('aria-labelledby', heading.id);
     area.append(heading);
     if (spec.lead !== '') {
@@ -1477,7 +1506,9 @@ export function startSettingsPage(root: HTMLElement): void {
     if (section) root.dataset.section = section;
     const h = el('h3', 'sp-group-h');
     h.id = `sp-card-${++cardSeq}`;
-    h.textContent = title;
+    const glyph = GROUP_ICONS[key] ?? (section ? NAV_ICONS[section] : undefined);
+    if (glyph) h.append(glyphTile(glyph, 'sp-g-tile', 14));
+    h.append(document.createTextNode(title));
     const node = el('div', 'sp-card');
     node.setAttribute('role', 'group');
     node.setAttribute('aria-labelledby', h.id);
@@ -1842,6 +1873,7 @@ export function startSettingsPage(root: HTMLElement): void {
     else spoilerFeedRow.root.removeAttribute('data-tip');
     if (engineValue.dataset.source !== 'address') engineValue.textContent = searchEngineLabel(s.searchEngine);
     const isDefault = s.defaultBrowser === 'yes';
+    paintHero(s.defaultBrowser);
     defaultBrowserButton.disabled = isDefault;
     defaultBrowserButton.lastChild!.textContent = isDefault ? 'Default' : 'Make default';
     defaultBrowserButton.setAttribute('aria-label', isDefault ? 'Bowser is the default browser' : 'Make Bowser the default browser');

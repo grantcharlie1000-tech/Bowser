@@ -42,7 +42,7 @@ npm test           # includes test/styles.mjs (CSS contract) and test/icons.mjs 
 | `src/styles/panels.css` | panels | `?view=panel` (`panel.ts`, `panels/*.ts`) |
 | `src/styles/dialog.css` | dialogs | `?view=dialog&p=...` (`dialog.ts`) |
 | `src/styles/menu.css` | menus | `?view=popup` (`menu-view.ts`, `popup.ts`) |
-| `src/styles/settings.css` | settings | `?view=settings`, the `bowser://settings` page (`settings-page.ts`, docs/design/settings-page.md) |
+| `src/styles/settings.css` | settings | `?view=settings`, the `bowser://settings` page (`settings-page.ts`, docs/design/settings-page.md); its section and group glyphs come from `settings-tiles.ts` |
 | `src/styles/history.css` | history | `?view=history`, the `bowser://history` page (`history-page.ts`, docs/design/history-page.md) |
 | `src/styles/downloads.css` | downloads | the download bubble (`?view=popup` page `downloads`, `downloads-bubble.ts`) and the `bowser://downloads` page (`?view=downloads`, `downloads-page.ts`); shared row `downloads-view.ts`; docs/design/downloads.md. The toolbar's download button lives in `toolbar.css` |
 | `src/styles/start.css` | start page | the start page over a blank new tab (`?view=split`, `start-page.ts` and `start-page-logic.ts`, its own bundle `dist/start-page.js`) and the Start page settings section (`settings-start.ts`); docs/design/start-page.md |
