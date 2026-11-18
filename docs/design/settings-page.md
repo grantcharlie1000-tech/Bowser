@@ -192,8 +192,10 @@ While Bowser is known not to be the default browser, a one-line nudge opens both
 (never search results or a sub-page), as Zen's does: "Psst, Bowser isn't your default." and **Make
 default**, nothing more. While it shows, the Default browser row it stands for is not drawn a second
 time (it is still the row a search finds). The glyph helper is `ui/src/settings-tiles.ts`. Every group keeps its heading,
-over one row or many, unless it only repeats the section title (Extensions). Each row: label, one-line description, control (switch, segmented, select,
-slider, button). Under the description, a row may carry one quiet note with its own 12px glyph,
+over one row or many, unless it only repeats the section title (Extensions). Each row: label and control (switch, segmented, select, slider, button). A row's
+one-line description is not drawn when the row has a control: it stays in the accessibility tree
+(the control is still described by it) and search still matches it, but the label carries the page.
+A row with no control keeps its line, since there the line is the content. Under the description, a row may carry one quiet note with its own 12px glyph,
 never a badge: "Applies after restart" (`restart` in `ROWS`) or "Has no effect yet. Bowser keeps
 your choice for when it does." (`notYet`) for a setting that is saved but not acted on: frameless,
 the bookmarks bar pair, the tab preview pair, and, until their Rust wiring lands,

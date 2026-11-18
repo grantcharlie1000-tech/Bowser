@@ -2651,6 +2651,8 @@
 }
 
 .pw-tile.is-icon {
+  width: 20px;
+  background: none;
   color: var(--bw-text-2);
 }
 
@@ -3541,4 +3543,18 @@
 
 .sp-group:has(> .sp-card) > .sp-ext-local {
   padding: 0 var(--sp-row-x) var(--bw-space-3);
+}
+
+/* Labels carry the page; a setting's explanatory line is for assistive tech and search, not the eye
+   (the label, the control and the section say enough). It stays in the accessibility tree: the
+   control is still described by it, and search still matches it. Lines that carry data (a chain's
+   steps, an extension's details, a path, a status) are other elements and stay visible, and a row
+   with no control (Fill from the keyboard) keeps its line, because there the line is the content. */
+:where(#app.sp-root) :is(.sp-row[data-row], .sp-row[data-opens], .sp-row.pw-pref):has(> .sp-ctl) > .sp-text > .sp-desc {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
