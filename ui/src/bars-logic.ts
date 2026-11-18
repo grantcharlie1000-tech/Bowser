@@ -147,17 +147,6 @@ export const ITEM_LABELS: Readonly<Record<string, { readonly label: string; read
   feeds: { label: 'Feeds', hint: '' },
 };
 
-/**
- * Items that only appear while they have something to show, with the words the editor puts under them, so a
- * button that was just added and is not on screen yet does not read as broken.
- */
-export const SHOWS_WHEN: Readonly<Record<string, string>> = {
-  reader: 'Appears on pages that can be read as an article',
-  downloads: 'Appears once a download starts',
-  extensions: 'Appears when an extension has a popup',
-  'closed-tabs': 'Appears once a tab has been closed',
-};
-
 /** The bars the editor offers. The panel bar was the left rail's, and Bowser no longer has a rail, so its buttons could never show. */
 export const EDITABLE_BARS: readonly BarId[] = ['address', 'tabs'];
 

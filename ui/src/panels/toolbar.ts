@@ -17,7 +17,7 @@ import { el, icon, type IconName } from '../dom';
 import { sendPanel, type Inbound } from '../protocol';
 import { panelHeader, searchField, segmented } from './kit';
 import {
-  BAR_KEYS, ITEM_LABELS, SHOWS_WHEN, addItem, isCommandItem, itemIcon, itemLabel, itemsOf, moveItem, removeItem, whyNotAdd, zoneOf,
+  BAR_KEYS, ITEM_LABELS, addItem, isCommandItem, itemIcon, itemLabel, itemsOf, moveItem, removeItem, whyNotAdd, zoneOf,
   DEFAULTS, MAX_COMMAND_ITEMS, type BarId,
 } from '../bars-logic';
 
@@ -202,12 +202,6 @@ export function startToolbarPanel(root: HTMLElement): (message: Inbound) => void
     name.textContent = label;
     name.dir = 'auto';
     text.append(name);
-    const when = SHOWS_WHEN[id];
-    if (when !== undefined) {
-      const hint = el('span', 'tbp-hint');
-      hint.textContent = when;
-      text.append(hint);
-    }
     const toggle = el('button', 'bw-toggle tbp-toggle');
     toggle.type = 'button';
     toggle.setAttribute('role', 'switch');

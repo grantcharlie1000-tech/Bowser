@@ -57,9 +57,8 @@ test('each group lists the buttons that are on in bar order, then the ones that 
   // Commands that are on sit in their group; the commands card lists the others.
   assert.deepEqual(rows(cards()[1]).map(([id]) => id), ['cmd:new-tab', 'cmd:capture-full', 'chain:2']);
   assert.equal(cards()[1].querySelector('.tbp-count').textContent, '1 of 4 on the bar');
-  // Buttons that only show on demand say when.
-  const reader = root.querySelectorAll('.tbp-row').find((row) => row.dataset.item === 'reader');
-  assert.equal(reader.querySelector('.tbp-hint').textContent, 'Appears on pages that can be read as an article');
+  // A row is its glyph, its name and its switch: no line of explanation under the name.
+  assert.equal(root.querySelectorAll('.tbp-text').every((text) => text.childElementCount === 1), true);
   // Only rows that are on and have a neighbour to swap with get a grip.
   assert.equal(left.querySelectorAll('.tbp-row')[0].querySelector('.tbp-grip').childElementCount, 1);
   assert.equal(left.querySelectorAll('.tbp-row')[2].querySelector('.tbp-grip').childElementCount, 0);

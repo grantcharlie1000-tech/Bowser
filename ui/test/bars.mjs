@@ -188,7 +188,6 @@ test('every built-in command a bar can carry has a glyph of its own, drawn from 
   assert.equal(bars.itemIcon('downloads'), 'download');
 });
 
-test('the editor offers only the bars that can show buttons, and names what appears only on demand', () => {
+test('the editor offers only the bars that can show buttons', () => {
   assert.deepEqual([...bars.EDITABLE_BARS], ['address', 'tabs']);
-  for (const id of Object.keys(bars.SHOWS_WHEN)) assert.ok([...bars.ADDRESS_ITEMS, ...bars.TAB_ITEMS].includes(id), id);
 });

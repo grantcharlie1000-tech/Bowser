@@ -25,8 +25,7 @@ Every item has its own glyph: the bar's own buttons (`ITEM_ICONS`) and every bui
 command id; `test/bars.mjs` fails when a command has none). A chain shows the `chain` glyph. The toolbar, the tab
 strip, the vertical sidebar's rows, the editor and its picker all draw the same one.
 
-Buttons that appear only when they have something to show (Reader, Downloads, Extensions, Closed tabs; `SHOWS_WHEN`)
-say so under their name in the editor and are drawn dashed in its preview, so a button just added never looks lost.
+Reader, Downloads, Extensions and Closed tabs appear only when they have something to show.
 
 | Bar | Key | Buttons |
 |---|---|---|
