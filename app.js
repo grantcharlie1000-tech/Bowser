@@ -46,6 +46,26 @@
     window.addEventListener("resize", function () { if (window.innerWidth > 1020) setMenu(false); });
   }
 
+  /* ---------- After a download click: explain the SmartScreen warning ----------
+     The link is followed as normal (the download starts); the dialog opens on top. */
+  var dlHelp = document.getElementById("dl-help");
+  if (dlHelp && typeof dlHelp.showModal === "function") {
+    document.addEventListener("click", function (e) {
+      var a = e.target.closest && e.target.closest('a[href$="/Bowser.exe"]');
+      if (!a || e.defaultPrevented || e.button !== 0) return;
+      setTimeout(function () { if (!dlHelp.open) dlHelp.showModal(); }, 0);
+    });
+    Array.prototype.forEach.call(dlHelp.querySelectorAll("[data-dl-close]"), function (b) {
+      b.addEventListener("click", function () { dlHelp.close(); });
+    });
+    /* A click on the backdrop (outside the panel) closes it too. */
+    dlHelp.addEventListener("click", function (e) {
+      if (e.target !== dlHelp) return;
+      var r = dlHelp.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dlHelp.close();
+    });
+  }
+
   /* ---------- Copy the SHA-256 on the download page ---------- */
   var copyBtn = document.getElementById("copy-sha");
   if (copyBtn) {

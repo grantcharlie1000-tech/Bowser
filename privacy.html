@@ -190,6 +190,33 @@
     </nav>
   </div>
 </footer>
+<dialog class="dl-help" id="dl-help" aria-labelledby="dl-help-title">
+  <button type="button" class="icon-btn dl-help-x" data-dl-close aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+  <p class="dl-help-kicker"><svg width="18" height="18" aria-hidden="true"><use href="#i-download"/></svg>Your download has started</p>
+  <h2 id="dl-help-title">Windows will probably warn you. That&rsquo;s expected.</h2>
+  <p class="dl-help-lead">When you open <b>Bowser.exe</b>, a blue box may say <b>&ldquo;Windows protected your PC&rdquo;</b>. Bowser isn&rsquo;t code-signed yet, so Windows doesn&rsquo;t recognise it. To open it:</p>
+  <ol class="dl-help-steps">
+    <li>
+      <div class="ss" aria-hidden="true">
+        <p class="ss-h">Windows protected your PC</p>
+        <p class="ss-t">Microsoft Defender SmartScreen prevented an unrecognised app from starting.</p>
+        <p class="ss-more ss-hot">More info</p>
+        <div class="ss-btns"><span class="ss-btn">Don&rsquo;t run</span></div>
+      </div>
+      <p><b>1.</b> Click <b>More info</b>.</p>
+    </li>
+    <li>
+      <div class="ss" aria-hidden="true">
+        <p class="ss-h">Windows protected your PC</p>
+        <p class="ss-t">App: Bowser.exe<br>Publisher: Unknown publisher</p>
+        <div class="ss-btns"><span class="ss-btn ss-hot">Run anyway</span><span class="ss-btn">Don&rsquo;t run</span></div>
+      </div>
+      <p><b>2.</b> Click <b>Run anyway</b>.</p>
+    </li>
+  </ol>
+  <p class="dl-help-note">Bowser then installs itself and you won&rsquo;t see this again. Want to check the file first? Compare its SHA-256 with the one on the <a href="download.html#top">download page</a>.</p>
+  <div class="dl-help-actions"><button type="button" class="btn btn-blue btn-sm" data-dl-close>Got it</button></div>
+</dialog>
 <script src="app.js"></script>
 </body>
 </html>
