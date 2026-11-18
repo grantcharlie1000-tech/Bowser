@@ -1,5 +1,29 @@
 [
  {
+  "tag": "v0.0.36",
+  "date": "2026-11-18",
+  "prs": [
+   [
+    162,
+    "Update the website's release notes after every release"
+   ],
+   [
+    163,
+    "Pin Stable to v0.0.35"
+   ],
+   [
+    159,
+    "Floating auto-hide vertical sidebar with a top-edge window-button strip"
+   ],
+   [
+    165,
+    "Bump Bowser to 0.0.36"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 0b0a96b088c939e3fa8fb0bebf4216dacdf10ee0. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.35",
   "date": "2026-11-18",
   "prs": [
