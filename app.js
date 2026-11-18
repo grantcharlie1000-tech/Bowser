@@ -1,7 +1,7 @@
-/* Bowser landing page.
+/* Bowser website.
    1. bowserWindow(): a drawn Bowser window, rendered into every [data-bw] mount.
-   2. The highlight row: auto-advance, progress fill, pause, and the layout crossfade in whichever
-      beat holds [data-frame]s. */
+   2. Theme toggle, the hero's changing word, the compare slider, and the switchers
+      (feature tour with auto-advance, values pills). */
 (function () {
   "use strict";
 
@@ -36,7 +36,10 @@
     folder: '<path d="M4 7.5A1.5 1.5 0 0 1 5.5 6h4l2 2h7a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/>',
     file: '<path d="M7 4h6.5L18 8.5V19a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M13 4v5h5"/>',
     min: '<path d="M6 12h12"/>',
-    max: '<rect x="6.5" y="6.5" width="11" height="11" rx="1"/>'
+    max: '<rect x="6.5" y="6.5" width="11" height="11" rx="1"/>',
+    search: '<circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/>',
+    split: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M12 5v14"/>',
+    reader: '<path d="M5 18 9.5 6h1L15 18M6.6 14h6.8M17 9h3m-3 4h3m-3 4h3"/>'
   };
   function ico(name, cls) {
     return '<svg class="bw-i' + (cls ? " " + cls : "") + '" viewBox="0 0 24 24" aria-hidden="true">' + P[name] + "</svg>";
@@ -172,6 +175,31 @@
       '<i class="sk rule"></i><i class="sk cap"></i><i class="sk b"></i><i class="sk b mid"></i></div></div></div>';
   }
 
+  function adPopup() {
+    return '<div class="pg-pop"><div class="pg-pop-t"><i></i><i></i></div><b></b></div>';
+  }
+
+  function pageSplit() {
+    return '<div class="pg pg-split"><div class="sp-pane">' + pageArticle() + '</div><i class="sp-div"></i><div class="sp-pane is-focus">' +
+      pageSource() + "</div></div>";
+  }
+
+  function palette() {
+    function row(icon, label, keys, on) {
+      return '<div class="pal-row' + (on ? " is-on" : "") + '">' + ico(icon) + "<span>" + label + "</span>" +
+        (keys ? '<span class="pal-k">' + keys.map(function (k) { return "<i>" + k + "</i>"; }).join("") + "</span>" : "") + "</div>";
+    }
+    return '<div class="bw-pal-dim"></div><div class="bw-pal" role="presentation"><div class="pal-field">' + ico("search") + "<span>spl</span></div>" +
+      '<div class="pal-h">Commands</div>' +
+      row("split", "Toggle <mark>spl</mark>it view", ["Ctrl", "Shift", "\\"], true) +
+      row("split", "Focus left <mark>spl</mark>it pane", ["Ctrl", "Shift", "\u2190"]) +
+      row("x", "Close focused <mark>spl</mark>it pane", ["Ctrl", "Shift", "W"]) +
+      '<div class="pal-h">Tabs</div>' +
+      '<div class="pal-row">' + fav(TABS.reading[0]) + "<span>A slower morning, <mark>spl</mark>it by chapter</span></div>" +
+      '<div class="pal-h">History</div>' +
+      row("clock", "reading.example/<mark>spl</mark>endid-walks") + "</div>";
+  }
+
   function pageBlank() {
     return '<div class="pg pg-blank">' + bone("pg-blank-mark") + '<div class="pg-blank-field">' +
       ico("star") + "<span>Search or enter address</span></div>" +
@@ -236,7 +264,9 @@
     var tabs = TABS[o["private"] ? "private" : o.tabs || (o.page === "source" ? "source" : "reading")];
     var active = o["private"] ? 1 : (o.tab || 0);
     var cur = tabs[active];
-    var page = { article: pageArticle, ads: pageAds, blank: pageBlank, source: pageSource, "private": pagePrivate }[o.page]();
+    var page = { article: pageArticle, ads: pageAds, blank: pageBlank, source: pageSource, split: pageSplit, "private": pagePrivate }[o.page]();
+    if (o.dirty) page += adPopup();
+    if (o.page === "split") cur = { t: "Split view", f: "f-sky", u: "reading.example/slow-mornings" };
     var main;
 
     if (o.layout === "vertical") {
@@ -251,10 +281,10 @@
       main = '<div class="bw-row bw-row-tool is-single">' + nav() + omni(cur, { narrow: true }) + actions(o) + strip(tabs, active) + controls() + "</div>";
     }
 
-    return '<div class="bw bw--' + o.layout + (o["private"] ? " is-private" : "") + (o.reveal ? " is-reveal" : " is-clean") + '">' + rail() +
+    return '<div class="bw bw--' + o.layout + (o["private"] ? " is-private" : "") + (o.reveal ? " is-reveal" : o.dirty ? " is-dirty" : " is-clean") + '">' + rail() +
       (o.layout === "vertical" ? sidebar(tabs, active) : "") +
       '<div class="bw-main">' + main + '<div class="bw-page">' + page + "</div></div>" +
-      (o.menu ? menu() : "") + (o.extensions ? extMenu() : "") + "</div>";
+      (o.menu ? menu() : "") + (o.extensions ? extMenu() : "") + (o.palette ? palette() : "") + "</div>";
   }
 
   Array.prototype.forEach.call(document.querySelectorAll("[data-bw]"), function (mount) {
@@ -263,79 +293,177 @@
     mount.outerHTML = bowserWindow(opts);
   });
 
-  /* ---------- Highlight row ---------- */
-  var root = document.querySelector("[data-highlights]");
-  if (!root) return;
-  var panels = [].slice.call(root.querySelectorAll("[data-panel]"));
-  var scenes = [].slice.call(root.querySelectorAll("[data-scene]"));
-  var dots = [].slice.call(root.querySelectorAll(".hl-dot"));
-  var cycle = 0;
-  scenes.forEach(function (s, i) { if (s.querySelector("[data-frame]")) cycle = i; });
-  var frames = [].slice.call(scenes[cycle].querySelectorAll("[data-frame]"));
-  var legend = [].slice.call(root.querySelectorAll("[data-legend]"));
-  var pauseBtn = root.querySelector(".hl-pause");
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  var index = 0, elapsed = 0, last = 0, frame = -1;
-  var paused = reduce, visible = true;
-
-  function duration() { return +panels[index].getAttribute("data-duration") || 8000; }
-
-  function setFrame(n) {
-    if (n === frame) return;
-    frame = n;
-    frames.forEach(function (f, i) { f.classList.toggle("is-on", i === n); });
-    legend.forEach(function (l, i) { l.classList.toggle("is-on", i === n); });
+  /* ---------- Theme toggle ---------- */
+  var themeBtn = document.getElementById("theme-toggle");
+  var docEl = document.documentElement;
+  function isDark() {
+    var t = docEl.getAttribute("data-theme");
+    if (t) return t === "dark";
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   }
-
-  function show(n) {
-    index = (n + panels.length) % panels.length;
-    elapsed = 0;
-    panels.forEach(function (p, i) { p.classList.toggle("is-on", i === index); });
-    scenes.forEach(function (s, i) { s.classList.toggle("is-on", i === index); });
-    dots.forEach(function (d, i) {
-      d.classList.toggle("is-on", i === index);
-      d.classList.toggle("is-done", i < index);
-      if (i === index) d.setAttribute("aria-current", "true"); else d.removeAttribute("aria-current");
-      d.firstChild.style.transform = "scaleX(0)";
+  function syncThemeLabel() {
+    if (themeBtn) themeBtn.setAttribute("aria-label", isDark() ? "Switch to light theme" : "Switch to dark theme");
+  }
+  if (themeBtn) {
+    themeBtn.addEventListener("click", function () {
+      var next = isDark() ? "light" : "dark";
+      docEl.setAttribute("data-theme", next);
+      try { localStorage.setItem("bowser-theme", next); } catch (e) {}
+      syncThemeLabel();
     });
-    if (index === cycle) setFrame(0);
+    syncThemeLabel();
   }
 
-  function tick(now) {
-    var dt = last ? Math.min(now - last, 100) : 0;
-    last = now;
-    if (!paused && visible) {
-      elapsed += dt;
-      var d = duration();
-      if (elapsed >= d) {
-        show(index + 1);
-      } else {
-        dots[index].firstChild.style.transform = "scaleX(" + (elapsed / d).toFixed(4) + ")";
-        if (index === cycle) setFrame(Math.min(frames.length - 1, Math.floor(elapsed / (d / frames.length))));
+  /* ---------- Nav hairline once scrolled ---------- */
+  var navEl = document.querySelector(".nav");
+  if (navEl) {
+    var onScroll = function () { navEl.classList.toggle("is-stuck", window.scrollY > 8); };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  }
+
+  /* ---------- Hero: the changing word ---------- */
+  var pill = document.querySelector("[data-words]");
+  if (pill) {
+    var words = [].slice.call(pill.querySelectorAll("[data-word]"));
+    var wi = 0, wordTimer = null;
+    var wordBtn = document.querySelector(".word-pause");
+    var sizePill = function () {
+      var cs = getComputedStyle(pill);
+      pill.style.width = (words[wi].getBoundingClientRect().width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)) + "px";
+    };
+    var nextWord = function () {
+      var prev = words[wi];
+      wi = (wi + 1) % words.length;
+      prev.classList.remove("is-on");
+      prev.classList.add("is-out");
+      setTimeout(function () { prev.classList.remove("is-out"); }, 500);
+      words[wi].classList.add("is-on");
+      sizePill();
+    };
+    var setWordPaused = function (p) {
+      clearInterval(wordTimer);
+      wordTimer = p ? null : setInterval(nextWord, 2600);
+      if (wordBtn) {
+        wordBtn.setAttribute("aria-pressed", p ? "true" : "false");
+        wordBtn.setAttribute("aria-label", p ? "Play the changing word" : "Pause the changing word");
       }
+    };
+    sizePill();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(sizePill);
+    window.addEventListener("resize", sizePill);
+    if (wordBtn) wordBtn.addEventListener("click", function () { setWordPaused(wordTimer !== null); });
+    setWordPaused(reduce);
+  }
+
+  /* ---------- Compare slider ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll("[data-compare]"), function (cmp) {
+    var range = cmp.querySelector(".cmp-range");
+    var set = function () { cmp.style.setProperty("--x", range.value + "%"); };
+    range.addEventListener("input", function () { cmp.dataset.touched = "1"; set(); });
+    set();
+    /* A short nudge the first time it scrolls into view, so it reads as draggable. */
+    if (!reduce && "IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        if (!entries[0].isIntersecting) return;
+        io.disconnect();
+        var start = null, from = 50;
+        var step = function (now) {
+          if (start === null) start = now;
+          var t = Math.min(1, (now - start) / 1600);
+          if (cmp.dataset.touched) return;
+          range.value = (from + Math.sin(t * Math.PI * 2) * 16).toFixed(1);
+          set();
+          if (t < 1) requestAnimationFrame(step);
+        };
+        setTimeout(function () { requestAnimationFrame(step); }, 300);
+      }, { threshold: 0.6 });
+      io.observe(cmp);
     }
-    requestAnimationFrame(tick);
-  }
-
-  function setPaused(p) {
-    paused = p;
-    root.classList.toggle("is-paused", p);
-    pauseBtn.setAttribute("aria-pressed", p ? "true" : "false");
-    pauseBtn.setAttribute("aria-label", p ? "Play highlights" : "Pause highlights");
-  }
-
-  dots.forEach(function (d, i) { d.addEventListener("click", function () { show(i); }); });
-  pauseBtn.addEventListener("click", function () { setPaused(!paused); });
-  legend.forEach(function (l, i) {
-    l.addEventListener("click", function () { show(cycle); setPaused(true); setFrame(i); });
+    range.addEventListener("pointerdown", function () { cmp.dataset.touched = "1"; });
+    range.addEventListener("keydown", function () { cmp.dataset.touched = "1"; });
   });
 
-  if ("IntersectionObserver" in window) {
-    new IntersectionObserver(function (entries) { visible = entries[0].isIntersecting; }, { threshold: 0.35 }).observe(root);
-  }
+  /* ---------- Switchers: the feature tour and the values pills ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll("[data-switch]"), function (root) {
+    var items = [].slice.call(root.querySelectorAll("[data-switch-item]"));
+    var scenes = [].slice.call(root.querySelectorAll("[data-switch-scene]"));
+    var groups = {};
+    scenes.forEach(function (s) {
+      var key = s.classList.contains("scene-text") ? "text" : "plate";
+      (groups[key] = groups[key] || []).push(s);
+    });
+    var auto = root.hasAttribute("data-autoplay");
+    var pauseBtn = root.querySelector(".tour-pause");
+    var frames = [], cycle = -1;
+    (groups.plate || []).forEach(function (s, i) {
+      var f = s.querySelectorAll("[data-frame]");
+      if (f.length) { frames = [].slice.call(f); cycle = i; }
+    });
+    var index = 0, elapsed = 0, last = 0, frame = -1, paused = reduce, visible = true;
 
-  setPaused(paused);
-  show(0);
-  requestAnimationFrame(tick);
+    function setFrame(n) {
+      if (n === frame) return;
+      frame = n;
+      frames.forEach(function (f, i) { f.classList.toggle("is-on", i === n); });
+    }
+    function show(n) {
+      index = (n + items.length) % items.length;
+      elapsed = 0;
+      items.forEach(function (it, i) {
+        it.classList.toggle("is-on", i === index);
+        it.setAttribute("aria-selected", i === index ? "true" : "false");
+        it.tabIndex = i === index ? 0 : -1;
+        var bar = it.querySelector(".tour-bar i");
+        if (bar) bar.style.transform = "scaleX(0)";
+      });
+      Object.keys(groups).forEach(function (k) {
+        groups[k].forEach(function (s, i) { s.classList.toggle("is-on", i === index); });
+      });
+      if (index === cycle) setFrame(0);
+    }
+    items.forEach(function (it, i) {
+      it.addEventListener("click", function () { show(i); });
+      it.addEventListener("keydown", function (e) {
+        var d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+        if (!d) return;
+        e.preventDefault();
+        show(index + d);
+        items[index].focus();
+      });
+    });
+    show(0);
+    if (!auto) return;
+
+    function setPaused(p) {
+      paused = p;
+      if (!pauseBtn) return;
+      pauseBtn.setAttribute("aria-pressed", p ? "true" : "false");
+      pauseBtn.setAttribute("aria-label", p ? "Play the feature tour" : "Pause the feature tour");
+    }
+    function duration() { return +items[index].getAttribute("data-duration") || 7000; }
+    function tick(now) {
+      var dt = last ? Math.min(now - last, 100) : 0;
+      last = now;
+      if (!paused && visible) {
+        elapsed += dt;
+        var d = duration();
+        if (elapsed >= d) show(index + 1);
+        else {
+          var bar = items[index].querySelector(".tour-bar i");
+          if (bar) bar.style.transform = "scaleX(" + (elapsed / d).toFixed(4) + ")";
+          if (index === cycle) setFrame(Math.min(frames.length - 1, Math.floor(elapsed / (d / frames.length))));
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    if (pauseBtn) pauseBtn.addEventListener("click", function () { setPaused(!paused); });
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) { visible = entries[0].isIntersecting; }, { threshold: 0.3 }).observe(root);
+    }
+    setPaused(paused);
+    requestAnimationFrame(tick);
+  });
 })();
