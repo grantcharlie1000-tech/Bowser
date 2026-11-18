@@ -324,6 +324,9 @@ in the value or its parent / grandparent text) still takes the full path, so "GT
   with source "ocr" and also concatenated with the unit's own text; either shielding shields the whole unit, else the media is
   released with a short fade. unavailable / error: strict + lockdown keep a click-to-reveal "Couldn't check image" cover on the
   media (balanced releases); skipped: released unless lockdown. Counters: ocr.ok / ocr.unavailable / ocr.error / ocr.skipped.
+- Profile pictures (adapter `avatars`) are left out of all of this: the quarantine rules carry a `:not(<avatars>)` (only when the
+  combined selector parses; otherwise they stay held), they get no OCR record, and they never make a unit a picture post. A
+  covered unit still covers its profile picture with the rest of it.
   The Chrome host implements it with Tesseract.js in an offscreen document (hosts/chrome/offscreen.js, vendor/).
 
 ### 5.4 Other guards

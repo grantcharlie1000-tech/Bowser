@@ -233,6 +233,16 @@ export function presetConfig(preset: Preset): LayoutConfig {
   }
 }
 
+/**
+ * What picking `preset` does to Pin sidebar: a vertical preset shows today's vertical tabs, the
+ * floating sidebar that slides in from the window's edge (Pin sidebar off). Without this, a profile
+ * saved while pinning was the default kept the pinned column whatever preset was picked. `null`:
+ * leave it as it is. Pin sidebar turns the pinned column back on.
+ */
+export function presetSidebarPinned(preset: Preset | 'saved'): boolean | null {
+  return preset === 'vertical-left' || preset === 'vertical-right' ? false : null;
+}
+
 /** The preset whose configuration `config` is, if any. */
 export function matchingPreset(config: LayoutConfig): Preset | null {
   return PRESETS.find((preset) => sameLayoutConfig(presetConfig(preset), config)) ?? null;

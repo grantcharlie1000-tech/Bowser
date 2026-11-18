@@ -2168,9 +2168,14 @@ SFW.policy = (function () {
 //            of <main> is just whichever post happens to be on top.
 //   media    media selector (adapter specific + generic)
 //   attrs    extra attribute names whose text is part of a unit's text (custom-element data attributes)
-//   mediaIgnore  images that do not make a unit a picture post: profile pictures and emoji images that every post of the
-//            site carries. Without it every post on X "has media", and media in any GTA context (a spoiler post opened as
-//            the thread head, a spoiler reply's own page) is covered: one spoiler covered every post on the page.
+//   avatars  profile pictures. Never part of what is checked: they are not quarantined, never held for OCR (no
+//            "Checking image" veil, no "couldn't check" cover) and never make a unit a picture post. In a GTA context
+//            (a spoiler thread, a search for the game) every clear reply used to lose its profile picture, because media
+//            there is only released for cold units. A covered post still covers its picture with the rest of the post.
+//            Keep the lists to selectors that only ever match profile pictures: anything they match shows unchecked.
+//   mediaIgnore  other images that do not make a unit a picture post (emoji images every post of the site carries); the
+//            avatars are added to it. Without it every post on X "has media", and media in any GTA context (a spoiler
+//            post opened as the thread head, a spoiler reply's own page) is covered: one spoiler covered every post.
 //   ocr      false: the site's pictures are judged by the words around them (titles, descriptions), never held for the OCR
 //            gate. YouTube: every thumbnail sat under "Checking image" until OCR had read it, seconds on a busy page.
 //   exempt   { sel, live } regions that are never checked while `live` (a selector) matches the page: the player of a live
@@ -2229,8 +2234,8 @@ SFW.adapters = (function () {
     context: ["[data-testid=SearchBox_Search_Input]"], threadFirst: true,
     media: ["[data-testid=tweetPhoto]", "[data-testid=videoPlayer]", "[data-testid='card.layoutLarge.media']", "[data-testid='card.layoutSmall.media']"],
     attrs: [],
-    mediaIgnore: ["[data-testid=Tweet-User-Avatar] *", "[data-testid^=UserAvatar-Container] *", "img[src*='/profile_images/']", "[style*='/profile_images/']",
-      "img[src*='/emoji/']", "img[src*='/hashflags/']"],
+    avatars: ["[data-testid=Tweet-User-Avatar] *", "[data-testid^=UserAvatar-Container] *", "img[src*='/profile_images/']", "[style*='/profile_images/']"],
+    mediaIgnore: ["img[src*='/emoji/']", "img[src*='/hashflags/']"],
     hotUrl: classifyUrl,
   });
   // ---- Reddit (shreddit, sh.reddit, old.reddit) ---------------------------------------------------------------
@@ -2242,6 +2247,7 @@ SFW.adapters = (function () {
     context: ["shreddit-subreddit-header", "[data-testid=subreddit-name]", "#header-bottom-left .redditname", "input[name=q]", "faceplate-search-input"],
     threadContext: ["shreddit-post[post-title]", "h1"], threadFirst: true,
     media: ["shreddit-player", "shreddit-aspect-ratio", "gallery-carousel", "[slot=post-media-container]", "a.thumbnail", "img.preview"],
+    avatars: ["[slot=commentAvatar] *", "img[src*='redditstatic.com/avatars/']", "img[src*='/profileIcon_']", "img[src*='/snoovatar/']"],
     attrs: ["post-title", "subreddit-prefixed-name", "subreddit-name", "permalink", "content-href", "author", "aria-label", "title", "alt"],
     hotUrl: redditHot,
   });
@@ -2255,6 +2261,7 @@ SFW.adapters = (function () {
     thread: ["ytd-watch-flexy", "ytd-watch-grid", "ytd-search", "ytd-browse"],
     context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-watch-metadata ytd-channel-name"],
     media: ["ytd-thumbnail", "yt-image", "yt-img-shadow", "#movie_player", ".ytp-cued-thumbnail-overlay-image"],
+    avatars: ["#avatar img", "#avatar-link img", "#author-thumbnail img", "#channel-thumbnail img", "#author-photo img", "#avatar-btn img", "yt-avatar-shape img", "yt-decorated-avatar-view-model img", "img.yt-spec-avatar-shape__image"],
     attrs: ["title", "aria-label", "alt"],
     ocr: false,
     exempt: { live: ".html5-video-player.ytp-live", sel: ["#movie_player", "ytd-player", "#player-container", ".html5-video-player", ".ytp-caption-window-container", ".captions-text"] },
@@ -2332,7 +2339,8 @@ SFW.adapters = (function () {
     thread: ["[data-e2e=browse-video]", "[data-e2e=video-detail]"],
     context: ["[data-e2e=browse-video-desc]", "input[type=search]", "input[data-e2e=search-user-input]"],
     threadContext: ["[data-e2e=browse-video-desc]", "[data-e2e=video-desc]"],
-    media: ["video", "img", "[data-e2e=video-player]"], attrs: ["aria-label", "alt", "title"],
+    media: ["video", "img", "[data-e2e=video-player]"],
+    avatars: ["[data-e2e*=avatar] img", "[data-e2e*=avatar] [style*=background-image]"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
@@ -2340,7 +2348,8 @@ SFW.adapters = (function () {
     item: ["article", "div[role=dialog] ul li", "a[href*='/p/']", "a[href*='/reel/']", "li[role=menuitem]", "div[role=button] div._ac7v", "[role=listbox] [role=option]"],
     thread: ["article", "div[role=dialog]"],
     context: ["article h1", "input[type=text][placeholder]", "input[aria-label*=Search]"],
-    media: ["video", "img", "div[role=button] img"], attrs: ["alt", "aria-label", "title"],
+    media: ["video", "img", "div[role=button] img"],
+    avatars: ["img[alt$='profile picture']", "img[alt$='profile picture.']"], attrs: ["alt", "aria-label", "title"],
     hotUrl: classifyUrl,
   });
   def({
@@ -2349,14 +2358,16 @@ SFW.adapters = (function () {
     thread: ["[role=article]"],
     context: ["input[type=search]", "h1"],
     threadContext: ["div[data-ad-preview=message]", "h1"],
-    media: ["video", "img", "div[data-visualcompletion=media-vc-image]"], attrs: ["aria-label", "alt", "title"],
+    media: ["video", "img", "div[data-visualcompletion=media-vc-image]"],
+    avatars: ["img[alt$='profile picture']"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
     id: "threads", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)threads\.(net|com)$/i, highRisk: true,
     item: ["div[data-pressable-container=true]", "[data-pagelet^=threads_post]", "article", "div[role=listitem]", "a[href*='/post/']"],
     thread: ["div[role=main]", "main"], context: ["input[type=search]", "h1"],
-    media: ["video", "img"], attrs: ["alt", "aria-label", "title"],
+    media: ["video", "img"],
+    avatars: ["img[alt$='profile picture']"], attrs: ["alt", "aria-label", "title"],
     hotUrl: classifyUrl,
   });
   def({
@@ -2364,7 +2375,8 @@ SFW.adapters = (function () {
     item: ["[data-testid^=feedItem-by-]", "[data-testid^=postThreadItem-by-]", "[data-testid^=searchResult]", "[data-testid=searchAutoCompleteResult]", "[data-testid^=profileCard]", "[data-testid=postText]", "[role=link][aria-label*=post]"],
     thread: ["[data-testid=postThreadScreen]", "[data-testid=searchScreen]", "main"],
     context: ["input[type=search]", "[data-testid=searchTextInput]"],
-    media: ["[data-testid=postEmbed]", "video", "img"], attrs: ["aria-label", "alt", "title"],
+    media: ["[data-testid=postEmbed]", "video", "img"],
+    avatars: ["[data-testid=userAvatarImage] *", "img[src*='/img/avatar/']", "img[src*='/img/avatar_thumbnail/']"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
@@ -2372,7 +2384,8 @@ SFW.adapters = (function () {
     item: [".chat-line__message", "[data-a-target=chat-line-message]", "article", "[data-a-target^=video-tower-card]", "[data-a-target=card-title]", ".video-card", "[data-a-target=search-result-live-channel]", "[role=listitem]", "[role=option]", "[data-a-target=stream-title]", "[data-a-target=player-overlay-title]"],
     thread: ["[data-test-selector=video-player__video-layout]", "main", "[data-a-target=search-result-section]"],
     context: ["[data-a-target=stream-title]", "h1", "input[type=search]", "[data-a-target=tw-input]"],
-    media: ["video", "img", ".tw-image"], attrs: ["aria-label", "alt", "title"],
+    media: ["video", "img", ".tw-image"],
+    avatars: [".tw-avatar img", "img.tw-image-avatar"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
@@ -2380,7 +2393,8 @@ SFW.adapters = (function () {
     item: ["li[id^=chat-messages-]", "[class*=messageListItem]", "[class*=message_]", "[role=article]", "[class*=searchResult]", "[class*=embedWrapper]", "[role=option]", "[class*=threadMessage]"],
     thread: ["[class*=chatContent]", "main[class*=chatContent]", "[data-list-id=chat-messages]"],
     context: ["h1", "[class*=title_] h1", "[class*=channelName]", "[class*=searchBar] [class*=public-DraftEditor-content]"],
-    media: ["[class*=imageWrapper]", "[class*=embedVideo]", "video", "img"], attrs: ["aria-label", "alt", "title"],
+    media: ["[class*=imageWrapper]", "[class*=embedVideo]", "video", "img"],
+    avatars: ["img[src*='/avatars/'][src*='discordapp']", "img[src*='/embed/avatars/']", "img[class*=avatar]", "[class*=avatar] img"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
   // ---- Image boards, forums, chat and press: where GTA VI leaks and recaps land --------------------------------
@@ -2405,21 +2419,24 @@ SFW.adapters = (function () {
     id: "gtaforums", threadUrl: /\/topic\//, threadFirst: true, hosts: /(^|\.)gtaforums\.com$/i, highRisk: true,
     item: ["article.cPost", "article[id^=elComment_]", ".ipsComment", "li.ipsDataItem", ".ipsStreamItem", "[data-commentid]", ".cTopic"],
     thread: ["[data-controller='core.front.core.commentFeed']", ".cTopic", "main"], context: ["h1", ".ipsType_pageTitle", "input[type=search]"],
-    media: [".ipsImage", ".ipsAttachLink_image", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    media: [".ipsImage", ".ipsAttachLink_image", "video", "img"],
+    avatars: [".ipsUserPhoto img", "img.ipsUserPhoto"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
     id: "resetera", threadUrl: /\/threads\//, threadFirst: true, hosts: /(^|\.)resetera\.com$/i, highRisk: true,
     item: ["article.message", ".message", "li.structItem", ".structItem", ".block-row", ".message-body"],
     thread: [".block--messages", ".p-body-pageContent", "main"], context: ["h1.p-title-value", "h1", "input[name=keywords]"],
-    media: [".bbImage", ".bbMediaWrapper", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    media: [".bbImage", ".bbMediaWrapper", "video", "img"],
+    avatars: [".avatar img", "img.avatar"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
     id: "telegram", hosts: /(^|\.)(telegram\.org|t\.me)$/i, highRisk: true,
     item: [".Message", ".message", ".bubble", ".ListItem", ".search-result", ".tgme_widget_message", "[class*=Message_]", "[role=listitem]"],
     thread: ["#MiddleColumn", ".MessageList", "#column-center", "main"], context: ["h3.fullName", ".ChatInfo", "input[type=search]"],
-    media: [".media-inner", ".Photo", ".media-photo", ".media-video", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    media: [".media-inner", ".Photo", ".media-photo", ".media-video", "video", "img"],
+    avatars: [".Avatar img", ".avatar img", "img.avatar-photo"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
@@ -2433,14 +2450,16 @@ SFW.adapters = (function () {
     id: "tumblr", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)tumblr\.com$/i, highRisk: true,
     item: ["article", "[data-id]", "[role=article]", "div.post", ".post_container", "li.post", "[class*=post_]"],
     thread: ["main", "#posts", "[data-testid=timeline]"], context: ["h1", "[data-testid=blog-title]", "input[type=search]"],
-    media: ["figure", "[data-testid=imageBlock]", "[class*=photo]", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    media: ["figure", "[data-testid=imageBlock]", "[class*=photo]", "video", "img"],
+    avatars: ["img[src*='media.tumblr.com'][src*='/avatar_']"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
     id: "steam", hosts: /(^|\.)(steamcommunity\.com|steamuserimages-a\.akamaihd\.net)$/i, highRisk: true,
     item: [".apphub_Card", ".apphub_CardContentMain", ".commentthread_comment", ".workshopItem", ".review_box", ".profile_comment", ".newsPostBlock", ".discussion_topic", "[class*=Panel]"],
     thread: [".apphub_background", ".commentthread_area", "#responsive_page_template_content", "main"], context: ["h1", ".apphub_AppName", ".workshopItemTitle", "input[name=text]"],
-    media: [".apphub_CardContentMain img", ".workshopItemPreviewImage", ".screenshot_img", ".earlyaccess_wishlist_img", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    media: [".apphub_CardContentMain img", ".workshopItemPreviewImage", ".screenshot_img", ".earlyaccess_wishlist_img", "video", "img"],
+    avatars: [".playerAvatar img", "img[src*='avatars.'][src*='steamstatic.com']", "img[src*='avatars.akamai.steamstatic']"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   // The official site posts story trailers and recaps after launch.
@@ -2485,6 +2504,7 @@ SFW.adapters = (function () {
     thread: [".detailed-status", ".status-public", ".scrollable.detailed-status__wrapper"],
     context: [".detailed-status .status__content", ".hashtag-header", ".column-header__title", ".search__input"],
     media: [".media-gallery", ".status-card__image", ".video-player", ".audio-player", ".media-gallery__item", "img"],
+    avatars: [".account__avatar", ".account__avatar *", ".status__avatar *", ".account__header__avatar", ".account__header__avatar *"],
     attrs: ["title", "alt", "aria-label"],
     hotUrl: classifyUrl,
   };
@@ -2519,7 +2539,8 @@ SFW.adapters = (function () {
       threadFirst: !!def.threadFirst,
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
-      mediaIgnore: join(valid(def.mediaIgnore || [], doc)),
+      avatars: join(valid(def.avatars || [], doc)),
+      mediaIgnore: join(valid((def.avatars || []).concat(def.mediaIgnore || []), doc)),
       ocr: def.ocr !== false,
       exempt: def.exempt ? join(valid(def.exempt.sel, doc)) : "",
       exemptWhen: def.exempt ? join(valid([def.exempt.live], doc)) : "",
@@ -2645,7 +2666,7 @@ html[data-sfw-page~="shield"]{overflow:hidden!important}
   // Media quarantine for high-risk hosts: hidden until the owning unit has been classified clear in a cold context.
   // While the OCR gate checks an image (host.ocr), a media-only wrapper gets a quiet "Checking image" veil (it fades in
   // after 350 ms, so a fast result never shows it); the media itself stays hidden by the rules below either way.
-  const QUARANTINE_CSS = `
+  const QUARANTINE_HEAD = `
 [data-sfw-mcpos]{position:relative!important}
 [data-sfw-mc]::after{
   content:"Checking image\\2026"!important;position:absolute!important;inset:0!important;z-index:2147483645!important;
@@ -2660,11 +2681,25 @@ html[data-sfw-page~="shield"]{overflow:hidden!important}
 @keyframes sfw-media-in{from{opacity:0}to{opacity:1}}
 @media (prefers-reduced-motion:reduce){[data-sfw-mc]::after{animation:none!important}[data-sfw-fade]{animation:none}}
 @media (forced-colors:active){[data-sfw-mc]::after{background:Canvas!important;color:CanvasText!important;-webkit-text-fill-color:CanvasText!important}}
-img:not([data-sfw-m="ok"]),picture:not([data-sfw-m="ok"]),video:not([data-sfw-m="ok"]),canvas:not([data-sfw-m="ok"]),
-object:not([data-sfw-m="ok"]),embed:not([data-sfw-m="ok"]),svg image:not([data-sfw-m="ok"]),
-input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visibility:hidden!important}
-[style*="background-image"]:not([data-sfw-m="ok"]),[style*="background:"]:not([data-sfw-m="ok"]){background-image:none!important}
 `;
+  const QUARANTINE_CSS = QUARANTINE_HEAD + QUARANTINE_RULES("");
+
+  // The hiding rules on their own. `not` is an extra :not(...) every hidden element must also satisfy: the adapter's
+  // profile pictures (quarantine(avatars) below), which are never held.
+  function QUARANTINE_RULES(not) {
+    const k = ':not([data-sfw-m="ok"])' + not;
+    return `img${k},picture${k},video${k},canvas${k},
+object${k},embed${k},svg image${k},
+input[type="image"]${k},[poster]${k}{visibility:hidden!important}
+[style*="background-image"]${k},[style*="background:"]${k}{background-image:none!important}
+`;
+  }
+
+  // QUARANTINE_CSS with the given selector list (already validated one by one) left out of the quarantine. The caller
+  // checks the combined selector parses (avatarNot) before using it: a rule with a selector the engine rejects is dropped
+  // silently, and a dropped hiding rule would release every image on the page.
+  function avatarNot(sel) { return sel ? ":not(" + sel + ")" : ""; }
+  function quarantine(sel) { return QUARANTINE_HEAD + QUARANTINE_RULES(avatarNot(sel)); }
 
   // Rules toggled at runtime through CSSOM insertRule/deleteRule on the page sheet.
   const OPAQUE_RULE = "sfw-shield{--sfw-bf:none!important;--sfw-a:.985!important}";
@@ -2783,7 +2818,7 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 }
 `;
 
-  return { PAGE_CSS, QUARANTINE_CSS, SHIELD_CSS, OPAQUE_RULE, REDUCED_RULE };
+  return { PAGE_CSS, QUARANTINE_CSS, SHIELD_CSS, OPAQUE_RULE, REDUCED_RULE, quarantine, avatarNot };
 })();
 
 // ---- engine/shield.js ----
@@ -4362,10 +4397,25 @@ SFW.runtime = (function () {
       SHEET_REPLACE(shieldSheet, S.styles.SHIELD_CSS);
       if (adapter.highRisk) {
         quarSheet = new SHEET_CTOR();
-        SHEET_REPLACE(quarSheet, S.styles.QUARANTINE_CSS);
+        SHEET_REPLACE(quarSheet, quarantineCss());
       }
       adoptInto(doc);
       sheetsOk = true;
+    }
+
+    // Profile pictures (adapter.avatars) are left out of the quarantine. Only when the combined selector parses: a rule the
+    // engine rejected would be dropped from the sheet without a word, and every image on the page would show unchecked.
+    function quarantineCss() {
+      const av = adapter.avatars;
+      if (av) {
+        try { doc.createDocumentFragment().querySelector("img" + S.styles.avatarNot(av)); return S.styles.quarantine(av); } catch (e) { /* keep them held */ }
+      }
+      return S.styles.QUARANTINE_CSS;
+    }
+
+    function isAvatar(m) {
+      if (!adapter.avatars) return false;
+      try { return nMatches(m, adapter.avatars); } catch (e) { return false; }
     }
 
     function adoptInto(target) {
@@ -6129,6 +6179,7 @@ SFW.runtime = (function () {
       const plain = [];
       for (const m of list) {
         if (m.localName === "sfw-shield") continue;
+        if (isAvatar(m)) continue; // profile pictures are never held, checked or covered on their own
         const d = mediaDesc(m);
         if (!d && m.localName !== "img") { plain.push(m); continue; }
         let rec = mrec.get(m);

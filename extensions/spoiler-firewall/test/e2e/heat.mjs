@@ -29,6 +29,32 @@ async function run(name, host, path, settle) {
 
 await run("X conversation with one GTA joke reply", "x.com", "/someone/status/1234567890", 800);
 await run("X post page whose post is a spoiler: replies with profile pictures are not covered for it", "x.com", "/leaker/status/2222", 800);
+{
+  // Profile pictures are never held: in the spoiler's context (where media is only released for cold units) every clear
+  // reply still shows its picture, while a real photo there stays hidden and a covered post keeps its picture covered.
+  const ctx = await instrumentedContext(browser, { config: { mode: "strict" }, detection: "real", probe: false, viewport: { width: 900, height: 1400 } });
+  const p = await ctx.newPage();
+  await p.goto(`http://x.com:${srv.portA}/leaker/status/2222`, { waitUntil: "load" });
+  await sleep(800);
+  const a = await p.evaluate(() => {
+    const shown = (e) => { const cs = getComputedStyle(e); return cs.visibility === "visible" && (e.tagName === "IMG" || cs.backgroundImage !== "none"); };
+    const covered = (e) => !!e.closest("[data-sfw~=shield]");
+    const avatars = [...document.querySelectorAll("[data-testid^=UserAvatar-Container] img, [data-testid^=UserAvatar-Container] [style*=background-image]")];
+    return {
+      hiddenClear: avatars.filter((e) => !covered(e) && !shown(e)).map((e) => e.closest("article").id + ":" + e.tagName),
+      clearCount: avatars.filter((e) => !covered(e)).length,
+      coveredCount: avatars.filter(covered).length,
+      photoShown: [...document.querySelectorAll("[data-testid=tweetPhoto] img")].filter((e) => !covered(e) && shown(e)).length,
+    };
+  });
+  await ctx.close();
+  try {
+    assert.ok(a.clearCount >= 10 && a.coveredCount >= 4, `fixture loaded: ${JSON.stringify(a)}`);
+    assert.deepEqual(a.hiddenClear, [], "profile pictures of clear replies hidden");
+    assert.equal(a.photoShown, 0, "a photo in the spoiler's context shown uncovered");
+    console.log(`ok   profile pictures of clear replies shown in the spoiler's context: ${a.clearCount}`);
+  } catch (e) { failed++; console.log(`FAIL ${String(e.message).split("\n")[0]}`); }
+}
 await run("X page of one spoiler reply: the rest of the page is not covered for it", "x.com", "/fan/status/3333", 800);
 await run("X launch-week home timeline (warm feed)", "x.com", "/launch/home", 1400);
 

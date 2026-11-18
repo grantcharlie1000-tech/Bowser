@@ -63,6 +63,9 @@ they measure robustness to *forms* of spoilers, not knowledge of story content.
   suppressed while protection is on; suggestions, History, panels, palette and tab cards are masked
   by the same engine. Not covered: the native (non-HTML) fallback UI, native "recently closed"/jump
   lists, history titles recorded before this feature, bookmark edit forms.
+- **Profile pictures are never checked:** on high-risk sites the images each adapter lists as profile pictures (`avatars`
+  in engine/adapters.js) are not quarantined or read by OCR, so they show in a GTA context too. A spoiler image used as
+  someone's profile picture shows unless the post it sits in is covered for its words or other media.
 - **Tabs open before install (Chrome)** are unprotected until reloaded (no `scripting` permission).
 - **Bowser, script registration failure:** if the per-tab script cannot be registered (asynchronously reported), it is
   retried once and then the tab shows Bowser's protective page instead of the web page; it is not verified live.
