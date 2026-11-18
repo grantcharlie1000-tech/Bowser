@@ -2,11 +2,13 @@
 //! handler here. Only the trusted Bowser settings host can approve a matching one-shot review.
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use crate::{app::{App, AppRef}, chrome_host::{json::Json, protocol::PanelFields}, internal_page::InternalPage, store};
+use crate::{app::{App, AppRef}, chrome_host::{json::Json, protocol::PanelFields}, crx_fetch::StoreSource, internal_page::InternalPage, store};
 
 #[derive(Default)]
 struct State {
     request: String, id: String, name: String, version: String, phase: &'static str,
+    /// Where the package comes from (Chrome Web Store unless the request named Edge Add-ons).
+    source: Option<StoreSource>,
     error: String, restart: bool, profile: PathBuf,
     /// The verified package's icon data URL; sent only in the phases after verification (see `snapshot`).
     icon: String,
@@ -52,7 +54,7 @@ pub(crate) fn close(owner: HWND) {
     COMPLETED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|item| item.owner != owner.0 as isize);
 }
 
-pub(crate) fn start(owner: HWND, app: &AppRef, id: &str) {
+pub(crate) fn start(owner: HWND, app: &AppRef, source: StoreSource, id: &str) {
     if !super::settings_page::usable(owner) { return error(owner, "The Store requires the HTML interface. Nothing was downloaded."); }
     if crate::crx_fetch::parse_extension_id(id).is_err() { return error(owner, "That extension ID is not valid."); }
     if with(owner, |state| matches!(state.phase, "downloading" | "review" | "installing")) { return; }
@@ -69,13 +71,13 @@ pub(crate) fn start(owner: HWND, app: &AppRef, id: &str) {
     let request = store::request_id();
     let cancelled = Arc::new(AtomicBool::new(false));
     let restart = crate::extensions::read_records(&profile.extensions_file()).is_ok_and(|records| records.is_empty());
-    with(owner, |state| *state = State { request: request.clone(), id: id.to_owned(), name: store::entry(id).map_or_else(String::new, |entry| entry.name.to_owned()), phase: "downloading", restart, profile: profile.root().to_owned(), cancelled: Some(cancelled.clone()), ..State::default() });
+    with(owner, |state| *state = State { request: request.clone(), id: id.to_owned(), name: store::entry(id).filter(|_| source == StoreSource::Chrome).map_or_else(String::new, |entry| entry.name.to_owned()), phase: "downloading", source: Some(source), restart, profile: profile.root().to_owned(), cancelled: Some(cancelled.clone()), ..State::default() });
     open_review(owner, app);
     let raw = owner.0 as isize;
     let worker_id = id.to_owned();
     let spawned = std::thread::Builder::new().name("bowser-store-download".into()).spawn(move || {
         let _permit = permit;
-        let outcome = store::prepare(&worker_id, &version, &profile.extensions_dir(), &profile.extensions_file(), &cancelled);
+        let outcome = store::prepare(source, &worker_id, &version, &profile.extensions_dir(), &profile.extensions_file(), &cancelled);
         // Never keep a prepared copy for a cancelled/closed window waiting for another event.
         let mut completed = COMPLETED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancelled.load(Ordering::Acquire) { return; }
@@ -128,6 +130,7 @@ pub(crate) fn snapshot(owner: HWND, shown: bool) -> String {
             item.string("compatibilityNote", note);
         }); });
         out.string("phase", if state.phase.is_empty() { "idle" } else { state.phase });
+        out.string("source", state.source.unwrap_or(StoreSource::Chrome).tag());
         out.string("requestId", &state.request); out.string("extensionId", &state.id); out.string("name", &state.name); out.string("version", &state.version);
         out.string("error", &state.error); out.bool("restart", state.restart);
         out.string("icon", visible_icon(state));
@@ -147,12 +150,16 @@ pub(crate) fn run(owner: HWND, app: &AppRef, fields: &PanelFields) -> bool {
     if fields.id.is_some() || fields.parent.is_some() || fields.before.is_some() || fields.n.is_some() || fields.on.is_some() || fields.url.is_some() { return true; }
     match fields.a.as_str() {
         "storeopen" if fields.text.is_none() => open(owner, app, false),
-        "storebrowse" if fields.text.is_none() => open_web(app, store::BROWSE_URL),
-        "storeinstall" => if let Some(id) = fields.text.as_deref() { start(owner, app, id); },
-        "storeurl" => match fields.text.as_deref().and_then(|text| crate::crx_fetch::parse_store_url(text).ok()) {
-            Some(id) => start(owner, app, &id), None => error(owner, "Enter a valid HTTPS Chrome Web Store extension listing URL."),
+        "storebrowse" => match fields.text.as_deref() {
+            None | Some("chrome") => open_web(app, store::BROWSE_URL),
+            Some("edge") => open_web(app, store::EDGE_BROWSE_URL),
+            Some(_) => {}
         },
-        "storelisting" => if let Some(id) = fields.text.as_deref().and_then(|id| crate::crx_fetch::parse_extension_id(id).ok()) { open_web(app, &format!("https://chromewebstore.google.com/detail/{id}")); },
+        "storeinstall" => if let Some((source, id)) = fields.text.as_deref().and_then(store_request) { start(owner, app, source, &id); },
+        "storeurl" => match fields.text.as_deref().and_then(|text| crate::crx_fetch::parse_listing_url(text).ok()) {
+            Some((source, id)) => start(owner, app, source, &id), None => error(owner, "Enter a Chrome Web Store or Edge Add-ons extension link."),
+        },
+        "storelisting" => if let Some((source, id)) = fields.text.as_deref().and_then(store_request) { open_web(app, &source.listing_url(&id)); },
         "storesource" => if let Some(entry) = fields.text.as_deref().and_then(store::entry) { open_web(app, entry.homepage); },
         "storecancel" => {
             if let Some(request) = fields.text.as_deref().filter(|id| store::valid_request_id(id)) {
@@ -179,6 +186,15 @@ pub(crate) fn run(owner: HWND, app: &AppRef, fields: &PanelFields) -> bool {
     }
     true
 }
+/// A store command's text: a bare id (Chrome Web Store, as before), or `edge:` and an id.
+fn store_request(text: &str) -> Option<(StoreSource, String)> {
+    let (source, id) = match text.split_once(':') {
+        Some((tag, id)) => (StoreSource::from_tag(tag)?, id),
+        None => (StoreSource::Chrome, text),
+    };
+    crate::crx_fetch::parse_extension_id(id).ok().map(|id| (source, id))
+}
+
 fn open_web(app: &AppRef, text: &str) {
     if let Ok(url) = url::Url::parse(text) { App::new_tab(app); App::navigate_current(app, &url); }
 }
@@ -225,10 +241,10 @@ pub(crate) fn apply_download_requests(owner: HWND, app: &AppRef) {
     });
     for id in mine {
         let listing = super::window::current_store_listing(app);
-        if matches_active_listing(listing.as_deref(), &id) {
-            start(owner, app, &id);
+        if let Some((source, listing)) = listing.filter(|(_, listing)| matches_active_listing(Some(listing), &id)) {
+            start(owner, app, source, &listing);
         } else {
-            super::window::show_toast(owner, "Chrome's installer can't run in Bowser. Open the extension's Chrome Web Store page and use Add to Bowser.", "");
+            super::window::show_toast(owner, "Use Add to Bowser, next to the address bar.", "");
         }
     }
 }
@@ -304,7 +320,7 @@ mod tests {
         let production = &source[..source.find("#[cfg(test)]").unwrap()];
         let apply = production.split("pub(crate) fn apply_download_requests(").nth(1).unwrap().split("pub(crate) fn listing_button_json").next().unwrap();
         // The only things it may call are the listing check, `start` (which stops at the review) and a toast.
-        assert!(apply.contains("current_store_listing(app)") && apply.contains("start(owner, app, &id)") && apply.contains("show_toast("));
+        assert!(apply.contains("current_store_listing(app)") && apply.contains("start(owner, app, source, &listing)") && apply.contains("show_toast("));
         for forbidden in ["commit(", "storeapprove", "prepare(", "download_crx"] {
             assert!(!apply.contains(forbidden), "{forbidden}");
         }

@@ -1901,9 +1901,7 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     let _ = with_chrome(hwnd, |s| s.chrome_sync_posted = false);
     sync_html_host_bounds(hwnd);
     html_sync(hwnd);
-    let listing = app.and_then(current_store_listing).is_some();
-    let private = app.is_some_and(App::active_tab_private);
-    if with_chrome(hwnd, |state| state.html_store_listing != listing || state.html_extensions_private != private).unwrap_or(false) { html_refresh_extensions_button(hwnd); }
+    sync_store_listing(hwnd, app);
     html_tabs_sync(hwnd);
     html_rail_sync(hwnd);
     let Some(app) = app else {
@@ -3401,6 +3399,9 @@ unsafe extern "system" fn window_proc(
                         super::history_page::history_changed(hwnd);
                     }
                     let active = App::active_tab_id(app);
+                    // An address change inside a store's page (it navigates without loading) shows
+                    // or hides Add to Bowser now, not at the next unrelated repaint.
+                    sync_store_listing(hwnd, Some(app));
                     // --- popup host (lane M) ---
                     // A tab or workspace switch dismisses an open HTML menu.
                     if let Some(context) = popup_context(hwnd) {
@@ -8919,17 +8920,25 @@ fn popup_extensions(profile: &crate::profile::Profile) -> Vec<crate::extensions:
 /// enabled extension has a popup (so the pill's new width is sent first), then sends the `extbtn`
 /// message when it differs from the last one the page got. Runs when the toolbar page is ready and
 /// on `WM_EXTENSIONS_CHANGED`.
-const STORE_BUTTON_SLOT: i32 = 304;
+const STORE_BUTTON_SLOT: i32 = 132;
 
 /// The live top-level model is updated by WebView2 SourceChanged. Do not offer installation for a
 /// private tab, a pending navigation, frame URL or unvalidated look-alike listing.
-pub(super) fn current_store_listing(app: &AppRef) -> Option<String> {
+pub(super) fn current_store_listing(app: &AppRef) -> Option<(crate::crx_fetch::StoreSource, String)> {
     let tab = App::active_tab_id(app);
     if App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
     let url = App::successful_document_url(app, tab)?;
     // Source may reenter navigation, selection or window-close callbacks. Fence host selection too.
     if App::active_tab_id(app) != tab || App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
-    crate::crx_fetch::parse_store_url(url.as_str()).ok()
+    crate::crx_fetch::parse_listing_url(url.as_str()).ok()
+}
+
+/// Offers Add to Bowser exactly while the active tab shows an extension's own store page, and puts
+/// the extensions button back as soon as it does not (a store's in-page navigation included).
+fn sync_store_listing(hwnd: HWND, app: Option<&AppRef>) {
+    let listing = app.and_then(current_store_listing).is_some();
+    let private = app.is_some_and(App::active_tab_private);
+    if with_chrome(hwnd, |state| state.html_store_listing != listing || state.html_extensions_private != private).unwrap_or(false) { html_refresh_extensions_button(hwnd); }
 }
 
 fn html_refresh_extensions_button(hwnd: HWND) {
@@ -8975,7 +8984,7 @@ pub(super) fn post_to_every_window(message: u32) {
 /// several, their names hang from the button with "Manage extensions" under them.
 fn show_extensions_button_menu(hwnd: HWND, app: &AppRef) {
     // The website supplies neither this action nor an ID: revalidate the active top-level URL now.
-    if let Some(id) = current_store_listing(app) { super::store::start(hwnd, app, &id); return; }
+    if let Some((source, id)) = current_store_listing(app) { super::store::start(hwnd, app, source, &id); return; }
     const MANAGE: usize = 1;
     const POPUP_BASE: usize = 100;
     let Ok(profile) = crate::profile::active() else {

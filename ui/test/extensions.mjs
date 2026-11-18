@@ -272,8 +272,7 @@ const visibleText = () => section.root.all().filter((n) => n.tagName === '#text'
 test('section: loading, then the list; a labelled card, a row per extension, the honest note', () => {
   assert.equal(card().getAttribute('aria-busy'), 'true');
   assert.equal(card().querySelector('.sp-ext-state.is-loading').getAttribute('role'), 'status');
-  assert.equal(section.root.querySelector('.sp-ext-install').hidden, true, 'nothing to add to yet');
-  assert.equal(section.root.querySelector('.sp-ext-install-crx').hidden, true, 'the CRX button hides with its neighbour');
+  assert.equal(section.root.querySelector('.sp-ext-local').hidden, true, 'nothing to add to yet');
   receive(fixture.snap);
   assert.equal(card().getAttribute('aria-busy'), 'false');
   assert.equal(card().getAttribute('aria-labelledby'), 'sp-ext-h');
@@ -291,12 +290,12 @@ test('section: loading, then the list; a labelled card, a row per extension, the
   assert.ok(notes.classList.contains('is-off'));
   assert.equal(button(notes, 'Open Tab Notes popup'), undefined, 'no popup button when it declares none or is off');
   assert.equal(notes.querySelector('.sp-ext-failure').textContent, 'Load failed: 0x80070002');
-  assert.equal(section.root.querySelector('.sp-ext-install').hidden, false);
+  assert.equal(section.root.querySelector('.sp-ext-local').hidden, false);
   assert.equal(section.root.querySelector('.sp-ext-note'), null);
   assert.doesNotMatch(visibleText(), /\benforc|badge/i);
 });
 
-test('section: Options only for a running extension; Check update says updates are not available and sends nothing', () => {
+test('section: Options only for a running extension; no dead Check update button', () => {
   sent.length = 0;
   const reader = rowOf(ID);
   assert.ok(button(reader, 'Options for Reader "<b>"'), 'on and loaded: its options page can open');
@@ -306,21 +305,16 @@ test('section: Options only for a running extension; Check update says updates a
   receive({ ...fixture.snap, d: { ...fixture.snap.d, items: [{ ...fixture.snap.d.items[0], options: false }, fixture.snap.d.items[1]] } });
   assert.equal(button(rowOf(ID), 'Options for Reader "<b>"'), undefined, 'running but its manifest declares no options page: not offered');
   receive(fixture.snap);
-  for (const id of [ID, OTHER]) {
-    const update = rowOf(id).querySelectorAll('button').find((b) => b.textContent === 'Check update');
-    assert.ok(update);
-    assert.equal(update.getAttribute('aria-disabled'), 'true');
-    assert.match(update.getAttribute('aria-label'), /not available/);
-    assert.equal(update.getAttribute('data-tip'), logic.UPDATES_UNAVAILABLE);
-    update.click();
-  }
-  assert.deepEqual(sent, [], 'no update check is sent only to be refused');
+  for (const id of [ID, OTHER]) assert.equal(rowOf(id).querySelectorAll('button').find((b) => b.textContent === 'Check update'), undefined, 'a button that only refuses is not shown');
+  assert.deepEqual(sent, []);
 });
 
-test('section: Install CRX file… sits beside Install unpacked… with the same weight, and they hide together', () => {
+test('section: Install CRX file… sits beside Install unpacked… under the list, with the same quiet weight; the stores head the section', () => {
   const head = section.root.querySelector('.sp-ext-head');
-  const unpacked = button(head, 'Install unpacked…');
-  const crx = button(head, 'Install CRX file…');
+  const local = section.root.querySelector('.sp-ext-local');
+  const unpacked = button(local, 'Install unpacked…');
+  const crx = button(local, 'Install CRX file…');
+  assert.ok(unpacked.classList.contains('is-subtle'));
   assert.ok(unpacked && crx);
   assert.equal(crx.parent, unpacked.parent, 'side by side');
   assert.equal(crx.className.replace('sp-ext-install-crx', '').trim(), unpacked.className.replace('sp-ext-install', '').trim(), 'same visual weight');
@@ -328,6 +322,11 @@ test('section: Install CRX file… sits beside Install unpacked… with the same
   assert.equal(crx.getAttribute('aria-describedby'), null);
   assert.doesNotMatch(`${unpacked.textContent} ${crx.textContent}`, /\bstore\b|chrome web|add to chrome|one-click/i);
   assert.ok(button(head, 'Open Chrome Web Store'), 'discovery is a separate original-site action');
+  sent.length = 0;
+  button(head, 'Open Edge Add-ons').click();
+  button(head, 'Open Chrome Web Store').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'storebrowse', text: 'edge' }, { v: 1, t: 'set', a: 'storeopen' }]);
+  assert.equal(section.root.querySelector('.sp-ext-link'), null, 'no listing-URL box: Add to Bowser on the listing does that');
 });
 
 test('section: the switch sends its id and waits for the answer; the answer is a toast', () => {
@@ -408,42 +407,43 @@ test('section: while one is removed it says so, holds every other action, then t
   assert.deepEqual(toasts.at(-1), { text: 'Extension removed', ok: true });
   const empty = card().querySelector('.sp-ext-state.is-empty');
   assert.ok(empty);
-  assert.match(empty.textContent, /^None/);
+  assert.match(empty.textContent, /^No extensions yet/);
   assert.doesNotMatch(empty.textContent, /manifest\.json/);
-  assert.equal(section.root.querySelector('.sp-ext-install').hidden, true, 'the empty state has its own button');
+  assert.equal(section.root.querySelector('.sp-ext-local').hidden, false, 'installing from this computer stays offered');
 });
 
-test('section: install goes through Bowser’s picker; the button waits for the answer', () => {
+test('section: install goes through Bowser’s picker; the buttons wait for the answer', () => {
   sent.length = 0;
-  const choose = button(card(), 'Choose folder…');
-  const chooseCrx = button(card(), 'Install CRX file…');
-  assert.ok(chooseCrx, 'the empty state offers the file too');
-  assert.equal(choose.className, chooseCrx.className, 'same visual weight');
+  const local = () => section.root.querySelector('.sp-ext-local');
+  const choose = button(local(), 'Install unpacked…');
+  const chooseCrx = button(local(), 'Install CRX file…');
+  assert.equal(choose.className.replace('sp-ext-install', '').trim(), chooseCrx.className.replace('sp-ext-install-crx', '').trim(), 'same visual weight');
   assert.equal(choose.classList.contains('is-primary'), false);
   choose.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'extinstall' }]);
-  assert.equal(button(card(), 'Choose folder…').disabled, true);
-  assert.equal(button(card(), 'Install CRX file…').disabled, true, 'one picker at a time');
-  button(card(), 'Choose folder…').click();
-  button(card(), 'Install CRX file…').click();
+  assert.equal(button(local(), 'Install unpacked…').disabled, true);
+  assert.equal(button(local(), 'Install CRX file…').disabled, true, 'one picker at a time');
+  button(local(), 'Install unpacked…').click();
+  button(local(), 'Install CRX file…').click();
   assert.equal(sent.length, 1);
   receive({ ...fixture.empty, d: { ...fixture.empty.d, ack: 'none' } });
-  assert.equal(button(card(), 'Choose folder…').disabled, false, 'a cancelled picker frees it');
-  assert.equal(button(card(), 'Install CRX file…').disabled, false);
+  assert.equal(button(local(), 'Install unpacked…').disabled, false, 'a cancelled picker frees it');
+  assert.equal(button(local(), 'Install CRX file…').disabled, false);
 });
 
 test('section: Install CRX file… asks Bowser to open its file picker, once, and waits for the answer', () => {
   sent.length = 0;
-  button(card(), 'Install CRX file…').click();
+  const local = () => section.root.querySelector('.sp-ext-local');
+  button(local(), 'Install CRX file…').click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'extinstallcrx' }]);
-  assert.equal(button(card(), 'Install CRX file…').disabled, true);
-  assert.equal(button(card(), 'Choose folder…').disabled, true);
-  button(card(), 'Install CRX file…').click();
+  assert.equal(button(local(), 'Install CRX file…').disabled, true);
+  assert.equal(button(local(), 'Install unpacked…').disabled, true);
+  button(local(), 'Install CRX file…').click();
   assert.equal(sent.length, 1);
   receive({ ...fixture.empty, d: { ...fixture.empty.d, ack: 'failed', error: 'The extension was not installed. The file did not verify as a signed CRX package: CRX signature does not verify.' } });
   assert.deepEqual(toasts.at(-1), { text: 'The extension was not installed. The file did not verify as a signed CRX package: CRX signature does not verify.', ok: false }, 'a failure uses the existing error toast');
-  assert.equal(button(card(), 'Install CRX file…').disabled, false);
-  assert.doesNotMatch(button(card(), 'Install CRX file…').textContent, /\bstore\b|chrome web|add to chrome|one-click/i);
+  assert.equal(button(local(), 'Install CRX file…').disabled, false);
+  assert.doesNotMatch(button(local(), 'Install CRX file…').textContent, /\bstore\b|chrome web|add to chrome|one-click/i);
   assert.ok(button(section.root, 'Open Chrome Web Store'), 'the store is a separate entry point');
 });
 
@@ -501,6 +501,12 @@ test('toolbar: a click sends only the button’s rectangle; the slot matches Rus
   assert.match(css, /#app\.placed\.has-ext\.has-dl \.actions \{\s*left: calc\(var\(--menu-x\) - 64px\);/, 'both slots');
   const rust = read(join(here, '..', '..', 'src', 'chrome_host', 'mod.rs'));
   assert.match(rust, /pub const EXT_BUTTON_SLOT: i32 = 32;/);
+  // Add to Bowser is one compact pill: 128px and its 4px margin, the slot Rust reserves for it.
+  const window = read(join(here, '..', '..', 'src', 'win32', 'window.rs'));
+  assert.match(window, /const STORE_BUTTON_SLOT: i32 = 132;/);
+  assert.match(css, /#app\.placed\.has-ext\.has-store-ext \.actions \{ left: calc\(var\(--menu-x\) - 132px\); \}/);
+  assert.match(css, /#app\.placed\.has-ext\.has-store-ext\.has-dl \.actions \{ left: calc\(var\(--menu-x\) - 164px\); \}/);
+  assert.match(css, /\.tb-ext\.is-store \{[^}]*width: 128px;/);
   const main = read(join(srcDir, 'main.ts'));
   assert.match(main, /view\.extensions\.button\.addEventListener\('click', \(\) => \{ sendExtensionsButton\(view\.extensions\.button\.getBoundingClientRect\(\)\); \}\);/);
   assert.match(main, /case 'extbtn':\s*view\.extensions\.apply\(msg\);/);
@@ -525,17 +531,14 @@ test('toolbar: native top-level listing action is visible and resets back to pop
   view.extensions.apply(msg);
   assert.equal(ext.hidden, false);
   assert.equal(ext.getAttribute('aria-label'), 'Add to Bowser');
-  assert.equal(ext.querySelector('.tb-ext-store-copy').hidden, false);
-  assert.equal(ext.querySelector('.tb-ext-store-note').textContent, 'Google installs into Chrome. Bowser support varies.');
-  assert.equal(ext.getAttribute('aria-describedby'), ext.querySelector('.tb-ext-store-note').id);
   assert.equal(ext.querySelector('.tb-ext-store-label').hidden, false);
+  assert.equal(ext.querySelector('.tb-ext-store-label').textContent, 'Add to Bowser');
+  assert.equal(ext.querySelector('.tb-ext-store-note'), null, 'one line: no disclaimer under the label');
   assert.ok(ext.classList.contains('is-store'));
   assert.ok(bar.classList.contains('has-store-ext'));
   assert.equal(ext.getAttribute('aria-haspopup'), null);
   view.extensions.apply(protocol.parseInbound(JSON.stringify(fixture.buttonOne)));
   assert.equal(ext.querySelector('.tb-ext-store-label').hidden, true);
-  assert.equal(ext.querySelector('.tb-ext-store-copy').hidden, true);
-  assert.equal(ext.getAttribute('aria-describedby'), null);
   assert.equal(ext.classList.contains('is-store'), false);
   assert.equal(bar.classList.contains('has-store-ext'), false);
   for (const patch of [{ on: false }, { n: 1 }, { name: 'Injected website title' }, { store: 'true' }]) {
@@ -543,19 +546,6 @@ test('toolbar: native top-level listing action is visible and resets back to pop
   }
 });
 
-
-test('settings store URL input validates origin and sends native review, not installation approval', () => {
-  receive(fixture.empty);
-  const input = section.root.querySelector('.sp-ext-link').querySelector('input');
-  const review = button(section.root, 'Review extension');
-  input.value = 'https://evil.test/detail/' + 'a'.repeat(32);
-  sent.length = 0; review.click();
-  assert.equal(sent.length, 0);
-  input.value = 'https://chromewebstore.google.com/detail/reader/' + 'a'.repeat(32);
-  review.click();
-  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'storeurl', text: input.value }]);
-  assert.equal(review.disabled, true);
-});
 
 test('native listing CTA remains visible with Extensions removed from toolbar', () => {
   bar.classList.add('bar-no-ext');

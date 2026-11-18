@@ -8,16 +8,21 @@ export interface StoreEntry {
 }
 export const STORE_PHASES = ['idle', 'downloading', 'review', 'installing', 'ready', 'error', 'cancelled'] as const;
 export type StorePhase = typeof STORE_PHASES[number];
+/** Every list Rust sends, with the label the review's Details use. None is ever shortened. */
 export const PERMISSION_GROUPS = [
-  ['permissions', 'Required permissions'], ['hostPermissions', 'Required site access'],
-  ['contentScripts', 'Content scripts run on'], ['contentScriptDeclarations', 'Complete static content-script declarations'], ['optionalPermissions', 'Optional permissions'],
+  ['permissions', 'Permissions'], ['hostPermissions', 'Site access'],
+  ['contentScripts', 'Scripts run on'], ['contentScriptDeclarations', 'Script declarations'], ['optionalPermissions', 'Optional permissions'],
   ['optionalHostPermissions', 'Optional site access'],
 ] as const;
+export type StoreSource = 'chrome' | 'edge';
+export const STORE_SOURCES: Readonly<Record<StoreSource, string>> = { chrome: 'Chrome Web Store', edge: 'Edge Add-ons' };
 type PermissionKey = typeof PERMISSION_GROUPS[number][0];
 export interface StoreSnapshot extends Readonly<Record<PermissionKey, readonly string[]>> {
   readonly shown: boolean; readonly catalogue: readonly StoreEntry[]; readonly phase: StorePhase;
   readonly requestId: string; readonly extensionId: string; readonly name: string;
   readonly version: string; readonly error: string; readonly restart: boolean;
+  /** Which store the package comes from; older senders omit it (Chrome Web Store). */
+  readonly source: StoreSource;
   /** The package's own icon as a base64 raster data URL, or `''` (Rust sets it only in review,
    *  installing and ready). Always present after parsing: see `storeIcon`. */
   readonly icon: string;
@@ -55,55 +60,95 @@ export function parseStoreSnapshot(v: unknown): StoreSnapshot | null {
   if ('stage' in v && v.stage !== 'download' && v.stage !== 'verify') return null;
   const bytes = (n: unknown): boolean => Number.isSafeInteger(n) && (n as number) >= 0;
   if (('received' in v || 'total' in v) && (!bytes(v.received) || !bytes(v.total) || (v.total as number) === 0 || (v.received as number) > (v.total as number))) return null;
-  return { ...v, icon: storeIcon(v.icon) } as unknown as StoreSnapshot;
+  if ('source' in v && v.source !== 'chrome' && v.source !== 'edge') return null;
+  return { ...v, source: v.source ?? 'chrome', icon: storeIcon(v.icon) } as unknown as StoreSnapshot;
 }
-export function filterCatalogue(items: readonly StoreEntry[], query: string, category = ''): readonly StoreEntry[] {
-  const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  return items.filter((item) => (category === '' || category === item.category) && words.every((word) => `${item.name} ${item.description} ${item.publisher} ${item.category}`.toLocaleLowerCase().includes(word)));
-}
-export function storeInstallCommand(id: string): PanelFields | null { return isStoreId(id) ? { a: 'storeinstall', text: id } : null; }
+/** The store command text for one package: a bare id for the Chrome Web Store, `edge:` and the id for Edge Add-ons. */
+const storeText = (id: string, source: StoreSource): string => source === 'edge' ? `edge:${id}` : id;
+export function storeInstallCommand(id: string, source: StoreSource = 'chrome'): PanelFields | null { return isStoreId(id) ? { a: 'storeinstall', text: storeText(id, source) } : null; }
+export function storeListingCommand(id: string, source: StoreSource = 'chrome'): PanelFields | null { return isStoreId(id) ? { a: 'storelisting', text: storeText(id, source) } : null; }
 export function storeRequestCommand(action: 'storecancel' | 'storeapprove', id: string): PanelFields | null { return isStoreRequestId(id) ? { a: action, text: id } : null; }
 export const storeBusy = (phase: StorePhase): boolean => phase === 'downloading' || phase === 'review' || phase === 'installing';
 /** The one-line state heading of the installation card (also what the live region announces). */
 export function storeStatus(s: StoreSnapshot): string {
   switch (s.phase) {
     case 'idle': return '';
-    case 'downloading': return s.stage === 'download' ? 'Downloading the package…' : s.stage === 'verify' ? 'Verifying the package…' : 'Downloading and verifying the package…';
-    case 'review': return 'Review before you install';
-    case 'installing': return 'Installing…';
-    case 'ready': return `${storeDisplayName(s)} is installed`;
+    case 'downloading': return s.stage === 'verify' ? 'Checking…' : 'Downloading…';
+    case 'review': return `Add ${storeDisplayName(s)}?`;
+    case 'installing': return 'Adding…';
+    case 'ready': return `${storeDisplayName(s)} added`;
     case 'error': return storeFailure(s.error).title;
-    case 'cancelled': return 'Installation cancelled';
+    case 'cancelled': return 'Cancelled';
   }
 }
 
 /** The name to show for the package in flight: the resolved name, the catalogue's, or a neutral label. */
 export function storeDisplayName(s: StoreSnapshot): string {
-  return s.name || s.catalogue.find((entry) => entry.id === s.extensionId)?.name || 'Chrome Web Store extension';
+  return s.name || s.catalogue.find((entry) => entry.id === s.extensionId)?.name || 'this extension';
 }
 
-export const STORE_STEPS = [['download', 'Download'], ['verify', 'Verify'], ['review', 'Review'], ['install', 'Install']] as const;
-export type StoreStep = typeof STORE_STEPS[number][0];
-export type StoreStepState = 'done' | 'current' | 'failed' | 'todo';
-export interface StoreStepView { readonly key: StoreStep; readonly label: string; readonly state: StoreStepState }
+// ---- What the review says it can do: short, plain lines, the most far-reaching first ----
 
-/** Where the installation is, step by step; empty when the snapshot cannot say (idle, cancelled, an
- *  error not tied to a step). Without `stage`, `downloading` is download and verification at once,
- *  so both are current: Rust does not say which half is running. */
-export function storeSteps(s: StoreSnapshot): readonly StoreStepView[] {
-  let at: number; let failed = false; let both = false;
-  switch (s.phase) {
-    case 'downloading': at = s.stage === 'verify' ? 1 : 0; both = s.stage === undefined; break;
-    case 'review': at = 2; break;
-    case 'installing': at = 3; break;
-    case 'ready': at = 4; break;
-    case 'error': { const step = storeFailure(s.error).step; if (step === null) return []; at = STORE_STEPS.findIndex(([key]) => key === step); failed = true; break; }
-    default: return [];
+/** Patterns that reach every site. */
+const ALL_SITES = /^(?:<all_urls>|\*:\/\/\*\/\*?|https?:\/\/\*\/\*?|\*:\/\/\*)$/;
+
+/** Chromium's install warnings, in its words where it has them. Permissions with no warning in
+ *  Chromium (storage, alarms, contextMenus, scripting, activeTab…) say nothing here either. */
+const PERMISSION_LINES: Readonly<Record<string, string>> = {
+  debugger: 'Read and change all your data on all websites',
+  proxy: 'Read and change all your data on all websites',
+  history: 'Read and change your browsing history',
+  tabs: 'Read your browsing history',
+  webNavigation: 'Read your browsing history',
+  sessions: 'Read your browsing history',
+  topSites: 'Read a list of your most visited websites',
+  bookmarks: 'Read and change your bookmarks',
+  readingList: 'Read and change your reading list',
+  downloads: 'Manage your downloads',
+  'downloads.open': 'Open downloaded files',
+  declarativeNetRequest: 'Block content on any page',
+  declarativeNetRequestWithHostAccess: 'Block content on the sites it can access',
+  clipboardRead: 'Read data you copy and paste',
+  clipboardWrite: 'Change data you copy and paste',
+  geolocation: 'Know your location',
+  notifications: 'Show notifications',
+  nativeMessaging: 'Talk to apps on this computer',
+  management: 'Manage your other extensions',
+  privacy: 'Change your privacy settings',
+  contentSettings: 'Change site settings, such as cookies and JavaScript',
+  desktopCapture: 'Capture what is on your screen',
+  tabCapture: 'Capture tab audio and video',
+  pageCapture: 'Save pages you visit',
+  'identity.email': 'Know your email address',
+  ttsEngine: 'Read all text spoken by Bowser',
+  'system.storage': 'See and eject storage devices',
+};
+
+/** The host part of a match pattern, for "on example.com"; `null` when it has none to show. */
+function patternHost(pattern: string): string | null {
+  const host = /^[a-z*-]+:\/\/([^/]+)/i.exec(pattern)?.[1];
+  if (!host || host === '*') return null;
+  return host.replace(/^\*\./, '');
+}
+
+/** One line per thing the extension can do, most far-reaching first, and whether it may ask for more later. */
+export function storeAccess(s: Pick<StoreSnapshot, 'permissions' | 'hostPermissions' | 'contentScripts' | 'optionalPermissions' | 'optionalHostPermissions'>): { readonly lines: readonly string[]; readonly later: boolean } {
+  const lines: string[] = [];
+  const add = (line: string): void => { if (!lines.includes(line)) lines.push(line); };
+  const sites = [...s.hostPermissions, ...s.contentScripts];
+  if (sites.some((pattern) => ALL_SITES.test(pattern)) || s.permissions.some((p) => p === 'debugger' || p === 'proxy')) {
+    add('Read and change all your data on all websites');
+  } else {
+    const hosts = [...new Set(sites.map(patternHost).filter((host): host is string => host !== null))];
+    if (hosts.length === 1) add(`Read and change your data on ${hosts[0]}`);
+    else if (hosts.length > 1 && hosts.length <= 3) add(`Read and change your data on ${hosts.slice(0, -1).join(', ')} and ${hosts.at(-1)}`);
+    else if (hosts.length > 3) add(`Read and change your data on ${hosts.length} sites`);
   }
-  return STORE_STEPS.map(([key, label], index) => ({
-    key, label,
-    state: index < at ? 'done' : index === at ? (failed ? 'failed' : 'current') : both && index === at + 1 ? 'current' : 'todo',
-  }));
+  for (const permission of s.permissions) {
+    const line = PERMISSION_LINES[permission];
+    if (line) add(line);
+  }
+  return { lines, later: s.optionalPermissions.length + s.optionalHostPermissions.length > 0 };
 }
 
 export type StoreProgress = { readonly kind: 'indeterminate'; readonly label: string } | { readonly kind: 'determinate'; readonly label: string; readonly value: number; readonly text: string };
@@ -123,10 +168,8 @@ export function storeProgress(s: StoreSnapshot): StoreProgress | null {
 
 export interface StoreFailure {
   readonly title: string; readonly body: string;
-  /** The native message verbatim, for "Technical details"; empty when `body` already is that message. */
+  /** The native message verbatim, for "Details"; empty when `body` already is that message. */
   readonly detail: string;
-  /** The step that failed, when the message says. */
-  readonly step: StoreStep | null;
   /** `suggest`: trying again may well work; `offer`: it might; `none`: it cannot help, or the snapshot's
    *  extension ID may belong to an earlier request (Rust keeps it on errors raised before a new start). */
   readonly retry: 'suggest' | 'offer' | 'none';
@@ -139,30 +182,28 @@ export interface StoreFailure {
 /** Plain-language reading of the native error text. Rust sends free text, so this matches its known
  *  messages (src/store.rs, src/win32/store.rs) and falls back to showing the text as it is. */
 export function storeFailure(error: string): StoreFailure {
-  const f = (title: string, body: string, step: StoreStep | null, retry: StoreFailure['retry'], identity = true, detail = error, manage = false): StoreFailure => ({ title, body, detail, step, retry, identity, manage });
-  if (/^Package download failed:/.test(error)) return f('The extension could not be downloaded', 'Bowser could not get the package from the Chrome Web Store. Check your connection, then try again. Nothing was installed.', 'download', 'suggest');
-  if (/^Package verification failed:/.test(error)) {
+  const f = (title: string, body: string, retry: StoreFailure['retry'], identity = true, detail = error, manage = false): StoreFailure => ({ title, body, detail, retry, identity, manage });
+  if (/^Package download failed:/.test(error)) return f('Couldn’t download the extension', 'Check your connection and try again.', 'suggest');
+  if (/^Package verification failed:|^The package verified, but it could not be unpacked/.test(error)) {
     const cap = /larger than the per-file cap|more than the size cap|ratio/.test(error);
-    return f('This package did not pass Bowser’s checks', cap
-      ? 'One file in the package is larger than Bowser accepts, so nothing was installed. Trying again will most likely fail the same way. This is a package check, not a verdict on whether the extension works in Bowser.'
-      : 'Bowser checks every package’s signature and contents before showing what it can access. This one failed, so nothing was installed. Trying again downloads a fresh copy. This is a package check, not a verdict on whether the extension works in Bowser.', 'verify', cap ? 'offer' : 'suggest');
+    return f('The package didn’t pass Bowser’s checks', cap ? 'A file in it is larger than Bowser allows.' : 'Try again to download a fresh copy.', cap ? 'offer' : 'suggest');
   }
-  if (/already installed/.test(error)) return f('Already installed', 'This extension is already installed in this profile. Bowser cannot update it from here yet.', null, 'none', true, error, true);
-  if (/too large (?:for Bowser )?to (?:display|show) safely/.test(error)) return f('The permission review is too large to show', 'This extension declares more than Bowser can show you in full, and Bowser will not install what it cannot show. Nothing was installed.', 'review', 'none');
-  if (/^Installation was not accepted|^No extension was installed\.|source identity changed|source could not be recorded/.test(error)) return f('The extension could not be installed', 'Bowser stopped before the extension was added to this profile. Nothing was installed.', 'install', 'offer');
-  if (/WebView2 runtime cannot run supported extensions/.test(error)) return f('This WebView2 version cannot run extensions', 'Update the Microsoft Edge WebView2 Runtime, then start the installation again. Restarting Bowser alone will not fix this. Nothing was installed.', null, 'none', false, '');
-  if (/^Other extension downloads are finishing/.test(error)) return f('Another download is still finishing', 'Wait a moment, then start the installation again from the Web Store. Nothing was installed.', null, 'none', false, '');
-  if (/persistent normal profile/.test(error)) return f('Extensions need a normal profile', 'Guest and temporary profiles cannot keep extensions. Switch to a normal profile, then start the installation again. Nothing was installed.', null, 'none', false, '');
-  if (/^That extension ID is not valid|valid HTTPS Chrome Web Store extension listing URL|^The profile is not ready|requires the HTML interface/.test(error)) return f('The installation could not start', error, null, 'none', false, '');
-  return f('The extension was not installed', error || 'Installation could not be completed. Nothing was approved automatically.', null, 'offer', true, '');
+  if (/already installed/.test(error)) return f('Already added', '', 'none', true, '', true);
+  if (/too large (?:for Bowser )?to (?:display|show) safely/.test(error)) return f('Too much to review', 'It declares more access than Bowser can show, so it wasn’t added.', 'none');
+  if (/^Installation was not accepted|^No extension was installed\.|source identity changed|source could not be recorded/.test(error)) return f('Couldn’t add the extension', '', 'offer');
+  if (/WebView2 runtime cannot run supported extensions/.test(error)) return f('Update WebView2 to use extensions', 'Install the latest Microsoft Edge WebView2 Runtime, then try again.', 'none', false, '');
+  if (/^Other extension downloads are finishing/.test(error)) return f('Another download is finishing', 'Try again in a moment.', 'none', false, '');
+  if (/persistent normal profile/.test(error)) return f('Extensions need a normal profile', 'Guest and temporary profiles can’t keep extensions.', 'none', false, '');
+  if (/^That extension ID is not valid|Chrome Web Store or Edge Add-ons extension link|^The profile is not ready|requires the HTML interface/.test(error)) return f('Couldn’t start', error, 'none', false, '');
+  return f('The extension wasn’t added', error, 'offer', true, '');
 }
 
 /** "Try again" restarts the same native request flow: `storeinstall` with the snapshot's ID. Only
  *  after a cancel or an error tied to that request (see `StoreFailure.retry`). */
 export function storeRetryCommand(s: StoreSnapshot): PanelFields | null {
-  if (s.phase === 'cancelled') return storeInstallCommand(s.extensionId);
+  if (s.phase === 'cancelled') return storeInstallCommand(s.extensionId, s.source);
   if (s.phase !== 'error' || storeFailure(s.error).retry === 'none') return null;
-  return storeInstallCommand(s.extensionId);
+  return storeInstallCommand(s.extensionId, s.source);
 }
 
 /** A convenience input only: the native backend independently validates the listing URL. */
@@ -172,6 +213,7 @@ export function storeUrlCommand(value: string): PanelFields | null {
     if (url.protocol !== 'https:' || url.href.slice(8).split('/')[0]!.includes('@') || url.port !== '') return null;
     const modern = url.hostname === 'chromewebstore.google.com' && /^\/detail\/(?:[^/]+\/)?[a-p]{32}\/?$/.test(url.pathname);
     const legacy = url.hostname === 'chrome.google.com' && /^\/webstore\/detail\/(?:[^/]+\/)?[a-p]{32}\/?$/.test(url.pathname);
-    return modern || legacy ? { a: 'storeurl', text: url.href } : null;
+    const edge = url.hostname === 'microsoftedge.microsoft.com' && /^\/addons\/detail\/(?:[^/]+\/)?[a-p]{32}\/?$/.test(url.pathname);
+    return modern || legacy || edge ? { a: 'storeurl', text: url.href } : null;
   } catch { return null; }
 }
