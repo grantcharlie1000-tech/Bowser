@@ -7,6 +7,7 @@
 import { onInbound, send, sendPanel, type Inbound, type PanelFields, type SettingsSection } from './protocol';
 import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
+import { onFill } from './menu-logic';
 import { attachSegmentThumb } from './segment-thumb';
 import { installTooltips } from './tooltip';
 import { selectField, type SelectField } from './panels/select';
@@ -17,6 +18,7 @@ import { mountExtensionsSection } from './extensions-section';
 import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
+import { mountProfiles } from './settings-profiles'; // --- profiles ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
 import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
@@ -525,8 +527,17 @@ export function startSettingsPage(root: HTMLElement): void {
   const profileRow = row(profileCard, 'profile', avatar);
   profileRow.root.classList.add('is-profile');
   profileRow.root.prepend(profileRow.root.lastElementChild ?? avatar);
-  const manage = textButton('Manage', () => cmd({ a: 'profiles' }), { icon: 'person', aria: 'Manage profiles' });
-  row(profileCard, 'profiles', manage);
+  // --- profiles --- the manager: every profile, the current one's look, and a form that adds one.
+  const profilesView = mountProfiles({
+    send: (text, answered) => {
+      const sent = cmd({ a: 'profile', text });
+      if (sent && answered) pending += 1;
+      return sent;
+    },
+  });
+  const profilesRow = row(profileCard, 'profiles', undefined, { stack: true });
+  profilesRow.root.classList.add('is-profiles');
+  profilesRow.root.append(...profilesView.parts);
   row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
 
   // Appearance: the two big visual choices first, then the chrome, tabs and text.
@@ -1931,8 +1942,16 @@ export function startSettingsPage(root: HTMLElement): void {
     updateAction.classList.toggle('is-primary', view.action === 'restart');
     version.textContent = `Bowser ${s.version}`;
     avatar.textContent = s.avatar;
+    const me = s.profiles.find((p) => p.current);
+    if (me) {
+      avatar.style.setProperty('--sp-profile-fill', me.colour);
+      avatar.style.setProperty('--sp-profile-ink', onFill(me.colour));
+    } else {
+      avatar.style.setProperty('--sp-profile-fill', '');
+      avatar.style.setProperty('--sp-profile-ink', '');
+    }
     profileRow.label.textContent = s.guest ? 'Guest' : s.profile === '' ? 'Default' : s.profile;
-    manage.disabled = false;
+    profilesView.paint(s.profiles, s.guest);
     banner.hidden = s.readable;
     banner.textContent = s.readable ? '' : 'Settings file could not be read.';
     for (const control of [

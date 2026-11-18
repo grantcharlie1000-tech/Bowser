@@ -1639,7 +1639,34 @@ impl App {
         Self::sync_window_title(app);
     }
 
-    fn sync_window_title(app: &AppRef) {
+    // --- profiles ---
+    /// The profiles a link can be opened in: every listed profile but this window's, as (listed
+    /// id, display name). A guest window lists them all.
+    fn link_profiles() -> Vec<(String, String)> {
+        let (Some(app_data), Ok(current)) = (crate::profile::app_data_dir(), crate::profile::active()) else {
+            return Vec::new();
+        };
+        crate::profile::summaries(&app_data)
+            .into_iter()
+            .filter(|summary| current.is_guest() || !summary.id.eq_ignore_ascii_case(current.listed_name()))
+            .take(32)
+            .map(|summary| (summary.id, summary.display_name))
+            .collect()
+    }
+
+    /// Opens `url` in the listed profile `id`: a new tab in that profile's window when it is open,
+    /// else a new window for it.
+    fn open_in_profile(id: &str, url: &url::Url) {
+        let opened = crate::profile::app_data_dir()
+            .and_then(|app_data| crate::profile::Profile::for_listed_name(&app_data, id).ok())
+            .is_some_and(|profile| crate::profile::open_url_in(&profile, url));
+        if !opened {
+            win32::show_error_message("Bowser could not open the link in that profile.");
+        }
+    }
+    // --- end profiles ---
+
+    pub(crate) fn sync_window_title(app: &AppRef) {
         let (hwnd, title) = {
             let state = app.borrow();
             let active = state.tab_model.active();
@@ -5102,6 +5129,15 @@ impl App {
             let _ = crate::profile::remember_last_profile(&app_data, profile.listed_name());
         }
         crate::profile::set_active(profile.clone());
+        // Each named profile (and Guest) gets its own taskbar button, before any window exists,
+        // so windows of different profiles are told apart and a profile's shortcut pins to it.
+        if let Some(app_id) = profile.app_user_model_id() {
+            let _ = unsafe {
+                windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+                    &windows::core::HSTRING::from(app_id),
+                )
+            };
+        }
         let settings = crate::settings::Settings::load(&profile.settings_file());
         // Address bar options read wherever an address is shown or completed.
         crate::omnibox::set_show_full_address(settings.address.show_full);
@@ -7017,6 +7053,10 @@ impl App {
                 }))
             },
             // --- end split view ---
+            // --- profiles ---
+            link_profiles: Some(Rc::new(App::link_profiles)),
+            open_in_profile: Some(Rc::new(|id, url| App::open_in_profile(&id, &url))),
+            // --- end profiles ---
             // --- address bar, search and bookmarks ---
             context_search: {
                 let search_app = Rc::downgrade(app);

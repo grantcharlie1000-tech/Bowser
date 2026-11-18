@@ -23,6 +23,8 @@ pub const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const MAX_PROFILE_CHARS: usize = 64;
 const MAX_AVATAR_CHARS: usize = 4;
 const MAX_ERROR_CHARS: usize = 240;
+/// Most profiles the page lists (the profile menu's `PROFILE_MAX_LISTED`).
+pub const MAX_LISTED_PROFILES: usize = 300;
 
 /// `{"v":1,"t":"settingsgo","s":"<section key>"}`; `s` is empty for the top of the page.
 pub fn go_json(section: Option<Section>) -> String {
@@ -89,6 +91,72 @@ pub struct Snapshot<'a> {
     /// the workspaces a rule can name, in rail order.
     pub workspace_rules: Vec<(String, String)>,
     pub workspace_names: Vec<String>,
+    /// --- profiles --- every listed profile for the profile manager, `default` first.
+    pub profiles: Vec<ProfileRow>,
+}
+
+/// One row of the settings page's profile manager.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileRow {
+    /// The listed id: `default` or the folder name.
+    pub id: String,
+    pub name: String,
+    /// The avatar as shown (one glyph) and its colour as `#rrggbb`.
+    pub glyph: String,
+    pub colour: String,
+    /// The avatar and accent keys (`crate::profile::AVATARS` / `ACCENTS`).
+    pub avatar: String,
+    pub accent: String,
+    /// The profile this window runs.
+    pub current: bool,
+}
+
+/// What a `profile` command asks for. Ids and names are checked here; whether the profile exists
+/// is checked when it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileCommand {
+    /// Open the profile's window (start it, or bring up the one already open).
+    Open(String),
+    /// Create a profile with this display name and open it.
+    New(String),
+    Rename { id: String, name: String },
+    Look { id: String, avatar: String, accent: String },
+    Shortcut(String),
+    /// Delete a closed profile; the page has already asked.
+    Delete(String),
+    Guest,
+}
+
+/// Longest `profile` command text: a verb, an id and a 32-character name in UTF-8.
+const MAX_PROFILE_COMMAND: usize = 200;
+
+fn profile_id(text: &str) -> Option<String> {
+    (text == crate::profile::DEFAULT_NAME || crate::profile::validate_name(text).is_ok()).then(|| text.to_owned())
+}
+
+/// Parses `open<TAB>id`, `new<TAB>name`, `rename<TAB>id<TAB>name`, `look<TAB>id<TAB>avatar<TAB>accent`,
+/// `shortcut<TAB>id`, `delete<TAB>id` or `guest`.
+pub fn parse_profile_command(text: &str) -> Option<ProfileCommand> {
+    if text.len() > MAX_PROFILE_COMMAND {
+        return None;
+    }
+    let parts: Vec<&str> = text.split('\t').collect();
+    let name = |text: &str| crate::profile::validate_display_name(text).ok();
+    Some(match parts.as_slice() {
+        ["open", id] => ProfileCommand::Open(profile_id(id)?),
+        ["new", display] => ProfileCommand::New(name(display)?),
+        ["rename", id, display] => ProfileCommand::Rename { id: profile_id(id)?, name: name(display)? },
+        ["look", id, avatar, accent] => {
+            if !crate::profile::AVATARS.contains(avatar) || !crate::profile::ACCENTS.contains(accent) {
+                return None;
+            }
+            ProfileCommand::Look { id: profile_id(id)?, avatar: (*avatar).to_owned(), accent: (*accent).to_owned() }
+        }
+        ["shortcut", id] => ProfileCommand::Shortcut(profile_id(id)?),
+        ["delete", id] if *id != crate::profile::DEFAULT_NAME => ProfileCommand::Delete(profile_id(id)?),
+        ["guest"] => ProfileCommand::Guest,
+        _ => return None,
+    })
 }
 
 /// --- tab stacks (T10) --- longest `wsrule` text: a host, a tab, a workspace name and its verb.
@@ -207,6 +275,21 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
             rules.array("workspaces", |items| for name in s.workspace_names.iter().take(128) { items.string(capped(name, 128)); });
         });
         // --- end tab stacks ---
+        // --- profiles --- the profile manager's list.
+        out.array("profiles", |items| {
+            for row in s.profiles.iter().take(MAX_LISTED_PROFILES) {
+                items.object(|o| {
+                    o.string("id", &row.id);
+                    o.string("name", capped(&row.name, MAX_PROFILE_CHARS));
+                    o.string("glyph", capped(&row.glyph, MAX_AVATAR_CHARS));
+                    o.string("colour", &row.colour);
+                    o.string("avatar", &row.avatar);
+                    o.string("accent", &row.accent);
+                    o.bool("current", row.current);
+                });
+            }
+        });
+        // --- end profiles ---
         // --- layout (thread T6) --- one object: the Layout block's options (src/layout_prefs.rs)
         out.object("layout", |layout| {
             layout.bool("tabBarVisible", settings.tab_bar_visible);
@@ -278,6 +361,8 @@ pub enum Action {
     RestartUpdate,
     Privacy,
     Profiles,
+    /// --- profiles --- one change from the profile manager.
+    Profile(ProfileCommand),
     Import,
     /// The page wants a fresh snapshot (it regained focus).
     Refresh,
@@ -403,6 +488,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "restartupdate" if bare => Action::RestartUpdate,
         "privacy" if bare => Action::Privacy,
         "profiles" if bare => Action::Profiles,
+        "profile" if text_only => Action::Profile(parse_profile_command(f.text.as_deref()?)?),
         "import" if bare => Action::Import,
         "refresh" if bare => Action::Refresh,
         "setdefault" if bare => Action::SetDefault,
@@ -674,6 +760,7 @@ mod tests {
             settings: &back, readable: true, custom_search: false, efficiency_active: false, auto_update: true, history_enabled: true, guest: false,
             profile: "Default", avatar: "", version: "1.0.0", update: "idle", update_version: "", last_check: "none", check_result: "none",
             ack: Ack::Saved, error: "", default_browser: "unknown", download_dir: "", download_ask: false, workspace_rules: Vec::new(), workspace_names: Vec::new(),
+            profiles: Vec::new(),
         };
         assert!(snapshot_json(&snap).len() <= MAX_SNAPSHOT_BYTES);
         let _ = std::fs::remove_dir_all(&dir);
@@ -831,7 +918,44 @@ mod tests {
             download_ask: false,
             workspace_rules: vec![("example.org".into(), "Work".into())],
             workspace_names: vec!["Default".into(), "Work".into()],
+            profiles: vec![
+                ProfileRow { id: "default".into(), name: "Personal".into(), glyph: "P".into(), colour: "#2b5fa8".into(), avatar: "initial".into(), accent: "blue".into(), current: false },
+                ProfileRow { id: "Work".into(), name: "Work \"<b>\"".into(), glyph: "\u{2726}".into(), colour: "#176d62".into(), avatar: "star".into(), accent: "teal".into(), current: true },
+            ],
         }
+    }
+
+    /// --- profiles --- the profile manager's list and its one command.
+    #[test]
+    fn profiles_ride_in_the_snapshot_and_profile_commands_are_checked() {
+        let json = snapshot_json(&sample(&Settings::default()));
+        assert!(json.contains(r##""profiles":[{"id":"default","name":"Personal","glyph":"P","colour":"#2b5fa8","avatar":"initial","accent":"blue","current":false},"##), "{json}");
+        let mut command = fields("profile");
+        let cases = [
+            ("open\tdefault", ProfileCommand::Open("default".into())),
+            ("open\tWork-1", ProfileCommand::Open("Work-1".into())),
+            ("new\t  Kids & school ", ProfileCommand::New("Kids & school".into())),
+            ("rename\tdefault\tCafé", ProfileCommand::Rename { id: "default".into(), name: "Café".into() }),
+            ("look\tWork\tmoon\trose", ProfileCommand::Look { id: "Work".into(), avatar: "moon".into(), accent: "rose".into() }),
+            ("shortcut\tWork", ProfileCommand::Shortcut("Work".into())),
+            ("delete\tWork", ProfileCommand::Delete("Work".into())),
+            ("guest", ProfileCommand::Guest),
+        ];
+        for (text, want) in cases {
+            command.text = Some(text.into());
+            assert_eq!(map_command(&command), Some(Action::Profile(want)), "{text:?}");
+        }
+        let long = format!("new\t{}", "x".repeat(33));
+        for bad in [
+            "open", "open\t..\\x", "open\tDefault", "open\tCON", "new\t", "new\t   ", long.as_str(), "rename\tWork",
+            "look\tWork\tmoon", "look\tWork\tbogus\trose", "look\tWork\tmoon\tpink", "delete\tdefault", "guest\tx", "wipe\tWork",
+            "new\tline\u{1}",
+        ] {
+            command.text = Some(bad.into());
+            assert_eq!(map_command(&command), None, "{bad:?}");
+        }
+        command.text = None;
+        assert_eq!(map_command(&command), None);
     }
 
     /// --- tab stacks (T10) --- the workspace rules editor's list and its two commands.

@@ -4,6 +4,10 @@
 //! (`--profile <name>`) lives in `%LOCALAPPDATA%\Bowser\Profiles\<name>\` and owns its own
 //! WebView2 user-data folder, session, tab groups, settings, blocker sites and password vault,
 //! so profiles share no browser data. The app-wide updater files stay under `%LOCALAPPDATA%\Bowser`.
+//!
+//! A profile's folder name is its stable id (`--profile <id>`, desktop shortcuts, the taskbar
+//! group). What people see is its display name, kept in `profile.txt` as `name=`; it may use any
+//! letters and spaces and can be changed at any time, even while the profile is open.
 
 use std::{
     collections::BTreeMap,
@@ -21,6 +25,8 @@ use std::{
 pub const DEFAULT_NAME: &str = "default";
 pub const PROFILES_DIR_NAME: &str = "Profiles";
 pub const MAX_NAME_LEN: usize = 32;
+/// Longest display name, in characters.
+pub const MAX_DISPLAY_NAME_CHARS: usize = 32;
 /// Upper bound for auto-named profiles (`Profile-1` ... `Profile-999`).
 const MAX_AUTO_NAME: u32 = 999;
 
@@ -55,6 +61,9 @@ pub enum ProfileError {
     ReservedName,
     NoLocalAppData,
     AlreadyExists,
+    /// Another profile already shows that display name.
+    NameTaken,
+    InvalidDisplayName,
     InvalidMetadata,
     NotFound,
     /// The profile is the running one, or another Bowser window still has it open.
@@ -71,6 +80,8 @@ impl std::fmt::Display for ProfileError {
             Self::ReservedName => "That profile name is reserved.",
             Self::NoLocalAppData => "Bowser could not find this user's LocalAppData directory.",
             Self::AlreadyExists => "A profile with that name already exists.",
+            Self::NameTaken => "Another profile already uses that name.",
+            Self::InvalidDisplayName => "Profile names use 1 to 32 characters.",
             Self::InvalidMetadata => "That profile avatar or accent is not supported.",
             Self::NotFound => "That profile does not exist.",
             Self::InUse => "That profile is open in a Bowser window. Close it first.",
@@ -122,21 +133,43 @@ impl Drop for GuestSession {
 /// User-editable presentation details. Unknown keys survive load/save for forward compatibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileMetadata {
+    /// The display name chosen for the profile; `None` shows the folder name (or "Default").
+    pub name: Option<String>,
     pub avatar: String,
     pub accent: String,
     pub unknown: BTreeMap<String, String>,
 }
 
-const AVATARS: &[&str] = &["initial", "leaf", "star", "wave", "moon"];
-const ACCENTS: &[&str] = &["blue", "violet", "teal", "amber", "rose"];
+pub const AVATARS: &[&str] = &["initial", "leaf", "star", "wave", "moon"];
+pub const ACCENTS: &[&str] = &["blue", "violet", "teal", "amber", "rose"];
 
 impl Default for ProfileMetadata {
     fn default() -> Self {
         Self {
+            name: None,
             avatar: "initial".into(),
             accent: "blue".into(),
             unknown: BTreeMap::new(),
         }
+    }
+}
+
+/// Checks a display name and returns it trimmed: 1 to 32 characters, no control characters.
+pub fn validate_display_name(name: &str) -> Result<String, ProfileError> {
+    let name = name.trim();
+    let count = name.chars().count();
+    if count == 0 || count > MAX_DISPLAY_NAME_CHARS || name.chars().any(char::is_control) {
+        return Err(ProfileError::InvalidDisplayName);
+    }
+    Ok(name.to_owned())
+}
+
+/// The label shown for a listed profile id when it has no display name of its own.
+pub fn fallback_display_name(listed_name: &str) -> &str {
+    if listed_name.eq_ignore_ascii_case(DEFAULT_NAME) {
+        "Default"
+    } else {
+        listed_name
     }
 }
 
@@ -176,6 +209,7 @@ impl ProfileMetadata {
                 continue;
             }
             match key {
+                "name" => metadata.name = validate_display_name(value).ok(),
                 "avatar" if AVATARS.contains(&value) => metadata.avatar = value.to_owned(),
                 "accent" if ACCENTS.contains(&value) => metadata.accent = value.to_owned(),
                 "avatar" | "accent" => {}
@@ -196,13 +230,20 @@ impl ProfileMetadata {
         if !AVATARS.contains(&self.avatar.as_str()) || !ACCENTS.contains(&self.accent.as_str()) {
             return Err(ProfileError::InvalidMetadata);
         }
-        let mut text = format!("avatar={}\naccent={}\n", self.avatar, self.accent);
+        let mut text = String::new();
+        if let Some(name) = &self.name {
+            text.push_str("name=");
+            text.push_str(&validate_display_name(name)?);
+            text.push('\n');
+        }
+        text.push_str(&format!("avatar={}\naccent={}\n", self.avatar, self.accent));
         for (key, value) in &self.unknown {
             if !key.is_empty()
                 && key.len() <= 64
                 && !key.contains(['=', '\r', '\n'])
                 && value.len() <= 256
                 && !value.contains(['\r', '\n'])
+                && key != "name"
                 && key != "avatar"
                 && key != "accent"
             {
@@ -212,7 +253,9 @@ impl ProfileMetadata {
                 text.push('\n');
             }
         }
-        fs::write(profile.metadata_file(), text).map_err(|_| ProfileError::Io)
+        let written = fs::write(profile.metadata_file(), text).map_err(|_| ProfileError::Io);
+        *TITLE_SUFFIX.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        written
     }
 }
 
@@ -470,22 +513,214 @@ impl Profile {
         self.root.join(EXTENSIONS_FILE_NAME)
     }
 
-    /// Suffix for the window title; empty for the default profile.
+    /// The name people see: the chosen display name, else the folder name ("Default", "Guest").
+    pub fn display_name(&self) -> String {
+        if self.guest {
+            return "Guest".to_owned();
+        }
+        ProfileMetadata::load(self)
+            .name
+            .unwrap_or_else(|| fallback_display_name(self.listed_name()).to_owned())
+    }
+
+    /// Suffix for the window title. Empty for the default profile until it is given a name of
+    /// its own, so a one-profile setup keeps its plain title. The title is set on every page
+    /// title change, so the answer is remembered until this profile's `profile.txt` is saved.
     pub fn title_suffix(&self) -> String {
         if self.guest {
             return " [Guest]".to_owned();
         }
-        match &self.name {
-            Some(name) => {
-                let metadata = ProfileMetadata::load(self);
-                format!(" [{} {name}]", metadata.avatar_glyph(name))
-            }
-            None => String::new(),
+        let mut cache = TITLE_SUFFIX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, suffix)) = cache.as_ref().filter(|(root, _)| *root == self.root) {
+            return suffix.clone();
         }
+        let suffix = self.read_title_suffix();
+        *cache = Some((self.root.clone(), suffix.clone()));
+        suffix
+    }
+
+    fn read_title_suffix(&self) -> String {
+        let metadata = ProfileMetadata::load(self);
+        if self.name.is_none() && metadata.name.is_none() {
+            return String::new();
+        }
+        let name = metadata
+            .name
+            .clone()
+            .unwrap_or_else(|| fallback_display_name(self.listed_name()).to_owned());
+        format!(" [{} {name}]", metadata.avatar_glyph(&name))
+    }
+
+    /// The Windows taskbar identity (AppUserModelID) for this profile's windows, so each profile
+    /// gets its own taskbar button and its desktop shortcut pins to it. `None` for the default
+    /// profile, which keeps the identity Windows derives from the executable.
+    pub fn app_user_model_id(&self) -> Option<String> {
+        // Dev Bowser's windows never share a taskbar button with the installed browser's.
+        let dev = if DEV_LAUNCH.load(Ordering::Relaxed) { "Dev." } else { "" };
+        if self.guest {
+            return Some(format!("Bowser.{dev}Guest"));
+        }
+        self.name.as_ref().map(|name| format!("Bowser.{dev}Profile.{name}"))
     }
 }
 
+/// One listed profile as menus and the settings page show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileSummary {
+    /// The listed id: `default` or the folder name.
+    pub id: String,
+    pub display_name: String,
+    pub metadata: ProfileMetadata,
+}
+
+impl ProfileSummary {
+    pub fn avatar_glyph(&self) -> String {
+        self.metadata.avatar_glyph(&self.display_name)
+    }
+}
+
+/// Every listed profile with its display name and look, in [`list`] order.
+pub fn summaries(app_data: &Path) -> Vec<ProfileSummary> {
+    list(app_data)
+        .into_iter()
+        .map(|id| {
+            let metadata = Profile::for_listed_name(app_data, &id)
+                .map(|profile| ProfileMetadata::load(&profile))
+                .unwrap_or_default();
+            let display_name = metadata
+                .name
+                .clone()
+                .unwrap_or_else(|| fallback_display_name(&id).to_owned());
+            ProfileSummary { id, display_name, metadata }
+        })
+        .collect()
+}
+
+/// True when a profile other than `except` already shows `name` (case-insensitively).
+fn display_name_taken(app_data: &Path, name: &str, except: Option<&str>) -> bool {
+    let wanted = name.to_lowercase();
+    summaries(app_data).iter().any(|summary| {
+        except.is_none_or(|id| !summary.id.eq_ignore_ascii_case(id))
+            && summary.display_name.to_lowercase() == wanted
+    })
+}
+
+/// Gives a listed profile (open or not, the default included) a new display name. The folder and
+/// everything that refers to it by id stay as they are. Returns the trimmed name.
+pub fn set_display_name(app_data: &Path, id: &str, name: &str) -> Result<String, ProfileError> {
+    let name = validate_display_name(name)?;
+    let profile = Profile::for_listed_name(app_data, id)?;
+    if !is_plain_dir(profile.root()) {
+        return Err(ProfileError::NotFound);
+    }
+    if display_name_taken(app_data, &name, Some(id)) {
+        return Err(ProfileError::NameTaken);
+    }
+    let mut metadata = ProfileMetadata::load(&profile);
+    metadata.name = Some(name.clone());
+    metadata.save(&profile)?;
+    Ok(name)
+}
+
+/// Sets a listed profile's avatar and accent (each `None` keeps the current one).
+pub fn set_look(
+    app_data: &Path,
+    id: &str,
+    avatar: Option<&str>,
+    accent: Option<&str>,
+) -> Result<(), ProfileError> {
+    let profile = Profile::for_listed_name(app_data, id)?;
+    if !is_plain_dir(profile.root()) {
+        return Err(ProfileError::NotFound);
+    }
+    let mut metadata = ProfileMetadata::load(&profile);
+    if let Some(avatar) = avatar {
+        metadata.avatar = avatar.to_owned();
+    }
+    if let Some(accent) = accent {
+        metadata.accent = accent.to_owned();
+    }
+    metadata.save(&profile)
+}
+
+/// A folder id derived from a display name: ASCII letters and digits kept, runs of anything else
+/// become one `-`. `None` when nothing usable is left (the caller then picks `Profile-N`).
+fn folder_id_for(display_name: &str) -> Option<String> {
+    let mut id = String::new();
+    for c in display_name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            id.push(c);
+        } else if !id.is_empty() && !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    let id: String = id.trim_end_matches('-').chars().take(MAX_NAME_LEN).collect();
+    let id = id.trim_end_matches('-').to_owned();
+    validate_name(&id).is_ok().then_some(id)
+}
+
+/// The first accent no listed profile uses yet (blue again once all five are taken), so a new
+/// profile looks different from the ones before it.
+fn unused_accent(app_data: &Path) -> &'static str {
+    let used: Vec<String> = summaries(app_data).into_iter().map(|s| s.metadata.accent).collect();
+    ACCENTS
+        .iter()
+        .find(|accent| !used.iter().any(|used| used == *accent))
+        .copied()
+        .unwrap_or(ACCENTS[used.len() % ACCENTS.len()])
+}
+
+/// Creates a profile people named: the folder id comes from the name when it can (`Work Stuff`
+/// -> `Work-Stuff`, `Work-Stuff-2` when taken), else `Profile-N`. The new profile gets an accent
+/// no other profile has.
+pub fn create_with_display_name(app_data: &Path, name: &str) -> Result<Profile, ProfileError> {
+    let name = validate_display_name(name)?;
+    if display_name_taken(app_data, &name, None) {
+        return Err(ProfileError::NameTaken);
+    }
+    let accent = unused_accent(app_data);
+    ensure_profiles_dir(app_data)?;
+    let mut created = None;
+    if let Some(base) = folder_id_for(&name) {
+        for n in 1..=MAX_AUTO_NAME {
+            let id = if n == 1 {
+                base.clone()
+            } else {
+                let suffix = format!("-{n}");
+                let keep = MAX_NAME_LEN.saturating_sub(suffix.len());
+                format!("{}{suffix}", &base[..base.len().min(keep)])
+            };
+            let Ok(profile) = Profile::named(app_data, &id) else { continue };
+            if list(app_data).iter().any(|listed| listed.eq_ignore_ascii_case(&id)) {
+                continue;
+            }
+            match fs::create_dir(profile.root()) {
+                Ok(()) => {
+                    created = Some(profile);
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return Err(ProfileError::Io),
+            }
+        }
+    }
+    let profile = match created {
+        Some(profile) => profile,
+        None => create_auto(app_data)?,
+    };
+    let metadata = ProfileMetadata {
+        name: Some(name),
+        accent: accent.to_owned(),
+        ..ProfileMetadata::default()
+    };
+    metadata.save(&profile)?;
+    Ok(profile)
+}
+
 static DATA_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// The last window-title suffix worked out, by profile root ([`Profile::title_suffix`]).
+static TITLE_SUFFIX: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
 
 /// The history preference of each profile read so far, by file. A process runs one profile; the
 /// bound only keeps tests with many throwaway profiles from growing it.
@@ -725,60 +960,6 @@ pub fn delete(app_data: &Path, name: &str, current: &Profile) -> Result<(), Prof
     fs::remove_dir_all(&trash).map_err(|_| ProfileError::Io)
 }
 
-/// Renames a closed named profile by moving its directory within the validated Profiles folder.
-pub fn rename(
-    app_data: &Path,
-    old_name: &str,
-    new_name: &str,
-    current: &Profile,
-) -> Result<Profile, ProfileError> {
-    validate_name(old_name)?;
-    validate_name(new_name)?;
-    if current
-        .name()
-        .is_some_and(|name| name.eq_ignore_ascii_case(old_name))
-    {
-        return Err(ProfileError::InUse);
-    }
-    let profiles = profiles_dir(app_data);
-    if !is_plain_dir(&profiles) {
-        return Err(ProfileError::NotFound);
-    }
-    if list(app_data)
-        .iter()
-        .any(|name| name.eq_ignore_ascii_case(new_name))
-    {
-        return Err(ProfileError::AlreadyExists);
-    }
-    let source = profiles.join(old_name);
-    if !is_plain_dir(&source) {
-        return Err(ProfileError::NotFound);
-    }
-    let canonical_profiles = fs::canonicalize(&profiles).map_err(|_| ProfileError::Io)?;
-    let canonical_source = fs::canonicalize(&source).map_err(|_| ProfileError::Io)?;
-    if canonical_source.parent() != Some(canonical_profiles.as_path()) {
-        return Err(ProfileError::OutsideProfiles);
-    }
-    if is_locked_by_running_session(&source) {
-        return Err(ProfileError::InUse);
-    }
-    let target = profiles.join(new_name);
-    fs::rename(&source, &target).map_err(|error| {
-        if error.kind() == io::ErrorKind::AlreadyExists {
-            ProfileError::AlreadyExists
-        } else {
-            ProfileError::InUse
-        }
-    })?;
-    let renamed = Profile::named(app_data, new_name)?;
-    if fs::read_to_string(app_data.join(LAST_PROFILE_FILE_NAME))
-        .is_ok_and(|last| last.trim().eq_ignore_ascii_case(old_name))
-    {
-        let _ = remember_last_profile(app_data, new_name);
-    }
-    Ok(renamed)
-}
-
 /// Remembers a profile only after it exists, so invalid or removed names cannot be persisted.
 pub fn remember_last_profile(app_data: &Path, name: &str) -> Result<(), ProfileError> {
     fs::create_dir_all(app_data).map_err(|_| ProfileError::Io)?;
@@ -917,6 +1098,25 @@ pub fn spawn_window_with_url(profile: &Profile, url: &url::Url) -> bool {
     spawn_window_inner(profile, Some(url))
 }
 
+/// Opens `url` in `profile`: the launch hands it to that profile's open window as a new tab, or
+/// starts a window for the profile when none is open. False when the address cannot be passed on
+/// or the process did not start.
+pub fn open_url_in(profile: &Profile, url: &url::Url) -> bool {
+    if profile.is_guest() || !can_open_in_new_window(url) {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let mut command = std::process::Command::new(exe);
+    if let Some(root) = data_root_override() {
+        command.arg("--data-dir").arg(root);
+    }
+    push_profile_arg(&mut command, profile);
+    command.arg("--open-url").arg(url.as_str());
+    command.spawn().is_ok()
+}
+
 /// --- tab stacks (T10) --- "Move the stack to a new window": a new Bowser process for `profile`
 /// with one tab per address (the first shown, the rest asleep). Addresses a new window cannot take
 /// are left out; false when none is left or the process did not start.
@@ -933,9 +1133,7 @@ pub fn spawn_window_with_urls(profile: &Profile, urls: &[url::Url]) -> bool {
     if let Some(root) = data_root_override() {
         command.arg("--data-dir").arg(root);
     }
-    if let Some(name) = profile.name() {
-        command.arg("--profile").arg(name);
-    }
+    push_profile_arg(&mut command, profile);
     for url in std::iter::once(first).chain(rest) {
         command.arg("--open-url").arg(url.as_str());
     }
@@ -955,13 +1153,20 @@ fn spawn_window_inner(profile: &Profile, url: Option<&url::Url>) -> bool {
     if let Some(root) = data_root_override() {
         command.arg("--data-dir").arg(root);
     }
-    if let Some(name) = profile.name() {
-        command.arg("--profile").arg(name);
-    }
+    push_profile_arg(&mut command, profile);
     if let Some(url) = url {
         command.arg("--open-url").arg(url.as_str());
     }
     command.spawn().is_ok()
+}
+
+/// `--profile <listed name>`, so a spawned process opens exactly this profile (the default one
+/// included) whatever `last-profile.txt` says. A guest window's own folder cannot be reopened, so a
+/// guest passes nothing, as before.
+fn push_profile_arg(command: &mut std::process::Command, profile: &Profile) {
+    if !profile.is_guest() {
+        command.arg("--profile").arg(profile.listed_name());
+    }
 }
 
 fn ensure_profiles_dir(app_data: &Path) -> Result<(), ProfileError> {
@@ -1325,73 +1530,77 @@ mod tests {
     }
 
     #[test]
-    fn rename_rejects_current_and_locked_profiles() {
-        let app = temp_root("rename-lock");
-        let current = create_named(&app, "Current").unwrap();
-        assert_eq!(
-            rename(&app, "Current", "Renamed", &current),
-            Err(ProfileError::InUse)
-        );
-        let held = create_named(&app, "Held").unwrap();
-        let lock = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .share_mode(0)
-            .open(held.root().join(LOCK_FILE_NAME))
-            .unwrap();
-        assert_eq!(
-            rename(&app, "Held", "Renamed", &Profile::default_in(&app)),
-            Err(ProfileError::InUse)
-        );
-        assert!(held.root().exists());
-        drop(lock);
-        let _ = fs::remove_dir_all(&app);
-    }
-
-    #[test]
-    fn rename_validates_target_and_moves_a_closed_profile() {
-        let app = temp_root("rename");
-        let running = Profile::default_in(&app);
-        let source = create_named(&app, "Before").unwrap();
-        fs::write(source.root().join("marker"), "preserved").unwrap();
-        create_named(&app, "Taken").unwrap();
-        assert_eq!(
-            rename(&app, "Before", "Taken", &running),
-            Err(ProfileError::AlreadyExists)
-        );
-        assert_eq!(
-            rename(&app, "Before", "bad.name", &running),
-            Err(ProfileError::InvalidName)
-        );
-        let result = rename(&app, "Before", "After", &running).unwrap();
-        assert_eq!(result.name(), Some("After"));
-        assert_eq!(
-            fs::read_to_string(result.root().join("marker")).unwrap(),
-            "preserved"
-        );
-        assert!(!source.root().exists());
-        let _ = fs::remove_dir_all(&app);
-    }
-
-    #[test]
-    fn rename_refuses_profile_links_outside_profiles() {
-        let app = temp_root("rename-link");
-        let outside = temp_root("rename-link-outside");
-        fs::write(outside.join("marker"), "keep").unwrap();
-        let profiles = app.join(PROFILES_DIR_NAME);
-        fs::create_dir_all(&profiles).unwrap();
-        if std::os::windows::fs::symlink_dir(&outside, profiles.join("Link")).is_err() {
-            let _ = fs::remove_dir_all(&app);
-            let _ = fs::remove_dir_all(&outside);
-            return;
+    fn display_names_allow_spaces_and_unicode_and_reject_blanks_and_controls() {
+        assert_eq!(validate_display_name("  Work stuff  ").unwrap(), "Work stuff");
+        assert_eq!(validate_display_name("Café ☕").unwrap(), "Café ☕");
+        let longest = "é".repeat(MAX_DISPLAY_NAME_CHARS);
+        assert!(validate_display_name(&longest).is_ok());
+        for bad in ["", "   ", "line\nbreak", "tab\tname", &"x".repeat(MAX_DISPLAY_NAME_CHARS + 1)] {
+            assert_eq!(validate_display_name(bad), Err(ProfileError::InvalidDisplayName), "{bad:?}");
         }
-        assert_eq!(
-            rename(&app, "Link", "Moved", &Profile::default_in(&app)),
-            Err(ProfileError::NotFound)
-        );
-        assert!(outside.join("marker").exists());
+        // A hand-edited bad name is ignored rather than shown.
+        assert_eq!(ProfileMetadata::parse("name=\u{7}\n").name, None);
+        assert_eq!(ProfileMetadata::parse("name=Home\n").name.as_deref(), Some("Home"));
+    }
+
+    #[test]
+    fn creating_a_named_profile_derives_a_folder_and_a_fresh_accent() {
+        let app = temp_root("create-display");
+        let work = create_with_display_name(&app, "Work stuff").unwrap();
+        assert_eq!(work.name(), Some("Work-stuff"));
+        assert_eq!(work.display_name(), "Work stuff");
+        assert_eq!(work.app_user_model_id().as_deref(), Some("Bowser.Profile.Work-stuff"));
+        assert_eq!(create_with_display_name(&app, "WORK STUFF"), Err(ProfileError::NameTaken));
+        let again = create_with_display_name(&app, "Work stuff!").unwrap();
+        assert_eq!(again.name(), Some("Work-stuff-2"));
+        let fun = create_with_display_name(&app, "☕☕").unwrap();
+        assert_eq!(fun.name(), Some("Profile-1"));
+        assert_eq!(fun.display_name(), "☕☕");
+        let accents: Vec<String> = summaries(&app).into_iter().map(|s| s.metadata.accent).collect();
+        // default (blue, no file), then the three new ones in creation order of accents.
+        assert_eq!(ProfileMetadata::load(&work).accent, "violet");
+        assert_eq!(ProfileMetadata::load(&again).accent, "teal");
+        assert_eq!(ProfileMetadata::load(&fun).accent, "amber");
+        assert_eq!(accents.len(), 4);
         let _ = fs::remove_dir_all(&app);
-        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn display_names_change_in_place_for_any_profile_including_the_open_one() {
+        let app = temp_root("set-display");
+        let default = Profile::default_in(&app);
+        assert_eq!(default.display_name(), "Default");
+        assert_eq!(default.title_suffix(), "");
+        assert_eq!(set_display_name(&app, DEFAULT_NAME, " Personal ").unwrap(), "Personal");
+        assert_eq!(default.display_name(), "Personal");
+        assert!(default.title_suffix().contains("Personal"));
+        assert!(default.app_user_model_id().is_none());
+        let work = create_named(&app, "Work").unwrap();
+        fs::write(work.root().join("marker"), "kept").unwrap();
+        assert_eq!(set_display_name(&app, "Work", "personal"), Err(ProfileError::NameTaken));
+        assert_eq!(set_display_name(&app, "Work", "Work"), Ok("Work".to_owned()));
+        set_display_name(&app, "Work", "Office").unwrap();
+        assert_eq!(work.display_name(), "Office");
+        assert_eq!(work.name(), Some("Work"), "the folder id never changes");
+        assert_eq!(fs::read_to_string(work.root().join("marker")).unwrap(), "kept");
+        set_look(&app, "Work", Some("moon"), Some("rose")).unwrap();
+        let metadata = ProfileMetadata::load(&work);
+        assert_eq!((metadata.avatar.as_str(), metadata.accent.as_str()), ("moon", "rose"));
+        assert_eq!(metadata.name.as_deref(), Some("Office"));
+        assert_eq!(set_look(&app, "Work", Some("bogus"), None), Err(ProfileError::InvalidMetadata));
+        assert_eq!(set_display_name(&app, "Missing", "X"), Err(ProfileError::NotFound));
+        let _ = fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn folder_ids_from_display_names_are_always_valid_names() {
+        assert_eq!(folder_id_for("Work stuff").as_deref(), Some("Work-stuff"));
+        assert_eq!(folder_id_for("  ..Kids / School.. ").as_deref(), Some("Kids-School"));
+        assert_eq!(folder_id_for("con"), None);
+        assert_eq!(folder_id_for("default"), None);
+        assert_eq!(folder_id_for("日本"), None);
+        let long = folder_id_for(&"a".repeat(40)).unwrap();
+        assert_eq!(long.len(), MAX_NAME_LEN);
     }
 
     #[test]

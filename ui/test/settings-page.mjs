@@ -2605,3 +2605,106 @@ test('an invalid Homepage or Startup pages entry stays to correct but is marked 
   assert.equal(pages.getAttribute('aria-invalid'), null);
   deliver(fixture.snap); // Bowser's answer settles the pending saves for the tests after this one.
 });
+
+// --- profiles --- the profile manager on bowser://settings/profile.
+test('profiles: the snapshot list is strict, names are checked like Rust, and commands are plain text', () => {
+  const good = fixture.snap.d.profiles;
+  assert.deepEqual(logic.parseProfiles(good).map((p) => [p.id, p.name, p.current]), [['default', 'Personal', false], ['Work', 'Work "<b>"', true]]);
+  for (const bad of [
+    null, {}, [{ ...good[0], extra: 1 }], [{ ...good[0], id: '../x' }], [{ ...good[0], id: 'Default' }, good[0]], [good[1], { ...good[1], id: 'work' }],
+    [{ ...good[0], name: '' }], [{ ...good[0], name: ' padded' }], [{ ...good[0], name: 'x'.repeat(33) }], [{ ...good[0], colour: 'red' }],
+    [{ ...good[0], avatar: 'cat' }], [{ ...good[0], accent: 'pink' }], [{ ...good[0], current: true }, good[1]], [{ ...good[0], glyph: '' }],
+  ]) assert.equal(logic.parseProfiles(bad), null, JSON.stringify(bad));
+  assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, profiles: undefined }), null, 'the snapshot needs it');
+  assert.equal(logic.cleanProfileName('  Kids & school '), 'Kids & school');
+  assert.equal(logic.cleanProfileName('é'.repeat(32)), 'é'.repeat(32));
+  assert.equal(logic.cleanProfileName('😀'.repeat(32)), '😀'.repeat(32), 'characters, not UTF-16 units');
+  assert.equal(logic.cleanProfileName('a\nb'), null);
+  assert.equal(logic.profileNameError('', good), 'Enter a name.');
+  assert.equal(logic.profileNameError('personal', good), 'Another profile already uses that name.');
+  assert.equal(logic.profileNameError('Personal', good, 'default'), null, 'its own name');
+  assert.equal(logic.profileNameError('Kids', good), null);
+  assert.equal(logic.profileGlyph('initial', 'école'), 'É');
+  assert.equal(logic.profileGlyph('star', 'Work'), '✦');
+  assert.equal(logic.profileText.create('  Kids '), 'new\tKids');
+  assert.equal(logic.profileText.rename('Work', ' Office '), 'rename\tWork\tOffice');
+  assert.equal(logic.profileText.look('default', 'moon', 'rose'), 'look\tdefault\tmoon\trose');
+  assert.equal(logic.profileText.remove('Work'), 'delete\tWork');
+});
+
+test('profiles: the manager lists each profile, opens others, adds, renames in place and asks before deleting', async () => {
+  deliver(fixture.snap);
+  const row = rowNode('profiles');
+  const items = row.querySelectorAll('.sp-profile');
+  assert.deepEqual(items.map((item) => item.dataset.profile), ['default', 'Work']);
+  assert.deepEqual(items.map((item) => item.querySelector('.sp-profile-name').textContent), ['Personal', 'Work "<b>"']);
+  assert.equal(items[1].getAttribute('aria-current'), 'true');
+  const button = (scope, label) => scope.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === label || b.textContent.trim() === label);
+  assert.equal(button(items[1], 'Open Work "<b>"'), undefined, 'the current profile has no Open');
+  assert.equal(button(items[0], 'Delete Personal'), undefined, 'the default profile is never deleted');
+  assert.equal(button(items[1], 'Delete Work "<b>"'), undefined, 'nor the one this window runs');
+  sent.length = 0;
+  button(items[0], 'Open Personal').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'open\tdefault' }]);
+
+  // Add: refused names say why and send nothing.
+  const input = row.querySelector('.sp-profile-add').querySelector('.sp-allow-input');
+  const add = button(row.querySelector('.sp-profile-add'), 'Add profile');
+  const error = row.querySelectorAll('.sp-field-error').at(-1);
+  sent.length = 0;
+  input.value = 'PERSONAL';
+  add.click();
+  assert.deepEqual(sent, []);
+  assert.equal(error.textContent, 'Another profile already uses that name.');
+  input.value = '  Kids ';
+  add.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'new\tKids' }]);
+  assert.equal(input.value, '');
+
+  // The current profile's look: one radio per avatar and per colour.
+  const look = row.querySelector('.sp-profile-look');
+  assert.equal(look.hidden, false);
+  const radios = look.querySelectorAll('[role="radio"]');
+  assert.equal(radios.length, 10);
+  assert.deepEqual(radios.filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.getAttribute('aria-label')), ['Star', 'Teal']);
+  sent.length = 0;
+  radios.find((r) => r.getAttribute('aria-label') === 'Rose').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'look\tWork\tstar\trose' }]);
+
+  // Rename happens in the row.
+  button(row.querySelectorAll('.sp-profile')[0], 'Rename Personal').click();
+  const rename = row.querySelector('.sp-profile-rename');
+  assert.ok(rename);
+  rename.value = 'Home';
+  sent.length = 0;
+  button(row.querySelectorAll('.sp-profile')[0], 'Save').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'rename\tdefault\tHome' }]);
+  assert.equal(row.querySelector('.sp-profile-rename'), null, 'the row closes');
+
+  // Delete asks first, in the page; Keep is the focused answer.
+  const other = { ...fixture.snap, d: { ...fixture.snap.d, ack: 'none', profiles: [...fixture.snap.d.profiles, { id: 'Kids', name: 'Kids', glyph: 'K', colour: '#6542a5', avatar: 'initial', accent: 'violet', current: false }] } };
+  deliver(other);
+  const kids = () => row.querySelectorAll('.sp-profile').find((item) => item.dataset.profile === 'Kids');
+  sent.length = 0;
+  button(kids(), 'Delete Kids').click();
+  assert.deepEqual(sent, [], 'nothing is deleted on the first click');
+  assert.ok(kids().classList.contains('is-asking'));
+  await Promise.resolve();
+  assert.equal(document.activeElement, button(kids(), 'Keep'));
+  button(kids(), 'Keep').click();
+  assert.deepEqual(sent, []);
+  button(kids(), 'Delete Kids').click();
+  button(kids(), 'Delete').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'delete\tKids' }]);
+  deliver(fixture.snap);
+});
+
+test('profiles: a guest window lists the profiles to open but changes none of them', () => {
+  const guest = { ...fixture.guest, d: { ...fixture.guest.d, profiles: fixture.guest.d.profiles.map((p) => ({ ...p, current: false })) } };
+  deliver(guest);
+  const row = rowNode('profiles');
+  assert.equal(row.querySelector('.sp-profile-look').hidden, true);
+  assert.equal(row.querySelectorAll('.sp-profile-act').length, 0, 'no rename, shortcut or delete');
+  assert.deepEqual(row.querySelectorAll('button').map((b) => b.getAttribute('aria-label')).filter((label) => label?.startsWith('Open ')), ['Open Personal', 'Open Work "<b>"']);
+  deliver(fixture.snap);
+});

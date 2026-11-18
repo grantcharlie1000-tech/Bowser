@@ -236,6 +236,8 @@ export interface SettingsSnapshot {
   // --- tab stacks, tiling and workspaces (T10) ---
   /** Sites that open in a named workspace, and the workspaces a rule can name. Each change is its own `wsrule` command. */
   workspaceRules: WorkspaceRules;
+  /** Every profile, `default` first, for the profile manager. Each change is its own `profile` command. */
+  profiles: readonly ProfileEntry[];
   // --- end tab stacks ---
   // --- layout (thread T6) ---
   /** The Layout block's own options (`layout_prefs.rs`); the tab layout and panel side are the older keys above. */
@@ -269,6 +271,84 @@ function parseBarsSettings(value: unknown): BarsSettings | null {
   if (typeof feedsRefresh !== 'number' || !(REFRESH_CHOICES as readonly number[]).includes(feedsRefresh)) return null;
   return { tabs, panel, feedsDetect, feedsRefresh };
 }
+
+// --- profiles ---
+export const PROFILE_AVATARS = ['initial', 'leaf', 'star', 'wave', 'moon'] as const;
+export type ProfileAvatar = typeof PROFILE_AVATARS[number];
+export const PROFILE_ACCENTS = ['blue', 'violet', 'teal', 'amber', 'rose'] as const;
+export type ProfileAccent = typeof PROFILE_ACCENTS[number];
+/** The accent colours, as `ProfileMetadata::accent_colour` in src/profile.rs draws them. */
+export const PROFILE_ACCENT_COLOURS: Readonly<Record<ProfileAccent, string>> = { blue: '#2b5fa8', violet: '#6542a5', teal: '#176d62', amber: '#945700', rose: '#a33f5a' };
+export const PROFILE_AVATAR_LABELS: Readonly<Record<ProfileAvatar, string>> = { initial: 'Initial', leaf: 'Leaf', star: 'Star', wave: 'Wave', moon: 'Moon' };
+export const PROFILE_ACCENT_LABELS: Readonly<Record<ProfileAccent, string>> = { blue: 'Blue', violet: 'Violet', teal: 'Teal', amber: 'Amber', rose: 'Rose' };
+const PROFILE_GLYPHS: Readonly<Record<Exclude<ProfileAvatar, 'initial'>, string>> = { leaf: '\u2767', star: '\u2726', wave: '\u2248', moon: '\u263e' };
+/** Most profiles Rust lists (`settings::MAX_LISTED_PROFILES`). */
+export const MAX_PROFILES = 300;
+/** Longest display name, in characters (`profile::MAX_DISPLAY_NAME_CHARS`). */
+export const MAX_PROFILE_NAME = 32;
+export interface ProfileEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly glyph: string;
+  readonly colour: string;
+  readonly avatar: ProfileAvatar;
+  readonly accent: ProfileAccent;
+  /** The profile this window runs (none in a guest window). */
+  readonly current: boolean;
+}
+const PROFILE_ID_RE = /^(?:default|[A-Za-z0-9_-]{1,32})$/;
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
+/** The avatar a profile shows: its symbol, or the first letter of its name. */
+export function profileGlyph(avatar: ProfileAvatar, name: string): string {
+  if (avatar !== 'initial') return PROFILE_GLYPHS[avatar];
+  const first = [...name][0];
+  return first === undefined ? 'B' : first.toUpperCase();
+}
+/** A typed name as Bowser keeps it (trimmed), or `null` when Bowser would refuse it. */
+export function cleanProfileName(name: string): string | null {
+  const trimmed = name.trim();
+  const length = [...trimmed].length;
+  return length === 0 || length > MAX_PROFILE_NAME || CONTROL_RE.test(trimmed) ? null : trimmed;
+}
+/** Why a typed name cannot be used (`null` when it can). `exceptId` is the profile being renamed. */
+export function profileNameError(name: string, profiles: readonly ProfileEntry[], exceptId?: string): string | null {
+  const clean = cleanProfileName(name);
+  if (name.trim() === '') return 'Enter a name.';
+  if (clean === null) return `Use ${MAX_PROFILE_NAME} characters or fewer, without line breaks.`;
+  const wanted = clean.toLowerCase();
+  if (profiles.some((p) => p.id !== exceptId && p.name.toLowerCase() === wanted)) return 'Another profile already uses that name.';
+  return null;
+}
+/** Strict check of the snapshot's `profiles`. */
+export function parseProfiles(value: unknown): ProfileEntry[] | null {
+  if (!Array.isArray(value) || value.length > MAX_PROFILES) return null;
+  const out: ProfileEntry[] = [];
+  const ids = new Set<string>();
+  for (const raw of value as unknown[]) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+    const p = raw as Record<string, unknown>;
+    const keys = Object.keys(p);
+    if (keys.length !== 7 || !['id', 'name', 'glyph', 'colour', 'avatar', 'accent', 'current'].every((key) => keys.includes(key))) return null;
+    if (typeof p.id !== 'string' || !PROFILE_ID_RE.test(p.id) || ids.has(p.id.toLowerCase())) return null;
+    if (typeof p.name !== 'string' || cleanProfileName(p.name) !== p.name || !isStrUpTo(p.glyph, 4) || p.glyph === '') return null;
+    if (typeof p.colour !== 'string' || !/^#[0-9a-f]{6}$/.test(p.colour) || typeof p.current !== 'boolean') return null;
+    if (!oneOf(p.avatar, PROFILE_AVATARS) || !oneOf(p.accent, PROFILE_ACCENTS)) return null;
+    ids.add(p.id.toLowerCase());
+    out.push({ id: p.id, name: p.name, glyph: p.glyph, colour: p.colour, avatar: p.avatar, accent: p.accent, current: p.current });
+  }
+  return out.filter((p) => p.current).length <= 1 ? out : null;
+}
+/** The `profile` command texts (src/chrome_host/settings.rs `parse_profile_command`). */
+export const profileText = {
+  open: (id: string): string => `open\t${id}`,
+  create: (name: string): string => `new\t${name.trim()}`,
+  rename: (id: string, name: string): string => `rename\t${id}\t${name.trim()}`,
+  look: (id: string, avatar: ProfileAvatar, accent: ProfileAccent): string => `look\t${id}\t${avatar}\t${accent}`,
+  shortcut: (id: string): string => `shortcut\t${id}`,
+  remove: (id: string): string => `delete\t${id}`,
+  guest: (): string => 'guest',
+};
+// --- end profiles ---
 
 // --- tab stacks, tiling and workspaces (T10) ---
 export interface WorkspaceRule { readonly site: string; readonly workspace: string }
@@ -329,7 +409,7 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sidebarPinned', 'sleepEnabled', 'sle
   'defaultBrowser', 'downloadDir', 'downloadAsk',
   'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'workspaceRules' /* --- tab stacks (T10) --- */,
   'layout' /* --- layout (thread T6) --- */, 'themeOptions', 'window' /* --- window and panels (thread T9) --- */,
-  'bars' /* --- toolbars and feeds (thread T13) --- */];
+  'bars' /* --- toolbars and feeds (thread T13) --- */, 'profiles' /* --- profiles --- */];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -402,6 +482,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (!tabOptions) return null;
   const workspaceRules = parseWorkspaceRules(v.workspaceRules); // --- tab stacks (T10) ---
   if (!workspaceRules) return null;
+  const profiles = parseProfiles(v.profiles); // --- profiles ---
+  if (!profiles) return null;
   const layout = parseLayoutSettings(v.layout); // --- layout (thread T6) ---
   if (layout === null) return null;
   const themeOptions = parseThemeOptions(v.themeOptions); // --- theme options ---
@@ -481,6 +563,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     start,
     tabOptions,
     workspaceRules,
+    profiles,
     layout, // --- layout (thread T6) ---
     themeOptions,
     window, // --- window and panels (thread T9) ---
@@ -711,7 +794,7 @@ export function moreCountText(count: number): string {
  * Default page zoom, the feed list, private-window search and the finer tab rules are behind More options.
  */
 const CORE_ROWS: ReadonlySet<string> = new Set([
-  'profile', 'import',
+  'profile', 'profiles', 'import',
   'layoutPreset' /* --- layout (thread T6): the presets decide where every bar sits; the rest of the block is `more` --- */,
   'theme', 'themeSchedule', 'themeAccent', 'websiteAppearance', 'bookmarksBar', 'fontSize', 'translateOffer',
   'feedsOpen', // --- toolbars and feeds (thread T13) ---
@@ -781,7 +864,7 @@ const TABS_SECTION_ROWS: readonly RowSpec[] = (() => {
 /** Every row the page draws, in page order. The view builds a control per id. */
 export const ROWS: readonly RowSpec[] = [
   { id: 'profile', section: 'profile', label: 'Profile', aria: 'This profile', description: '', keywords: 'account person name avatar guest you and bowser profile This profile Settings on this page apply to this profile only.' },
-  { id: 'profiles', section: 'profile', label: 'Profiles', aria: 'Manage profiles', description: '', keywords: 'switch new guest delete rename Manage profiles Switch, create, rename or delete profiles.' },
+  { id: 'profiles', section: 'profile', label: 'Profiles', aria: 'Profiles', description: '', keywords: 'switch new add create guest delete remove rename name avatar colour color shortcut desktop taskbar work personal sign-ins Manage profiles Switch, create, rename or delete profiles. Each profile keeps its own sign-ins, history, bookmarks and settings, and gets its own taskbar button.' },
   { id: 'import', section: 'profile', label: 'Import', aria: 'Import bookmarks', description: '', keywords: 'chrome edge firefox migrate transfer bookmarks import Import bookmarks Bring bookmarks over from another browser on this PC.' },
   // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
   { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: '', keywords: 'layout preset presets simple classic vertical left right bottom saved thumbnails arrangement tabs top side Presets A starting arrangement. Change any part of it and Bowser keeps yours as Saved.' },
