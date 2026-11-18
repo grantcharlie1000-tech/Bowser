@@ -26,6 +26,9 @@ export const REWRITES = {
   "/r/pics/": "/pages/reddit-old.html",
   "/watch": "/pages/youtube-watch.html",
   "/results": "/pages/youtube-search.html",
+  "/results/thumbs": "/pages/youtube-thumbs.html",
+  "/live/abc123": "/pages/youtube-live.html",
+  "/watch/vod": "/pages/youtube-vod.html",
   "/search": "/pages/google.html",
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
