@@ -345,14 +345,13 @@
 
 /* ---- Tab islands (groups): one rounded box holding a coloured bar and the island's tabs. ----
    Expanded: [ bar tab tab ... ] on a shared wash.   Folded around the tab in use: one box with the
-   selected tab's fill, [ bar  icon title  slivers ].   Folded away: a pill in the island's colour.
+   selected tab's fill, [ bar  icon title ] ) ), slivers peeking out behind it.   Folded away: a pill
+   in the island's colour.
    The bar and the slivers are the handle: a click folds or unfolds, resting on one opens the menu. */
 .strip .group {
   --gb: 6px; /* the bar's thickness */
   --gi: 3px; /* how far the bar sits inside the island's box */
   --gp: 2px; /* the open box's padding around its tabs */
-  --cw: 8px; /* the closing mark: two 3px slivers 2px apart */
-  --ci: var(--gi); /* the slivers sit as far inside the box as the bar */
   /* The box's corners wrap the bar: its radius is the bar's (half its thickness) plus the inset, so
      the grey keeps the same distance all round the pill. */
   --gr: calc(var(--gb) / 2 + var(--gi));
@@ -432,11 +431,10 @@
 }
 
 /* Folded around the tab in use: the tab's selected surface is the island's box. The bar is drawn
-   over its left end and the closing mark over its right end (the tab makes room for both), so they
-   read as one piece. The mark is a grey sliver for each tab folded behind this one, two at most,
-   like the edges of stacked cards; it carries no colour. */
+   over its left end (the tab makes room for it). After its right end the closing mark peeks out: a
+   sliver of the same surface for each tab folded behind this one, two at most, each a step shorter,
+   like the edges of a stack of cards behind the top one; it carries no colour. */
 .strip .group .cap { display: none; }
-.strip .group[data-more="1"] { --cw: 3px; }
 .strip .group.collapsed:has(.tab:not([hidden])) {
   gap: 0;
   flex-basis: 0px;
@@ -454,31 +452,31 @@
   align-items: center;
   align-self: stretch;
   gap: 2px;
-  margin-inline: calc(-1 * (var(--ci) + var(--cw))) var(--ci);
+  margin-inline-start: 2px;
 }
 .strip .group[data-more="0"] .cap { display: none; }
 .strip .group .sliver {
   flex: none;
-  width: 3px;
-  height: calc(var(--bw-tab-h) - 2 * var(--gi)); /* the bar's height: both ends of the box match */
+  width: 4px;
+  height: calc(var(--bw-tab-h) - 4px); /* each card behind is 2px shorter at both ends */
   border-radius: var(--bw-r-pill);
-  background: color-mix(in srgb, var(--bw-text) 40%, transparent);
+  background: var(--bw-tab-raised);
+  box-shadow: var(--bw-sh-tab);
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
+.strip .group .sliver + .sliver { height: calc(var(--bw-tab-h) - 8px); }
 .strip .group[data-more="1"] .sliver + .sliver { display: none; }
-.strip .group .cap:hover .sliver { background: color-mix(in srgb, var(--bw-text) 62%, transparent); }
+.strip .group .cap:hover .sliver { background: color-mix(in srgb, var(--bw-text) 10%, var(--bw-tab-raised)); }
 .strip .group .cap { cursor: grab; }
 
 .strip .group.collapsed .tab:not([hidden]) {
-  padding-inline: calc(var(--gi) + var(--gb) + 5px) calc(var(--ci) + var(--cw) + var(--bw-space-0_5));
+  padding-inline: calc(var(--gi) + var(--gb) + 5px) var(--bw-space-0_5);
 }
 .strip.close-left .group.collapsed .tab:not([hidden]) {
-  padding-inline: calc(var(--gi) + var(--gb) + var(--bw-space-0_5)) calc(var(--ci) + var(--cw) + 6px);
+  padding-inline: calc(var(--gi) + var(--gb) + var(--bw-space-0_5)) 7px;
 }
-.strip .group.collapsed[data-more="0"] .tab:not([hidden]) { padding-inline-end: var(--bw-space-0_5); }
-.strip.close-left .group.collapsed[data-more="0"] .tab:not([hidden]) { padding-inline-end: 7px; }
 
-/* That box takes the island's corners, wrapping the bar and the slivers like the open box does. */
+/* That box takes the island's corners, wrapping the bar like the open box does. */
 .strip .group.collapsed .tab:not([hidden]) { border-radius: var(--gr); }
 
 /* Inside that box the tab in use shows its close button only under the pointer or with focus. */
