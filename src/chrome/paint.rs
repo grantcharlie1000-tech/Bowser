@@ -3991,26 +3991,17 @@ mod tests {
             omnibox("example.com", (0, 0), ""),
         );
 
-        let mut native = native_surface(800, 120, 96);
-        native.set_html_pending(1, false);
-        native.paint(&view, Rect::new(0, 0, 800, native.height()));
-        let mut waiting = native_surface(800, 120, 96);
-        waiting.set_html_pending(1, true);
-        waiting.paint(&view, Rect::new(0, 0, 800, waiting.height()));
-        let mut no_tabs = native_surface(800, 120, 96);
-        no_tabs.set_html_pending(1, false);
-        no_tabs.paint(&empty, Rect::new(0, 0, 800, no_tabs.height()));
-
-        let native_pixels = pixels(&native);
-        let waiting_pixels = pixels(&waiting);
-        assert!(
-            native_pixels != pixels(&no_tabs),
-            "the native row should contain the tab's painted pixels"
-        );
-        assert!(
-            waiting_pixels == pixels(&no_tabs),
-            "a tab row waiting for its HTML page shows no native tabs"
-        );
+        let paint = |pending: bool, view: &ChromeView<'_>| {
+            let mut surface = native_surface(800, 120, 96);
+            surface.set_html_pending(1, pending);
+            surface.paint(view, Rect::new(0, 0, 800, surface.height()));
+            pixels(&surface)
+        };
+        // Waiting, the row draws nothing of the tabs: the same pixels whatever the tab list holds,
+        // and not the native row, which draws the tab.
+        let waiting = paint(true, &view);
+        assert!(waiting == paint(true, &empty), "a tab row waiting for its HTML page shows no native tabs");
+        assert!(paint(false, &view) != waiting, "the native row draws the tab");
     }
 
     #[test]
@@ -4385,7 +4376,7 @@ mod tests {
             }
             assert_eq!(pixel_at(&s, mx, my), [fill.b, fill.g, fill.r, 255], "{context}: the card over an empty tab");
             // The top-edge strip with the window buttons: nothing of it while it is out of sight; once
-            // out, opaque along the top edge with the buttons' glyphs at its end and a shadow below it.
+            // out, opaque along the top edge with the buttons' glyphs at its end.
             let _ = s.set_empty_viewport(None);
             let band = layout.float_band;
             assert!(!band.is_empty());
@@ -4397,8 +4388,8 @@ mod tests {
             assert!(s.set_float_band_hidden(false));
             s.paint(&view, dirty);
             assert_eq!(pixel_at(&s, probe_x, probe_y), [fill.b, fill.g, fill.r, 255], "{context}: the strip's surface");
-            let under = alpha_at(&s, probe_x, band.bottom + 1);
-            assert!(under > 0 && under < 255, "{context}: a soft shadow under the strip ({under})");
+            // It pushes the page down while it is out, so it casts no shadow on it.
+            assert_eq!(alpha_at(&s, probe_x, band.bottom + 1), 0, "{context}: no shadow under the strip");
             let close = layout.caption_button(Hit::CaptionClose);
             let glyph = (close.left..close.right).any(|x| (close.top..close.bottom).any(|y| pixel_at(&s, x, y) != [fill.b, fill.g, fill.r, 255]));
             assert!(glyph, "{context}: the close button's glyph is drawn on the strip");

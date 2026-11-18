@@ -325,21 +325,34 @@ fn skipped_text_is_a_failed_frame_and_is_repainted_on_the_same_size_retry() {
 }
 
 #[test]
-fn pending_html_keeps_the_native_pixels_and_hit_testing_including_vertical_tabs() {
+fn pending_html_shows_plain_chrome_until_ready_and_native_controls_after_a_failure() {
     let f = Fixture::new();
     f.resize(800, 600, crate::settings::TabLayout::Vertical);
     f.paint();
-    let expected = with_chrome(f.hwnd, |s| faults::pixels(&s.surface)).unwrap();
+    let native = with_chrome(f.hwnd, |s| faults::pixels(&s.surface)).unwrap();
+    let omnibox = with_chrome(f.hwnd, |s| s.layout.omnibox).unwrap();
+    let centre = ((omnibox.left + omnibox.right) / 2, (omnibox.top + omnibox.bottom) / 2);
+    // Starting hosts: the native toolbar, rail and sidebar are neither drawn nor clickable.
     with_chrome(f.hwnd, |s| {
         s.html_failed = [false; 3];
         s.chrome_lifetimes.begin(Instant::now());
         s.sync_html_bounds(); s.sync_html_tabs_bounds(); s.sync_html_rail_bounds();
     });
     f.paint();
-    assert!(with_chrome(f.hwnd, |s| faults::pixels(&s.surface)).unwrap() == expected,
-        "pending hosts must leave the functional native toolbar, rail and sidebar visible");
-    let omnibox = with_chrome(f.hwnd, |s| s.layout.omnibox).unwrap();
-    assert_eq!(hit(f.hwnd, (omnibox.left + omnibox.right) / 2, (omnibox.top + omnibox.bottom) / 2), Hit::Omnibox);
+    if crate::chrome_host::html_ui_enabled() {
+        assert!(with_chrome(f.hwnd, |s| faults::pixels(&s.surface)).unwrap() != native,
+            "pending hosts show plain chrome, not the native design");
+        assert_eq!(hit(f.hwnd, centre.0, centre.1), Hit::None, "the hidden native address field takes no clicks");
+    }
+    // A failed start falls back to the functional native controls.
+    with_chrome(f.hwnd, |s| {
+        s.html_failed = [true; 3];
+        s.sync_html_bounds(); s.sync_html_tabs_bounds(); s.sync_html_rail_bounds();
+    });
+    f.paint();
+    assert!(with_chrome(f.hwnd, |s| faults::pixels(&s.surface)).unwrap() == native,
+        "after a failure the native toolbar, rail and sidebar are back");
+    assert_eq!(hit(f.hwnd, centre.0, centre.1), Hit::Omnibox);
 }
 
 #[test]
