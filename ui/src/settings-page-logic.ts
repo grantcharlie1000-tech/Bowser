@@ -2,6 +2,7 @@
 // contract, the exact-match save payload, the section and row index the nav and the search use,
 // and the words that depend on state. No DOM here; test/settings-page.mjs covers all of it.
 import { MAX_SETTINGS_SAVE, SETTINGS_SECTIONS, utf8Bytes, type SettingsSection } from './protocol';
+import { localNameError } from './composer-logic'; // --- profiles ---
 // --- start page ---
 import { parseStartSettings, startSaveLines, type StartSettings } from './start-page-logic';
 // --- end start page ---
@@ -237,7 +238,7 @@ export interface SettingsSnapshot {
   /** Sites that open in a named workspace, and the workspaces a rule can name. Each change is its own `wsrule` command. */
   workspaceRules: WorkspaceRules;
   /** Every profile, `default` first, for the profile manager. Each change is its own `profile` command. */
-  profiles: readonly ProfileEntry[];
+  profiles: ProfileList;
   // --- end tab stacks ---
   // --- layout (thread T6) ---
   /** The Layout block's own options (`layout_prefs.rs`); the tab layout and panel side are the older keys above. */
@@ -277,12 +278,9 @@ export const PROFILE_AVATARS = ['initial', 'leaf', 'star', 'wave', 'moon'] as co
 export type ProfileAvatar = typeof PROFILE_AVATARS[number];
 export const PROFILE_ACCENTS = ['blue', 'violet', 'teal', 'amber', 'rose'] as const;
 export type ProfileAccent = typeof PROFILE_ACCENTS[number];
-/** The accent colours, as `ProfileMetadata::accent_colour` in src/profile.rs draws them. */
-export const PROFILE_ACCENT_COLOURS: Readonly<Record<ProfileAccent, string>> = { blue: '#2b5fa8', violet: '#6542a5', teal: '#176d62', amber: '#945700', rose: '#a33f5a' };
 export const PROFILE_AVATAR_LABELS: Readonly<Record<ProfileAvatar, string>> = { initial: 'Initial', leaf: 'Leaf', star: 'Star', wave: 'Wave', moon: 'Moon' };
 export const PROFILE_ACCENT_LABELS: Readonly<Record<ProfileAccent, string>> = { blue: 'Blue', violet: 'Violet', teal: 'Teal', amber: 'Amber', rose: 'Rose' };
-const PROFILE_GLYPHS: Readonly<Record<Exclude<ProfileAvatar, 'initial'>, string>> = { leaf: '\u2767', star: '\u2726', wave: '\u2248', moon: '\u263e' };
-/** Most profiles Rust lists (`settings::MAX_LISTED_PROFILES`). */
+/** Most profiles Rust lists (`profile::MAX_LISTED`). */
 export const MAX_PROFILES = 300;
 /** Longest display name, in characters (`profile::MAX_DISPLAY_NAME_CHARS`). */
 export const MAX_PROFILE_NAME = 32;
@@ -296,47 +294,48 @@ export interface ProfileEntry {
   /** The profile this window runs (none in a guest window). */
   readonly current: boolean;
 }
+/**
+ * The profiles, and how this window's profile looks with each avatar and each colour: one glyph per
+ * `PROFILE_AVATARS` entry and one `#rrggbb` per `PROFILE_ACCENTS` entry, drawn by Rust (both empty
+ * in a guest window).
+ */
+export interface ProfileList { readonly list: readonly ProfileEntry[]; readonly avatars: readonly string[]; readonly accents: readonly string[] }
 const PROFILE_ID_RE = /^(?:default|[A-Za-z0-9_-]{1,32})$/;
-const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
-/** The avatar a profile shows: its symbol, or the first letter of its name. */
-export function profileGlyph(avatar: ProfileAvatar, name: string): string {
-  if (avatar !== 'initial') return PROFILE_GLYPHS[avatar];
-  const first = [...name][0];
-  return first === undefined ? 'B' : first.toUpperCase();
-}
-/** A typed name as Bowser keeps it (trimmed), or `null` when Bowser would refuse it. */
-export function cleanProfileName(name: string): string | null {
-  const trimmed = name.trim();
-  const length = [...trimmed].length;
-  return length === 0 || length > MAX_PROFILE_NAME || CONTROL_RE.test(trimmed) ? null : trimmed;
-}
-/** Why a typed name cannot be used (`null` when it can). `exceptId` is the profile being renamed. */
-export function profileNameError(name: string, profiles: readonly ProfileEntry[], exceptId?: string): string | null {
-  const clean = cleanProfileName(name);
-  if (name.trim() === '') return 'Enter a name.';
-  if (clean === null) return `Use ${MAX_PROFILE_NAME} characters or fewer, without line breaks.`;
-  const wanted = clean.toLowerCase();
-  if (profiles.some((p) => p.id !== exceptId && p.name.toLowerCase() === wanted)) return 'Another profile already uses that name.';
-  return null;
+const COLOUR_RE = /^#[0-9a-f]{6}$/;
+/** Direction overrides and zero-width characters (`downloads::is_hidden_format_char`). */
+const HIDDEN_RE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+/** Why a typed name cannot be used ('' when it can). `exceptId` is the profile being renamed. */
+export function profileNameError(name: string, profiles: readonly ProfileEntry[], exceptId?: string): string {
+  const local = localNameError(name, MAX_PROFILE_NAME);
+  if (local !== '') return local;
+  if (HIDDEN_RE.test(name)) return 'Names cannot contain invisible characters.';
+  const wanted = name.trim().toLowerCase();
+  return profiles.some((p) => p.id !== exceptId && p.name.toLowerCase() === wanted) ? 'Another profile already uses that name.' : '';
 }
 /** Strict check of the snapshot's `profiles`. */
-export function parseProfiles(value: unknown): ProfileEntry[] | null {
-  if (!Array.isArray(value) || value.length > MAX_PROFILES) return null;
-  const out: ProfileEntry[] = [];
+export function parseProfiles(value: unknown): ProfileList | null {
+  if (!isRecord(value) || Object.keys(value).length !== 3 || !Array.isArray(value.list) || value.list.length > MAX_PROFILES) return null;
+  const { avatars, accents } = value;
+  const looks = (raw: unknown, size: number, ok: (item: unknown) => boolean): raw is string[] => Array.isArray(raw) && (raw.length === 0 || raw.length === size) && raw.every(ok);
+  if (!looks(avatars, PROFILE_AVATARS.length, (g) => isStrUpTo(g, 4) && g !== '') || !looks(accents, PROFILE_ACCENTS.length, (c) => typeof c === 'string' && COLOUR_RE.test(c))) return null;
+  const list: ProfileEntry[] = [];
   const ids = new Set<string>();
-  for (const raw of value as unknown[]) {
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-    const p = raw as Record<string, unknown>;
+  for (const raw of value.list as unknown[]) {
+    if (!isRecord(raw)) return null;
+    const p = raw;
     const keys = Object.keys(p);
     if (keys.length !== 7 || !['id', 'name', 'glyph', 'colour', 'avatar', 'accent', 'current'].every((key) => keys.includes(key))) return null;
     if (typeof p.id !== 'string' || !PROFILE_ID_RE.test(p.id) || ids.has(p.id.toLowerCase())) return null;
-    if (typeof p.name !== 'string' || cleanProfileName(p.name) !== p.name || !isStrUpTo(p.glyph, 4) || p.glyph === '') return null;
-    if (typeof p.colour !== 'string' || !/^#[0-9a-f]{6}$/.test(p.colour) || typeof p.current !== 'boolean') return null;
+    if (typeof p.name !== 'string' || p.name !== p.name.trim() || profileNameError(p.name, []) !== '' || !isStrUpTo(p.glyph, 4) || p.glyph === '') return null;
+    if (typeof p.colour !== 'string' || !COLOUR_RE.test(p.colour) || typeof p.current !== 'boolean') return null;
     if (!oneOf(p.avatar, PROFILE_AVATARS) || !oneOf(p.accent, PROFILE_ACCENTS)) return null;
     ids.add(p.id.toLowerCase());
-    out.push({ id: p.id, name: p.name, glyph: p.glyph, colour: p.colour, avatar: p.avatar, accent: p.accent, current: p.current });
+    list.push({ id: p.id, name: p.name, glyph: p.glyph, colour: p.colour, avatar: p.avatar, accent: p.accent, current: p.current });
   }
-  return out.filter((p) => p.current).length <= 1 ? out : null;
+  const current = list.filter((p) => p.current).length;
+  // The previews describe this window's profile, so they come exactly when one row is it.
+  if (current > 1 || (current === 1) !== (avatars.length > 0) || avatars.length > 0 !== accents.length > 0) return null;
+  return { list, avatars: [...avatars], accents: [...accents] };
 }
 /** The `profile` command texts (src/chrome_host/settings.rs `parse_profile_command`). */
 export const profileText = {

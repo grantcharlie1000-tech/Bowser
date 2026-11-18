@@ -21,15 +21,10 @@ const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
     pid: 5,
 };
 
-/// `Bowser - <name>.lnk`, with the characters Windows refuses in a file name replaced.
+/// `Bowser - <name>.lnk`, made a safe file name the way downloads are (no characters Windows
+/// refuses, no direction overrides or other invisible characters, a length Windows accepts).
 pub(crate) fn shortcut_file_name(display_name: &str) -> String {
-    let cleaned: String = display_name
-        .chars()
-        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
-        .collect();
-    let cleaned = cleaned.trim().trim_end_matches('.');
-    let cleaned = if cleaned.is_empty() { "Profile" } else { cleaned };
-    format!("Bowser - {cleaned}.lnk")
+    crate::downloads::sanitize_file_name(&format!("Bowser - {}.lnk", display_name.replace(['/', '\\'], "_")))
 }
 
 /// The command-line arguments a shortcut for `profile` runs with.
@@ -49,7 +44,7 @@ fn desktop_dir() -> Option<PathBuf> {
         let path = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None).ok()?;
         let text = path.to_string().ok();
         CoTaskMemFree(Some(path.0 as *const _));
-        text.map(PathBuf::from)
+        text.map(PathBuf::from).filter(|dir| dir.is_absolute())
     }
 }
 
@@ -137,9 +132,9 @@ mod tests {
     fn shortcut_names_are_safe_file_names() {
         assert_eq!(shortcut_file_name("Work"), "Bowser - Work.lnk");
         assert_eq!(shortcut_file_name("a/b:c?"), "Bowser - a_b_c_.lnk");
-        assert_eq!(shortcut_file_name("Trailing..."), "Bowser - Trailing.lnk");
-        assert_eq!(shortcut_file_name(" ... "), "Bowser - Profile.lnk");
+        assert_eq!(shortcut_file_name("a\\b"), "Bowser - a_b.lnk");
         assert_eq!(shortcut_file_name("Café ☕"), "Bowser - Café ☕.lnk");
+        assert!(!shortcut_file_name("evil\u{202e}knl.exe").contains('\u{202e}'), "no direction override");
     }
 
     #[test]

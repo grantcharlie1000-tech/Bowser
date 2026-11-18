@@ -23,8 +23,6 @@ pub const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const MAX_PROFILE_CHARS: usize = 64;
 const MAX_AVATAR_CHARS: usize = 4;
 const MAX_ERROR_CHARS: usize = 240;
-/// Most profiles the page lists (the profile menu's `PROFILE_MAX_LISTED`).
-pub const MAX_LISTED_PROFILES: usize = 300;
 
 /// `{"v":1,"t":"settingsgo","s":"<section key>"}`; `s` is empty for the top of the page.
 pub fn go_json(section: Option<Section>) -> String {
@@ -92,7 +90,17 @@ pub struct Snapshot<'a> {
     pub workspace_rules: Vec<(String, String)>,
     pub workspace_names: Vec<String>,
     /// --- profiles --- every listed profile for the profile manager, `default` first.
-    pub profiles: Vec<ProfileRow>,
+    pub profiles: ProfileList,
+}
+
+/// The profile manager's list, and how this window's profile looks with each avatar and colour.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfileList {
+    pub rows: Vec<ProfileRow>,
+    /// One glyph per `crate::profile::AVATARS` entry, in order; empty in a guest window.
+    pub avatars: Vec<String>,
+    /// One `#rrggbb` per `crate::profile::ACCENTS` entry, in order; empty in a guest window.
+    pub accents: Vec<String>,
 }
 
 /// One row of the settings page's profile manager.
@@ -127,11 +135,19 @@ pub enum ProfileCommand {
     Guest,
 }
 
+impl ProfileCommand {
+    /// Whether the page waits for an answer ("Saved" or what went wrong). Opening a window or
+    /// writing a shortcut changes nothing the page shows, so only a failure is reported.
+    pub fn answers(&self) -> bool {
+        matches!(self, Self::New(_) | Self::Rename { .. } | Self::Look { .. } | Self::Delete(_))
+    }
+}
+
 /// Longest `profile` command text: a verb, an id and a 32-character name in UTF-8.
 const MAX_PROFILE_COMMAND: usize = 200;
 
 fn profile_id(text: &str) -> Option<String> {
-    (text == crate::profile::DEFAULT_NAME || crate::profile::validate_name(text).is_ok()).then(|| text.to_owned())
+    crate::profile::validate_listed_name(text).is_ok().then(|| text.to_owned())
 }
 
 /// Parses `open<TAB>id`, `new<TAB>name`, `rename<TAB>id<TAB>name`, `look<TAB>id<TAB>avatar<TAB>accent`,
@@ -276,18 +292,22 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         });
         // --- end tab stacks ---
         // --- profiles --- the profile manager's list.
-        out.array("profiles", |items| {
-            for row in s.profiles.iter().take(MAX_LISTED_PROFILES) {
-                items.object(|o| {
-                    o.string("id", &row.id);
-                    o.string("name", capped(&row.name, MAX_PROFILE_CHARS));
-                    o.string("glyph", capped(&row.glyph, MAX_AVATAR_CHARS));
-                    o.string("colour", &row.colour);
-                    o.string("avatar", &row.avatar);
-                    o.string("accent", &row.accent);
-                    o.bool("current", row.current);
-                });
-            }
+        out.object("profiles", |profiles| {
+            profiles.array("list", |items| {
+                for row in s.profiles.rows.iter().take(crate::profile::MAX_LISTED) {
+                    items.object(|o| {
+                        o.string("id", &row.id);
+                        o.string("name", capped(&row.name, MAX_PROFILE_CHARS));
+                        o.string("glyph", capped(&row.glyph, MAX_AVATAR_CHARS));
+                        o.string("colour", &row.colour);
+                        o.string("avatar", &row.avatar);
+                        o.string("accent", &row.accent);
+                        o.bool("current", row.current);
+                    });
+                }
+            });
+            profiles.array("avatars", |items| for glyph in &s.profiles.avatars { items.string(capped(glyph, MAX_AVATAR_CHARS)); });
+            profiles.array("accents", |items| for colour in &s.profiles.accents { items.string(colour); });
         });
         // --- end profiles ---
         // --- layout (thread T6) --- one object: the Layout block's options (src/layout_prefs.rs)
@@ -360,7 +380,6 @@ pub enum Action {
     CheckUpdates,
     RestartUpdate,
     Privacy,
-    Profiles,
     /// --- profiles --- one change from the profile manager.
     Profile(ProfileCommand),
     Import,
@@ -487,7 +506,6 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "checkupdates" if bare => Action::CheckUpdates,
         "restartupdate" if bare => Action::RestartUpdate,
         "privacy" if bare => Action::Privacy,
-        "profiles" if bare => Action::Profiles,
         "profile" if text_only => Action::Profile(parse_profile_command(f.text.as_deref()?)?),
         "import" if bare => Action::Import,
         "refresh" if bare => Action::Refresh,
@@ -760,7 +778,7 @@ mod tests {
             settings: &back, readable: true, custom_search: false, efficiency_active: false, auto_update: true, history_enabled: true, guest: false,
             profile: "Default", avatar: "", version: "1.0.0", update: "idle", update_version: "", last_check: "none", check_result: "none",
             ack: Ack::Saved, error: "", default_browser: "unknown", download_dir: "", download_ask: false, workspace_rules: Vec::new(), workspace_names: Vec::new(),
-            profiles: Vec::new(),
+            profiles: ProfileList::default(),
         };
         assert!(snapshot_json(&snap).len() <= MAX_SNAPSHOT_BYTES);
         let _ = std::fs::remove_dir_all(&dir);
@@ -836,7 +854,7 @@ mod tests {
         section.text = Some("downloads".into());
         assert_eq!(map_command(&section), Some(Action::Section(Some(Section::Downloads))));
 
-        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("profiles", Action::Profiles), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
+        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
             assert_eq!(map_command(&fields(name)), Some(action), "{name}");
             let mut with_on = fields(name);
             with_on.on = Some(true);
@@ -918,10 +936,14 @@ mod tests {
             download_ask: false,
             workspace_rules: vec![("example.org".into(), "Work".into())],
             workspace_names: vec!["Default".into(), "Work".into()],
-            profiles: vec![
-                ProfileRow { id: "default".into(), name: "Personal".into(), glyph: "P".into(), colour: "#2b5fa8".into(), avatar: "initial".into(), accent: "blue".into(), current: false },
-                ProfileRow { id: "Work".into(), name: "Work \"<b>\"".into(), glyph: "\u{2726}".into(), colour: "#176d62".into(), avatar: "star".into(), accent: "teal".into(), current: true },
-            ],
+            profiles: ProfileList {
+                rows: vec![
+                    ProfileRow { id: "default".into(), name: "Personal".into(), glyph: "P".into(), colour: "#2b5fa8".into(), avatar: "initial".into(), accent: "blue".into(), current: false },
+                    ProfileRow { id: "Work".into(), name: "Work \"<b>\"".into(), glyph: "\u{2726}".into(), colour: "#176d62".into(), avatar: "star".into(), accent: "teal".into(), current: true },
+                ],
+                avatars: vec!["W".into(), "\u{2767}".into(), "\u{2726}".into(), "\u{2248}".into(), "\u{263e}".into()],
+                accents: vec!["#2b5fa8".into(), "#6542a5".into(), "#176d62".into(), "#945700".into(), "#a33f5a".into()],
+            },
         }
     }
 
@@ -929,7 +951,7 @@ mod tests {
     #[test]
     fn profiles_ride_in_the_snapshot_and_profile_commands_are_checked() {
         let json = snapshot_json(&sample(&Settings::default()));
-        assert!(json.contains(r##""profiles":[{"id":"default","name":"Personal","glyph":"P","colour":"#2b5fa8","avatar":"initial","accent":"blue","current":false},"##), "{json}");
+        assert!(json.contains(r##""profiles":{"list":[{"id":"default","name":"Personal","glyph":"P","colour":"#2b5fa8","avatar":"initial","accent":"blue","current":false},"##), "{json}");
         let mut command = fields("profile");
         let cases = [
             ("open\tdefault", ProfileCommand::Open("default".into())),

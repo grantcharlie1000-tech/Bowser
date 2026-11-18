@@ -7,18 +7,17 @@
 import { onInbound, send, sendPanel, type Inbound, type PanelFields, type SettingsSection } from './protocol';
 import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
-import { onFill } from './menu-logic';
 import { attachSegmentThumb } from './segment-thumb';
 import { installTooltips } from './tooltip';
 import { selectField, type SelectField } from './panels/select';
-import { textButton, type PageSection } from './panels/kit';
+import { radioGroup, textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
 import { mountProtection } from './panels/protection'; // blocking, history and website appearance (thread T3)
 import { mountExtensionsSection } from './extensions-section';
 import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
-import { mountProfiles } from './settings-profiles'; // --- profiles ---
+import { mountProfiles, paintDisc } from './settings-profiles'; // --- profiles ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
 import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
@@ -109,49 +108,6 @@ export function switchControl(onChange: (on: boolean) => void): Control<boolean>
     root: button,
     set: (on) => button.setAttribute('aria-checked', String(on)),
     disable: (off) => { button.disabled = off; button.setAttribute('aria-disabled', String(off)); },
-  };
-}
-
-/** Radio group with roving tabindex and arrow keys; `items` build each option's face. */
-function radioGroup<T extends string>(className: string, label: string, items: ReadonlyArray<readonly [T, (button: HTMLButtonElement) => void]>, onSelect: (value: T) => void): Control<T | null> {
-  const group = el('div', className);
-  group.setAttribute('role', 'radiogroup');
-  group.setAttribute('aria-label', label);
-  const buttons: Array<[T, HTMLButtonElement]> = [];
-  const paint = (value: T | null): void => {
-    buttons.forEach(([key, button], index) => {
-      const on = key === value;
-      button.setAttribute('aria-checked', String(on));
-      button.tabIndex = on || (value === null && index === 0) ? 0 : -1;
-    });
-  };
-  for (const [value, face] of items) {
-    const button = el('button');
-    button.type = 'button';
-    button.setAttribute('role', 'radio');
-    face(button);
-    button.addEventListener('click', () => {
-      if (button.getAttribute('aria-checked') === 'true') return;
-      paint(value);
-      onSelect(value);
-    });
-    buttons.push([value, button]);
-    group.append(button);
-  }
-  group.addEventListener('keydown', (event) => {
-    const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : 0;
-    if (step === 0) return;
-    event.preventDefault();
-    const index = buttons.findIndex(([, button]) => button === document.activeElement);
-    const next = buttons[(index + step + buttons.length) % buttons.length]?.[1];
-    next?.focus();
-    next?.click();
-  });
-  paint(null);
-  return {
-    root: group,
-    set: paint,
-    disable: (off) => buttons.forEach(([, button]) => { button.disabled = off; }),
   };
 }
 
@@ -1942,15 +1898,8 @@ export function startSettingsPage(root: HTMLElement): void {
     updateAction.classList.toggle('is-primary', view.action === 'restart');
     version.textContent = `Bowser ${s.version}`;
     avatar.textContent = s.avatar;
-    const me = s.profiles.find((p) => p.current);
-    if (me) {
-      avatar.style.setProperty('--sp-profile-fill', me.colour);
-      avatar.style.setProperty('--sp-profile-ink', onFill(me.colour));
-    } else {
-      avatar.style.setProperty('--sp-profile-fill', '');
-      avatar.style.setProperty('--sp-profile-ink', '');
-    }
-    profileRow.label.textContent = s.guest ? 'Guest' : s.profile === '' ? 'Default' : s.profile;
+    paintDisc(avatar, s.profiles.list.find((p) => p.current)?.colour ?? '');
+    profileRow.label.textContent = s.profile;
     profilesView.paint(s.profiles, s.guest);
     banner.hidden = s.readable;
     banner.textContent = s.readable ? '' : 'Settings file could not be read.';

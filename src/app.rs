@@ -1642,15 +1642,22 @@ impl App {
     // --- profiles ---
     /// The profiles a link can be opened in: every listed profile but this window's, as (listed
     /// id, display name). A guest window lists them all.
+    /// This runs on every right-click on a link, so with only this window's profile it lists the
+    /// Profiles folder and reads no profile's file.
     fn link_profiles() -> Vec<(String, String)> {
+        /// Most profiles the submenu shows.
+        const MAX_LINK_PROFILES: usize = 32;
         let (Some(app_data), Ok(current)) = (crate::profile::app_data_dir(), crate::profile::active()) else {
             return Vec::new();
         };
-        crate::profile::summaries(&app_data)
+        crate::profile::list(&app_data)
             .into_iter()
-            .filter(|summary| current.is_guest() || !summary.id.eq_ignore_ascii_case(current.listed_name()))
-            .take(32)
-            .map(|summary| (summary.id, summary.display_name))
+            .filter(|id| !current.is_listed_as(id))
+            .take(MAX_LINK_PROFILES)
+            .map(|id| {
+                let summary = crate::profile::ProfileSummary::load(&app_data, id);
+                (summary.id, summary.display_name)
+            })
             .collect()
     }
 

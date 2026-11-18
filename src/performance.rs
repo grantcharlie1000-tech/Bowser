@@ -228,9 +228,7 @@ impl LaunchOptions {
                 }
                 "--profile" => {
                     // `default` names the default profile explicitly (shortcuts, "Open link in").
-                    if value != crate::profile::DEFAULT_NAME {
-                        crate::profile::validate_name(&value).map_err(|error| error.to_string())?;
-                    }
+                    crate::profile::validate_listed_name(&value).map_err(|error| error.to_string())?;
                     if options.profile.replace(value).is_some() {
                         return Err("Duplicate profile argument".into());
                     }

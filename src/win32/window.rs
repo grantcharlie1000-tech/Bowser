@@ -6690,8 +6690,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
 }
 
 /// Ctrl+Shift+M (and the main menu's Profiles row): switch, create, rename or delete profiles.
-/// Opening another profile starts a Bowser process for it (WebView2 allows one browser process per
-/// data folder), or hands over to the window that profile already has; this window stays open.
+/// A pick becomes a [`ProfileCommand`] and runs through [`run_profile_command`], the same code the
+/// settings page's profile manager uses; the menu only asks for names and confirmations first.
 const PROFILE_NEW: usize = 1;
 const PROFILE_GUEST: usize = 2;
 const PROFILE_RENAME_CURRENT: usize = 3;
@@ -6703,46 +6703,57 @@ const PROFILE_SWITCH_BASE: usize = 100;
 const PROFILE_DELETE_BASE: usize = 1000;
 const PROFILE_AVATAR_BASE: usize = 2000;
 const PROFILE_ACCENT_BASE: usize = 2100;
-const PROFILE_MAX_LISTED: usize = 300;
 
 /// Profile state read when a profile menu opens, so the rows built and the command run afterwards
 /// refer to the same list.
 struct ProfileMenu {
-    app_data: std::path::PathBuf,
     current: crate::profile::Profile,
     profiles: Vec<crate::profile::ProfileSummary>,
-    current_metadata: crate::profile::ProfileMetadata,
-    current_name: String,
 }
 
 impl ProfileMenu {
     fn load(hwnd: HWND) -> Option<Self> {
-        use crate::profile;
-        let Some(app_data) = profile::app_data_dir() else {
-            show_profile_notice(
-                hwnd,
-                "Bowser could not find this user's LocalAppData directory.",
-            );
+        let Some(app_data) = crate::profile::app_data_dir() else {
+            show_profile_notice(hwnd, &crate::profile::ProfileError::NoLocalAppData.to_string());
             return None;
         };
-        let current = profile::active().ok()?;
-        let profiles = profile::summaries(&app_data)
+        let current = crate::profile::active().ok()?;
+        let profiles = crate::profile::summaries(&app_data)
             .into_iter()
-            .take(PROFILE_MAX_LISTED)
+            .take(crate::profile::MAX_LISTED)
             .collect();
-        let current_metadata = profile::ProfileMetadata::load(&current);
-        let current_name = current.display_name();
-        Some(Self {
-            app_data,
-            current,
-            profiles,
-            current_metadata,
-            current_name,
-        })
+        Some(Self { current, profiles })
     }
 
-    fn is_current(&self, id: &str) -> bool {
-        !self.current.is_guest() && id.eq_ignore_ascii_case(self.current.listed_name())
+    /// This window's own row; `None` in a guest window.
+    fn me(&self) -> Option<&crate::profile::ProfileSummary> {
+        self.profiles.iter().find(|summary| self.current.is_listed_as(&summary.id))
+    }
+
+    /// "Choose avatar" or "Choose colour": one row per choice, each badge previewing the profile
+    /// with that choice made.
+    fn look_submenu(
+        me: &crate::profile::ProfileSummary,
+        (id, label, glyph): (usize, &str, &'static str),
+        (base, choices, chosen): (usize, &[&'static str], &str),
+        apply: fn(&mut crate::profile::ProfileMetadata, &str),
+        name_of: fn(&str) -> &'static str,
+    ) -> Entry {
+        Entry::Item(Item::new(id, label, Icon::Person).glyph(glyph).submenu_with(
+            choices
+                .iter()
+                .enumerate()
+                .map(|(index, choice)| {
+                    let mut preview = me.metadata.clone();
+                    apply(&mut preview, choice);
+                    Entry::Item(
+                        Item::new(base + index, name_of(choice), Icon::Person)
+                            .profile_badge(preview.avatar_glyph(&me.display_name), preview.accent_colour())
+                            .checked(chosen == *choice),
+                    )
+                })
+                .collect(),
+        ))
     }
 
     /// Builds profile actions from the same snapshot used by `run`.
@@ -6754,7 +6765,7 @@ impl ProfileMenu {
                 Item::new(PROFILE_SWITCH_BASE + index, summary.display_name.clone(), Icon::Person)
                     .glyph("person")
                     .profile_badge(summary.avatar_glyph(), summary.metadata.accent_colour())
-                    .checked(self.is_current(&summary.id)),
+                    .checked(self.current.is_listed_as(&summary.id)),
             ));
         }
         entries.push(Entry::Separator);
@@ -6764,50 +6775,24 @@ impl ProfileMenu {
         entries.push(Entry::Item(
             Item::new(PROFILE_GUEST, "Guest window", Icon::Person).glyph("external"),
         ));
-        if !self.current.is_guest() {
-            entries.push(Entry::SectionHeader(format!("This profile \u{2014} {}", self.current_name)));
+        if let Some(me) = self.me() {
+            entries.push(Entry::SectionHeader(format!("This profile \u{2014} {}", me.display_name)));
             entries.push(Entry::Item(
                 Item::new(PROFILE_RENAME_CURRENT, "Rename\u{2026}", Icon::Person).glyph("edit"),
             ));
-            entries.push(Entry::Item(
-                Item::new(PROFILE_AVATAR_MENU, "Choose avatar", Icon::Person).glyph("person").submenu_with(
-                    profile::AVATARS
-                        .iter()
-                        .enumerate()
-                        .map(|(index, id)| {
-                            let mut metadata = self.current_metadata.clone();
-                            metadata.avatar = (*id).to_owned();
-                            Entry::Item(
-                                Item::new(PROFILE_AVATAR_BASE + index, avatar_label(id), Icon::Person)
-                                    .profile_badge(
-                                        metadata.avatar_glyph(&self.current_name),
-                                        self.current_metadata.accent_colour(),
-                                    )
-                                    .checked(self.current_metadata.avatar == *id),
-                            )
-                        })
-                        .collect(),
-                ),
+            entries.push(Self::look_submenu(
+                me,
+                (PROFILE_AVATAR_MENU, "Choose avatar", "person"),
+                (PROFILE_AVATAR_BASE, profile::AVATARS, &me.metadata.avatar),
+                |metadata, choice| metadata.avatar = choice.to_owned(),
+                avatar_label,
             ));
-            entries.push(Entry::Item(
-                Item::new(PROFILE_ACCENT_MENU, "Choose colour", Icon::Grid).glyph("droplet").submenu_with(
-                    profile::ACCENTS
-                        .iter()
-                        .enumerate()
-                        .map(|(index, id)| {
-                            let mut metadata = self.current_metadata.clone();
-                            metadata.accent = (*id).to_owned();
-                            Entry::Item(
-                                Item::new(PROFILE_ACCENT_BASE + index, accent_label(id), Icon::Grid)
-                                    .profile_badge(
-                                        metadata.avatar_glyph(&self.current_name),
-                                        metadata.accent_colour(),
-                                    )
-                                    .checked(self.current_metadata.accent == *id),
-                            )
-                        })
-                        .collect(),
-                ),
+            entries.push(Self::look_submenu(
+                me,
+                (PROFILE_ACCENT_MENU, "Choose colour", "droplet"),
+                (PROFILE_ACCENT_BASE, profile::ACCENTS, &me.metadata.accent),
+                |metadata, choice| metadata.accent = choice.to_owned(),
+                accent_label,
             ));
             entries.push(Entry::Item(
                 Item::new(PROFILE_SHORTCUT, "Create desktop shortcut", Icon::Plus).glyph("link"),
@@ -6817,21 +6802,15 @@ impl ProfileMenu {
             .profiles
             .iter()
             .enumerate()
-            .filter(|(_, summary)| {
-                !summary.id.eq_ignore_ascii_case(profile::DEFAULT_NAME) && !self.is_current(&summary.id)
-            })
+            .filter(|(_, summary)| summary.id != profile::DEFAULT_NAME && !self.current.is_listed_as(&summary.id))
             .map(|(index, _)| index)
             .collect();
         if !deletable.is_empty() {
             entries.push(Entry::SectionHeader("Delete profile".to_owned()));
             for index in deletable {
                 entries.push(Entry::Item(
-                    Item::new(
-                        PROFILE_DELETE_BASE + index,
-                        self.profiles[index].display_name.clone(),
-                        Icon::Close,
-                    )
-                    .glyph("trash"),
+                    Item::new(PROFILE_DELETE_BASE + index, self.profiles[index].display_name.clone(), Icon::Close)
+                        .glyph("trash"),
                 ));
             }
         }
@@ -6844,83 +6823,105 @@ impl ProfileMenu {
         entries
     }
 
-    /// Runs the command a row of [`Self::entries`] returned. Other ids are ignored.
-    fn run(&self, command: usize, hwnd: HWND, app: &AppRef) {
-        use crate::profile::{self, Profile};
-        match command {
-            PROFILE_RENAME_CURRENT if !self.current.is_guest() => {
-                rename_profile_prompt(hwnd, &self.app_data, self.current.listed_name(), &self.current_name);
-                App::sync_window_title(app);
+    /// Turns the row `pick` of [`Self::entries`] into a command, asking for a name first where one
+    /// is needed, and runs it. A delete is asked about first and runs once confirmed.
+    fn run(&self, pick: usize, hwnd: HWND, app: &AppRef) {
+        use crate::chrome_host::settings::ProfileCommand as C;
+        use crate::profile;
+        let me = self.me();
+        let command = match pick {
+            PROFILE_NEW => prompt_profile_name(hwnd, "", "New profile", "Create").map(C::New),
+            PROFILE_GUEST => Some(C::Guest),
+            PROFILE_RENAME_CURRENT => me.and_then(|me| {
+                prompt_profile_name(hwnd, &me.display_name, "Rename profile", "Save")
+                    .map(|name| C::Rename { id: me.id.clone(), name })
+            }),
+            PROFILE_SHORTCUT => me.map(|me| C::Shortcut(me.id.clone())),
+            PROFILE_MANAGE => {
+                super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Profile), false);
+                None
             }
-            PROFILE_GUEST => {
-                if !profile::spawn_guest_window() {
-                    show_profile_notice(hwnd, "Bowser could not start a guest window.");
+            id if (PROFILE_SWITCH_BASE..PROFILE_SWITCH_BASE + crate::profile::MAX_LISTED).contains(&id) => self
+                .profiles
+                .get(id - PROFILE_SWITCH_BASE)
+                .filter(|summary| !self.current.is_listed_as(&summary.id))
+                .map(|summary| C::Open(summary.id.clone())),
+            id if (PROFILE_AVATAR_BASE..PROFILE_AVATAR_BASE + profile::AVATARS.len()).contains(&id) => me.map(|me| C::Look {
+                id: me.id.clone(),
+                avatar: profile::AVATARS[id - PROFILE_AVATAR_BASE].to_owned(),
+                accent: me.metadata.accent.clone(),
+            }),
+            id if (PROFILE_ACCENT_BASE..PROFILE_ACCENT_BASE + profile::ACCENTS.len()).contains(&id) => me.map(|me| C::Look {
+                id: me.id.clone(),
+                avatar: me.metadata.avatar.clone(),
+                accent: profile::ACCENTS[id - PROFILE_ACCENT_BASE].to_owned(),
+            }),
+            id if (PROFILE_DELETE_BASE..PROFILE_DELETE_BASE + crate::profile::MAX_LISTED).contains(&id) => {
+                if let Some(summary) = self.profiles.get(id - PROFILE_DELETE_BASE) {
+                    let target = summary.id.clone();
+                    confirm_profile_delete(hwnd, &summary.display_name, move |app| {
+                        run_profile_from_menu(hwnd, app, C::Delete(target));
+                    });
                 }
+                None
             }
-            PROFILE_NEW => new_profile_prompt(hwnd, &self.app_data),
-            PROFILE_SHORTCUT if !self.current.is_guest() => {
-                profile_shortcut_notice(hwnd, &self.current);
-            }
-            PROFILE_MANAGE => super::settings_page::open(
-                hwnd,
-                app,
-                Some(crate::internal_page::Section::Profile),
-                false,
-            ),
-            id if (PROFILE_SWITCH_BASE..PROFILE_SWITCH_BASE + PROFILE_MAX_LISTED).contains(&id) => {
-                if let Some(summary) = self
-                    .profiles
-                    .get(id - PROFILE_SWITCH_BASE)
-                    .filter(|summary| !self.is_current(&summary.id))
-                {
-                    match Profile::for_listed_name(&self.app_data, &summary.id) {
-                        Ok(target) => {
-                            if let Err(error) = profile::remember_last_profile(&self.app_data, &summary.id)
-                            {
-                                show_profile_notice(hwnd, &error.to_string());
-                            } else {
-                                open_profile_window(&target, hwnd);
-                            }
-                        }
-                        Err(error) => show_profile_notice(hwnd, &error.to_string()),
-                    }
-                }
-            }
-            id if (PROFILE_AVATAR_BASE..PROFILE_AVATAR_BASE + profile::AVATARS.len()).contains(&id) => {
-                let avatar = profile::AVATARS[id - PROFILE_AVATAR_BASE];
-                if let Err(error) = profile::set_look(&self.app_data, self.current.listed_name(), Some(avatar), None) {
-                    show_profile_notice(hwnd, &error.to_string());
-                }
-                App::sync_window_title(app);
-            }
-            id if (PROFILE_ACCENT_BASE..PROFILE_ACCENT_BASE + profile::ACCENTS.len()).contains(&id) => {
-                let accent = profile::ACCENTS[id - PROFILE_ACCENT_BASE];
-                if let Err(error) = profile::set_look(&self.app_data, self.current.listed_name(), None, Some(accent)) {
-                    show_profile_notice(hwnd, &error.to_string());
-                }
-            }
-            id if (PROFILE_DELETE_BASE..PROFILE_DELETE_BASE + PROFILE_MAX_LISTED).contains(&id) => {
-                if let Some(summary) = self.profiles.get(id - PROFILE_DELETE_BASE).cloned() {
-                    delete_profile_confirmed(hwnd, &self.app_data, &summary.id, &summary.display_name, || {});
-                }
-            }
-            _ => {}
+            _ => None,
+        };
+        if let Some(command) = command {
+            run_profile_from_menu(hwnd, app, command);
         }
     }
 }
 
-/// Runs one change from the settings page's profile manager. The page asked before a delete.
-/// `Ok(true)` is a saved change the page confirms; `Ok(false)` opened something and needs no "Saved".
+/// The main menu's card: this window's profile, read from its own `profile.txt` only.
+fn main_menu_profile_header() -> ProfileHeader {
+    let (profile, metadata) = match crate::profile::active() {
+        Ok(profile) => {
+            let metadata = crate::profile::ProfileMetadata::load(&profile);
+            let name = if profile.is_guest() { "Guest".to_owned() } else { metadata.display_name(profile.listed_name()) };
+            (name, metadata)
+        }
+        Err(_) => ("Bowser".to_owned(), crate::profile::ProfileMetadata::default()),
+    };
+    ProfileHeader {
+        avatar: metadata.avatar_glyph(&profile),
+        accent: metadata.accent_colour(),
+        profile,
+        caption: "Current profile".to_owned(),
+    }
+}
+
+/// The native name prompt for a profile: `None` when cancelled.
+fn prompt_profile_name(hwnd: HWND, current: &str, title: &str, save: &str) -> Option<String> {
+    super::profile_rename::prompt_validated(
+        hwnd,
+        current,
+        title,
+        save,
+        "Up to 32 characters, such as Work, Personal or Kids",
+        Box::new(|name| crate::profile::validate_display_name(name).map(|_| ()).map_err(|error| error.to_string())),
+    )
+}
+
+fn run_profile_from_menu(hwnd: HWND, app: &AppRef, command: crate::chrome_host::settings::ProfileCommand) {
+    if let Err(error) = run_profile_command(hwnd, app, command) {
+        show_profile_notice(hwnd, &error);
+    }
+}
+
+/// Runs one profile change, from the profile menu or the settings page's profile manager. Both ask
+/// before a delete. The error is a sentence to show as it is.
 pub(super) fn run_profile_command(
     hwnd: HWND,
     app: &AppRef,
     command: crate::chrome_host::settings::ProfileCommand,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     use crate::chrome_host::settings::ProfileCommand;
     use crate::profile::{self, Profile};
     let app_data = profile::app_data_dir().ok_or_else(|| profile::ProfileError::NoLocalAppData.to_string())?;
     let current = profile::active().map_err(|error| error.to_string())?;
-    let is_current = |id: &str| !current.is_guest() && id.eq_ignore_ascii_case(current.listed_name());
+    // Opening, a shortcut or a delete must name a profile that is there: opening a missing one
+    // would start a new, empty profile of that name.
     let existing = |id: &str| -> Result<Profile, String> {
         if !profile::list(&app_data).iter().any(|listed| listed == id) {
             return Err(profile::ProfileError::NotFound.to_string());
@@ -6929,150 +6930,55 @@ pub(super) fn run_profile_command(
     };
     match command {
         ProfileCommand::Open(id) => {
-            if is_current(&id) {
-                return Ok(false);
+            if current.is_listed_as(&id) {
+                return Ok(());
             }
             let target = existing(&id)?;
             profile::remember_last_profile(&app_data, &id).map_err(|error| error.to_string())?;
             if !profile::spawn_window(&target) {
                 return Err("Bowser could not start a window for that profile.".to_owned());
             }
-            Ok(false)
         }
         ProfileCommand::New(name) => {
-            let created = profile::create_with_display_name(&app_data, &name).map_err(|error| error.to_string())?;
+            let created = profile::create_with_display_name(&app_data, &name)
+                .map_err(|error| format!("The profile was not created. {error}"))?;
             if !profile::spawn_window(&created) {
                 return Err("The profile was created, but its window could not be started.".to_owned());
             }
-            Ok(true)
         }
         ProfileCommand::Rename { id, name } => {
-            existing(&id)?;
-            profile::set_display_name(&app_data, &id, &name).map_err(|error| error.to_string())?;
-            if is_current(&id) {
+            profile::set_display_name(&app_data, &id, &name)
+                .map_err(|error| format!("The profile could not be renamed. {error}"))?;
+            if current.is_listed_as(&id) {
                 App::sync_window_title(app);
             }
-            Ok(true)
         }
         ProfileCommand::Look { id, avatar, accent } => {
-            existing(&id)?;
             profile::set_look(&app_data, &id, Some(&avatar), Some(&accent)).map_err(|error| error.to_string())?;
-            if is_current(&id) {
+            if current.is_listed_as(&id) {
                 App::sync_window_title(app);
             }
-            Ok(true)
         }
         ProfileCommand::Shortcut(id) => {
             let target = existing(&id)?;
             super::profile_shortcut::create_desktop_shortcut(&target)
                 .map_err(|error| format!("The shortcut could not be created. {error}"))?;
             show_toast(hwnd, &format!("A shortcut for {} is on your desktop.", target.display_name()), "Profiles");
-            Ok(false)
         }
         ProfileCommand::Delete(id) => {
             let target = existing(&id)?;
             let shown = target.display_name();
-            profile::delete(&app_data, &id, &current).map_err(|error| error.to_string())?;
+            profile::delete(&app_data, &id, &current)
+                .map_err(|error| format!("The profile \"{shown}\" was not deleted. {error}"))?;
             super::profile_shortcut::remove_desktop_shortcut(&target, &shown);
-            Ok(true)
         }
         ProfileCommand::Guest => {
             if !profile::spawn_guest_window() {
                 return Err("Bowser could not start a guest window.".to_owned());
             }
-            Ok(false)
         }
     }
-}
-
-/// Asks for a name and creates a profile with it, then opens a window for it.
-pub(super) fn new_profile_prompt(hwnd: HWND, app_data: &std::path::Path) {
-    use crate::profile;
-    let Some(name) = super::profile_rename::prompt_validated(
-        hwnd,
-        "",
-        "New profile",
-        "Create",
-        "A name such as Work, Personal or Kids",
-        Box::new(|name| profile::validate_display_name(name).map(|_| ()).map_err(|error| error.to_string())),
-    ) else {
-        return;
-    };
-    match profile::create_with_display_name(app_data, &name) {
-        Ok(created) => open_profile_window(&created, hwnd),
-        Err(error) => show_profile_notice(hwnd, &format!("The new profile was not created. {error}")),
-    }
-}
-
-/// Asks for a new display name for the listed profile `id`. True when it was changed.
-pub(super) fn rename_profile_prompt(hwnd: HWND, app_data: &std::path::Path, id: &str, current: &str) -> bool {
-    use crate::profile;
-    let Some(name) = super::profile_rename::prompt_validated(
-        hwnd,
-        current,
-        "Rename profile",
-        "Save",
-        "1 to 32 characters",
-        Box::new(|name| profile::validate_display_name(name).map(|_| ()).map_err(|error| error.to_string())),
-    ) else {
-        return false;
-    };
-    match profile::set_display_name(app_data, id, &name) {
-        Ok(_) => true,
-        Err(error) => {
-            show_profile_notice(hwnd, &format!("The profile could not be renamed. {error}"));
-            false
-        }
-    }
-}
-
-/// Asks before deleting the listed profile `id`; `done` runs after a confirmed delete succeeded.
-pub(super) fn delete_profile_confirmed(
-    hwnd: HWND,
-    app_data: &std::path::Path,
-    id: &str,
-    display_name: &str,
-    done: impl FnOnce() + 'static,
-) {
-    let app_data = app_data.to_path_buf();
-    let id = id.to_owned();
-    let shown = display_name.to_owned();
-    confirm_profile_delete(hwnd, display_name, move || {
-        let current = match crate::profile::active() {
-            Ok(current) => current,
-            Err(error) => return show_profile_notice(hwnd, &error.to_string()),
-        };
-        match crate::profile::delete(&app_data, &id, &current) {
-            Ok(()) => {
-                if let Ok(deleted) = crate::profile::Profile::for_listed_name(&app_data, &id) {
-                    super::profile_shortcut::remove_desktop_shortcut(&deleted, &shown);
-                }
-                done();
-            }
-            Err(error) => show_profile_notice(
-                hwnd,
-                &format!("The profile \"{shown}\" was not deleted. {error}"),
-            ),
-        }
-    });
-}
-
-/// Creates the desktop shortcut for `profile` and says how it went.
-pub(super) fn profile_shortcut_notice(hwnd: HWND, profile: &crate::profile::Profile) -> bool {
-    match super::profile_shortcut::create_desktop_shortcut(profile) {
-        Ok(()) => {
-            show_toast(
-                hwnd,
-                &format!("A shortcut for {} is on your desktop.", profile.display_name()),
-                "Profiles",
-            );
-            true
-        }
-        Err(error) => {
-            show_profile_notice(hwnd, &format!("The shortcut could not be created. {error}"));
-            false
-        }
-    }
+    Ok(())
 }
 
 fn avatar_label(id: &str) -> &'static str {
@@ -7140,7 +7046,7 @@ fn confirm_rail_workspace_delete(hwnd: HWND, point: POINT, id: crate::workspaces
 // --- end popup surfaces ---
 
 /// Asks before deleting a profile; `on_confirm` runs only when the user picks Delete.
-fn confirm_profile_delete(hwnd: HWND, name: &str, on_confirm: impl FnOnce() + 'static) {
+fn confirm_profile_delete(hwnd: HWND, name: &str, on_confirm: impl FnOnce(&AppRef) + 'static) {
     let point = screen_point(hwnd, main_menu_anchor(hwnd));
     menu::show(
         hwnd,
@@ -7157,9 +7063,9 @@ fn confirm_profile_delete(hwnd: HWND, name: &str, on_confirm: impl FnOnce() + 's
                 .to_owned(),
         },
         "profile-delete",
-        move |_, chosen| {
+        move |app, chosen| {
             if chosen.is_some_and(|chosen| chosen.id == 2) {
-                on_confirm();
+                on_confirm(app);
             }
         },
     );
@@ -7384,7 +7290,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const TRANSLATE_ALWAYS_SITE: usize = 5049;
     const TRANSLATE_NEVER_SITE: usize = 5050;
 
-    let profiles = ProfileMenu::load(hwnd);
+    let header = main_menu_profile_header();
     let recent: Vec<(String, String)> = App::recently_closed(app)
         .into_iter()
         .take(8)
@@ -7622,21 +7528,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         Item::new(EXIT, "Exit", Icon::Close).glyph("close").shortcut("Alt+F4"),
     ));
     let menu = Menu {
-        header: Some(ProfileHeader {
-            profile: profiles.as_ref().map_or_else(
-                || "Bowser".to_owned(),
-                |p| p.current_name.clone(),
-            ),
-            caption: "Current profile".to_owned(),
-            avatar: profiles.as_ref().map_or_else(
-                || "B".to_owned(),
-                |p| p.current_metadata.avatar_glyph(&p.current_name),
-            ),
-            accent: profiles.as_ref().map_or_else(
-                || crate::profile::ProfileMetadata::default().accent_colour(),
-                |p| p.current_metadata.accent_colour(),
-            ),
-        }),
+        header: Some(header),
         entries,
         footer: update_footer(&update_status),
     };
@@ -7801,11 +7693,6 @@ fn update_result_key(code: usize) -> &'static str {
 /// "Restart to update" from the settings page.
 pub(super) fn restart_to_update_from_page(hwnd: HWND) {
     restart_to_update(hwnd);
-}
-
-/// "Manage profiles" from the settings page: the profile menu, where the main menu opens it.
-pub(super) fn show_profile_menu_from_page(hwnd: HWND) {
-    show_profile_menu(hwnd);
 }
 
 /// Runs one update check off the UI thread; `WM_UPDATE_CHECKED` carries the result code and
@@ -8723,12 +8610,6 @@ pub(super) fn show_sessions(hwnd: HWND, _app: &AppRef) {
     }
     });
     // --- end popup host ---
-}
-
-fn open_profile_window(target: &crate::profile::Profile, hwnd: HWND) {
-    if !crate::profile::spawn_window(target) {
-        show_profile_notice(hwnd, "Bowser could not start a window for that profile.");
-    }
 }
 
 /// Handles Alt+Space and titlebar right-click with Bowser's themed window-command menu.

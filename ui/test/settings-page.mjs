@@ -2609,23 +2609,32 @@ test('an invalid Homepage or Startup pages entry stays to correct but is marked 
 // --- profiles --- the profile manager on bowser://settings/profile.
 test('profiles: the snapshot list is strict, names are checked like Rust, and commands are plain text', () => {
   const good = fixture.snap.d.profiles;
-  assert.deepEqual(logic.parseProfiles(good).map((p) => [p.id, p.name, p.current]), [['default', 'Personal', false], ['Work', 'Work "<b>"', true]]);
+  const parsed = logic.parseProfiles(good);
+  assert.deepEqual(parsed.list.map((p) => [p.id, p.name, p.current]), [['default', 'Personal', false], ['Work', 'Work "<b>"', true]]);
+  assert.deepEqual(parsed.accents.length, 5);
+  const row = good.list[0];
+  const withList = (list) => ({ ...good, list });
   for (const bad of [
-    null, {}, [{ ...good[0], extra: 1 }], [{ ...good[0], id: '../x' }], [{ ...good[0], id: 'Default' }, good[0]], [good[1], { ...good[1], id: 'work' }],
-    [{ ...good[0], name: '' }], [{ ...good[0], name: ' padded' }], [{ ...good[0], name: 'x'.repeat(33) }], [{ ...good[0], colour: 'red' }],
-    [{ ...good[0], avatar: 'cat' }], [{ ...good[0], accent: 'pink' }], [{ ...good[0], current: true }, good[1]], [{ ...good[0], glyph: '' }],
+    null, [], { ...good, extra: 1 }, withList([{ ...row, extra: 1 }]), withList([{ ...row, id: '../x' }]), withList([{ ...row, id: 'Default' }, row]),
+    withList([good.list[1], { ...good.list[1], id: 'work', current: false }]),
+    withList([{ ...row, name: '' }]), withList([{ ...row, name: ' padded' }]), withList([{ ...row, name: 'x'.repeat(33) }]), withList([{ ...row, name: 'evil\u202etxt' }]),
+    withList([{ ...row, colour: 'red' }]), withList([{ ...row, avatar: 'cat' }]), withList([{ ...row, accent: 'pink' }]), withList([{ ...row, glyph: '' }]),
+    withList([{ ...row, current: true }, good.list[1]]),
+    { ...good, avatars: ['W'] }, { ...good, accents: ['red', 'red', 'red', 'red', 'red'] },
+    withList([row]), // previews without a current profile
+    { ...good, avatars: [], accents: [] }, // a current profile without previews
   ]) assert.equal(logic.parseProfiles(bad), null, JSON.stringify(bad));
+  assert.deepEqual(logic.parseProfiles({ list: [row], avatars: [], accents: [] })?.list.length, 1, 'a guest window: no previews');
   assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, profiles: undefined }), null, 'the snapshot needs it');
-  assert.equal(logic.cleanProfileName('  Kids & school '), 'Kids & school');
-  assert.equal(logic.cleanProfileName('é'.repeat(32)), 'é'.repeat(32));
-  assert.equal(logic.cleanProfileName('😀'.repeat(32)), '😀'.repeat(32), 'characters, not UTF-16 units');
-  assert.equal(logic.cleanProfileName('a\nb'), null);
-  assert.equal(logic.profileNameError('', good), 'Enter a name.');
-  assert.equal(logic.profileNameError('personal', good), 'Another profile already uses that name.');
-  assert.equal(logic.profileNameError('Personal', good, 'default'), null, 'its own name');
-  assert.equal(logic.profileNameError('Kids', good), null);
-  assert.equal(logic.profileGlyph('initial', 'école'), 'É');
-  assert.equal(logic.profileGlyph('star', 'Work'), '✦');
+  const list = parsed.list;
+  assert.equal(logic.profileNameError('', list), 'Enter a name.');
+  assert.equal(logic.profileNameError('x'.repeat(33), list), 'Use at most 32 characters.');
+  assert.equal(logic.profileNameError('😀'.repeat(32), list), '', 'characters, not UTF-16 units');
+  assert.equal(logic.profileNameError('a\nb', list), 'Names cannot contain control characters.');
+  assert.equal(logic.profileNameError('evil\u202etxt', list), 'Names cannot contain invisible characters.');
+  assert.equal(logic.profileNameError('personal', list), 'Another profile already uses that name.');
+  assert.equal(logic.profileNameError('Personal', list, 'default'), '', 'its own name');
+  assert.equal(logic.profileNameError('  Kids & school ', list), '');
   assert.equal(logic.profileText.create('  Kids '), 'new\tKids');
   assert.equal(logic.profileText.rename('Work', ' Office '), 'rename\tWork\tOffice');
   assert.equal(logic.profileText.look('default', 'moon', 'rose'), 'look\tdefault\tmoon\trose');
@@ -2682,7 +2691,8 @@ test('profiles: the manager lists each profile, opens others, adds, renames in p
   assert.equal(row.querySelector('.sp-profile-rename'), null, 'the row closes');
 
   // Delete asks first, in the page; Keep is the focused answer.
-  const other = { ...fixture.snap, d: { ...fixture.snap.d, ack: 'none', profiles: [...fixture.snap.d.profiles, { id: 'Kids', name: 'Kids', glyph: 'K', colour: '#6542a5', avatar: 'initial', accent: 'violet', current: false }] } };
+  const profiles = fixture.snap.d.profiles;
+  const other = { ...fixture.snap, d: { ...fixture.snap.d, ack: 'none', profiles: { ...profiles, list: [...profiles.list, { id: 'Kids', name: 'Kids', glyph: 'K', colour: '#6542a5', avatar: 'initial', accent: 'violet', current: false }] } } };
   deliver(other);
   const kids = () => row.querySelectorAll('.sp-profile').find((item) => item.dataset.profile === 'Kids');
   sent.length = 0;
@@ -2700,7 +2710,7 @@ test('profiles: the manager lists each profile, opens others, adds, renames in p
 });
 
 test('profiles: a guest window lists the profiles to open but changes none of them', () => {
-  const guest = { ...fixture.guest, d: { ...fixture.guest.d, profiles: fixture.guest.d.profiles.map((p) => ({ ...p, current: false })) } };
+  const guest = { ...fixture.guest, d: { ...fixture.guest.d, profiles: { list: fixture.guest.d.profiles.list.map((p) => ({ ...p, current: false })), avatars: [], accents: [] } } };
   deliver(guest);
   const row = rowNode('profiles');
   assert.equal(row.querySelector('.sp-profile-look').hidden, true);

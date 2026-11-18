@@ -67,6 +67,44 @@ type ContextAugmenter = Rc<dyn Fn(Option<ICoreWebView2>, Option<ICoreWebView2Con
 
 /// The experimental coordinator freezes only after all existing Bowser augmentations run, in
 /// their original explicit order. The ordinary build still registers those same three handlers.
+/// The http(s) link a page context menu was opened on, if any.
+fn context_http_link(args: &ICoreWebView2ContextMenuRequestedEventArgs) -> windows::core::Result<Option<Url>> {
+    // SAFETY: plain COM calls on live event arguments, during the event.
+    unsafe {
+        let target = args.ContextMenuTarget()?;
+        let mut has_link = BOOL::default();
+        target.HasLinkUri(&mut has_link)?;
+        if !has_link.as_bool() {
+            return Ok(None);
+        }
+        let mut uri = PWSTR::null();
+        target.LinkUri(&mut uri)?;
+        Ok(Url::parse(&CoTaskMemPWSTR::from(uri).to_string())
+            .ok()
+            .filter(|url| matches!(url.scheme(), "http" | "https")))
+    }
+}
+
+/// Where a link item goes: just after "Open link in new tab/window" (the top when neither is there).
+fn index_after_open_link(items: &ICoreWebView2ContextMenuItemCollection) -> windows::core::Result<u32> {
+    // SAFETY: plain COM calls on the live menu collection, during the event.
+    unsafe {
+        let mut count = 0u32;
+        items.Count(&mut count)?;
+        let mut at = 0u32;
+        for index in 0..count {
+            let mut name = PWSTR::null();
+            if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok() {
+                let name = CoTaskMemPWSTR::from(name).to_string();
+                if name == "openLinkInNewTab" || name == "openLinkInNewWindow" {
+                    at = index + 1;
+                }
+            }
+        }
+        Ok(at)
+    }
+}
+
 fn register_context_augmenter(
     native: &ICoreWebView2_11,
     augmenter: ContextAugmenter,
@@ -6286,20 +6324,7 @@ unsafe fn configure_controller(
                 &webview11,
                 Rc::new(move |_sender, args| {
                     let Some(args) = args else { return Ok(()) };
-                    let target = args.ContextMenuTarget()?;
-                    let mut has_link = BOOL::default();
-                    target.HasLinkUri(&mut has_link)?;
-                    if !has_link.as_bool() {
-                        return Ok(());
-                    }
-                    let mut uri = PWSTR::null();
-                    target.LinkUri(&mut uri)?;
-                    let Some(link) = Url::parse(&CoTaskMemPWSTR::from(uri).to_string())
-                        .ok()
-                        .filter(|url| matches!(url.scheme(), "http" | "https"))
-                    else {
-                        return Ok(());
-                    };
+                    let Some(link) = context_http_link(&args)? else { return Ok(()) };
                     let item = environment9.CreateContextMenuItem(
                         w!("Open link in split view"),
                         None::<&IStream>,
@@ -6315,18 +6340,7 @@ unsafe fn configure_controller(
                         &mut item_token,
                     )?;
                     let items = args.MenuItems()?;
-                    let mut count = 0u32;
-                    items.Count(&mut count)?;
-                    let mut at = 0u32;
-                    for index in 0..count {
-                        let mut name = PWSTR::null();
-                        if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok() {
-                            let name = CoTaskMemPWSTR::from(name).to_string();
-                            if name == "openLinkInNewTab" || name == "openLinkInNewWindow" {
-                                at = index + 1;
-                            }
-                        }
-                    }
+                    let at = index_after_open_link(&items)?;
                     items.InsertValueAtIndex(at, &item)?;
                     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
                     super::app_host_menu_probe::inserted(&args,&item,super::app_host_menu_probe::HostRole::SplitLink);
@@ -6351,20 +6365,7 @@ unsafe fn configure_controller(
                 &webview11,
                 Rc::new(move |_sender, args| {
                     let Some(args) = args else { return Ok(()) };
-                    let target = args.ContextMenuTarget()?;
-                    let mut has_link = BOOL::default();
-                    target.HasLinkUri(&mut has_link)?;
-                    if !has_link.as_bool() {
-                        return Ok(());
-                    }
-                    let mut uri = PWSTR::null();
-                    target.LinkUri(&mut uri)?;
-                    let Some(link) = Url::parse(&CoTaskMemPWSTR::from(uri).to_string())
-                        .ok()
-                        .filter(|url| matches!(url.scheme(), "http" | "https"))
-                    else {
-                        return Ok(());
-                    };
+                    let Some(link) = context_http_link(&args)? else { return Ok(()) };
                     let others = profiles();
                     if others.is_empty() {
                         return Ok(());
@@ -6395,18 +6396,7 @@ unsafe fn configure_controller(
                         children.InsertValueAtIndex(index as u32, &child)?;
                     }
                     let items = args.MenuItems()?;
-                    let mut count = 0u32;
-                    items.Count(&mut count)?;
-                    let mut at = 0u32;
-                    for index in 0..count {
-                        let mut name = PWSTR::null();
-                        if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok() {
-                            let name = CoTaskMemPWSTR::from(name).to_string();
-                            if name == "openLinkInNewTab" || name == "openLinkInNewWindow" {
-                                at = index + 1;
-                            }
-                        }
-                    }
+                    let at = index_after_open_link(&items)?;
                     items.InsertValueAtIndex(at, &parent)
                 }),
                 &mut token, coordinated_menu, &mut menu_augmenters,

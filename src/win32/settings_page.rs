@@ -594,8 +594,13 @@ fn snapshot(owner: HWND, app: &AppRef, refresh: &RefreshSettings) -> String {
     let profile = &refresh.profile;
     let custom_search = profile.as_ref().is_some_and(|profile| !crate::navigation::SearchProvider::from_config(None, &profile.search_provider_file()).is_default());
     let guest = profile.as_ref().is_some_and(|profile| profile.is_guest());
-    let name = profile.as_ref().map_or_else(|| "Bowser".to_owned(), crate::profile::Profile::display_name);
-    let avatar = profile.as_ref().map_or_else(|| "B".to_owned(), |profile| crate::profile::ProfileMetadata::load(profile).avatar_glyph(&name));
+    // Every profile once; this window's name and avatar come from its own row (a guest has none).
+    let profiles = profile_rows(profile.as_ref());
+    let (name, avatar) = match (profile, profiles.rows.iter().find(|row| row.current)) {
+        (_, Some(row)) => (row.name.clone(), row.glyph.clone()),
+        (Some(profile), None) => (profile.display_name(), crate::profile::ProfileMetadata::load(profile).avatar_glyph(&profile.display_name())),
+        (None, None) => ("Bowser".to_owned(), "B".to_owned()),
+    };
     let status = crate::updater::status();
     let (update, update_version, last_check) = match &status {
         Status::Unavailable => ("unavailable", String::new(), "none"),
@@ -641,28 +646,42 @@ fn snapshot(owner: HWND, app: &AppRef, refresh: &RefreshSettings) -> String {
         // --- tab stacks (T10) --- the workspace rules editor.
         workspace_rules: App::workspace_rules(app).into_iter().map(|rule| (rule.site, rule.workspace)).collect(),
         workspace_names: App::workspace_entries(app).into_iter().map(|(_, name, ..)| name).collect(),
-        profiles: profile_rows(profile.as_ref()),
+        profiles,
     })
 }
 
-/// --- profiles --- the profile manager's rows. A guest window lists the profiles but none of
-/// them is its own.
-fn profile_rows(current: Option<&crate::profile::Profile>) -> Vec<wire::ProfileRow> {
-    let Some(app_data) = crate::profile::app_data_dir() else { return Vec::new() };
-    let current = current.filter(|profile| !profile.is_guest()).map(|profile| profile.listed_name().to_owned());
-    crate::profile::summaries(&app_data)
-        .into_iter()
-        .take(wire::MAX_LISTED_PROFILES)
+/// --- profiles --- the profile manager's rows, and this window's profile with each avatar and
+/// colour. A guest window lists the profiles but none of them is its own.
+fn profile_rows(current: Option<&crate::profile::Profile>) -> wire::ProfileList {
+    use crate::profile::{ACCENTS, AVATARS};
+    let Some(app_data) = crate::profile::app_data_dir() else { return wire::ProfileList::default() };
+    let summaries = crate::profile::summaries(&app_data);
+    let me = summaries.iter().find(|summary| current.is_some_and(|profile| profile.is_listed_as(&summary.id)));
+    let with = |change: &dyn Fn(&mut crate::profile::ProfileMetadata)| {
+        let mut metadata = me.map(|me| me.metadata.clone()).unwrap_or_default();
+        change(&mut metadata);
+        metadata
+    };
+    let (avatars, accents) = match me {
+        Some(me) => (
+            AVATARS.iter().map(|avatar| with(&|m| m.avatar = (*avatar).to_owned()).avatar_glyph(&me.display_name)).collect(),
+            ACCENTS.iter().map(|accent| crate::chrome_host::css_colour(with(&|m| m.accent = (*accent).to_owned()).accent_colour())).collect(),
+        ),
+        None => (Vec::new(), Vec::new()),
+    };
+    let rows = summaries
+        .iter()
         .map(|summary| wire::ProfileRow {
-            current: current.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(&summary.id)),
+            current: current.is_some_and(|profile| profile.is_listed_as(&summary.id)),
             glyph: summary.avatar_glyph(),
             colour: crate::chrome_host::css_colour(summary.metadata.accent_colour()),
             avatar: summary.metadata.avatar.clone(),
             accent: summary.metadata.accent.clone(),
-            name: summary.display_name,
-            id: summary.id,
+            name: summary.display_name.clone(),
+            id: summary.id.clone(),
         })
-        .collect()
+        .collect();
+    wire::ProfileList { rows, avatars, accents }
 }
 
 /// Records how a change went; the next snapshot reports it.
@@ -807,13 +826,14 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             }
         }
         Action::Privacy => super::privacy_panel::open(owner, app),
-        Action::Profiles => super::window::show_profile_menu_from_page(owner),
-        Action::Profile(command) => match super::window::run_profile_command(owner, app, command) {
-            Ok(true) => answer(owner, Ok(())),
-            // Opened a window or wrote a shortcut: nothing to confirm, but the list may have moved.
-            Ok(false) => { let _ = with(owner, |rt| rt.dirty = true); }
-            Err(error) => answer(owner, Err(error)),
-        },
+        Action::Profile(command) => {
+            let answers = command.answers();
+            match super::window::run_profile_command(owner, app, command) {
+                // Opened a window or wrote a shortcut: nothing to confirm, but the list may have moved.
+                Ok(()) if !answers => { let _ = with(owner, |rt| rt.dirty = true); }
+                result => answer(owner, result),
+            }
+        }
         Action::Import => {
             if let Err(error) = super::import_panel::open(owner) {
                 super::show_error_message(&format!("Browser import could not be opened: {error}"));

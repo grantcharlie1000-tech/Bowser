@@ -359,10 +359,13 @@ pub fn is_reserved_device_name(name: &str) -> bool {
 }
 
 fn invalid_name_char(c: char) -> bool {
-    c.is_control()
-        || "<>:\"/\\|?*".contains(c)
-        // Direction overrides and zero-width characters make "photo\u{202e}gpj.exe" read as a picture.
-        || ('\u{200b}'..='\u{200f}').contains(&c)
+    c.is_control() || "<>:\"/\\|?*".contains(c) || is_hidden_format_char(c)
+}
+
+/// Direction overrides and zero-width characters: they make "photo\u{202e}gpj.exe" read as a
+/// picture, so names people are shown never hold them.
+pub fn is_hidden_format_char(c: char) -> bool {
+    ('\u{200b}'..='\u{200f}').contains(&c)
         || ('\u{202a}'..='\u{202e}').contains(&c)
         || ('\u{2066}'..='\u{2069}').contains(&c)
         || c == '\u{feff}'
