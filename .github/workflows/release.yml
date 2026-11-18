@@ -508,6 +508,10 @@ jobs:
         with:
           node-version: '22'
       - name: Build production HTML chrome executable
+        # Marks the published build, so a copy opened from a download installs itself where the
+        # updater keeps it (src/self_install.rs). Test and dev builds never carry it.
+        env:
+          BOWSER_RELEASE_BUILD: '1'
         run: |
           cargo +stable build --release --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }

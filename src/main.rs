@@ -53,6 +53,13 @@ fn main() -> ExitCode {
     let options_ephemeral = options.data_dir_ephemeral;
     let benchmark = options.benchmark_log.is_some();
     bowser::profile::set_dev_launch(options.dev);
+    // A release build opened from a download installs itself where the updater looks after it,
+    // and starts that copy instead (src/self_install.rs). Explicit data directories never do.
+    if bowser::self_install::wanted(options.dev, benchmark, options.data_dir.is_some())
+        && bowser::self_install::run()
+    {
+        return ExitCode::SUCCESS;
+    }
     if bowser::updater::startup(benchmark, options.dev) == bowser::updater::StartupAction::Relaunch
         && bowser::updater::relaunch()
     {
