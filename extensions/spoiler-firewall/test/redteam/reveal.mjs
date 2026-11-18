@@ -197,23 +197,20 @@ export async function runReveal({ log = console.log } = {}) {
     if (s[0] !== "revealed") return "Tab+Enter did not reveal the first shield: " + JSON.stringify(s) + " trail=" + trail.join(",");
   });
 
-  await test("hot-URL page shield: revealing the page does not reveal individual hot items", "critical", async () => {
-    const { ctx, page } = await open("hotpage", "www.google.com", "search");
-    // url has ?p=hotpage ; add the hot query via history so adapter sees it
-    await ctx.close();
+  await test("hot URL: items are masked one by one, and a click elsewhere on the page reveals none of them", "critical", async () => {
     const ctx2 = await instrumentedContext(browser, { config: {}, probe: false });
     const p2 = await ctx2.newPage();
     await p2.goto(`http://www.google.com:${port}/search?q=gta+6+ending+spoiler&p=hotpage`, { waitUntil: "load" });
     await sleep(600);
     const before = await p2.evaluate(() => ({ page: document.documentElement.getAttribute("data-sfw-page"), h1: document.getElementById("h1").getAttribute("data-sfw") }));
-    if (before.page !== "shield") { await ctx2.close(); return "setup: page not shielded " + JSON.stringify(before); }
+    if (before.page === "shield") { await ctx2.close(); return "a healthy engine covered the whole page for its URL " + JSON.stringify(before); }
+    if (before.h1 !== "shield") { await ctx2.close(); return "setup: hot item not shielded " + JSON.stringify(before); }
     const vp = p2.viewportSize();
-    await p2.mouse.click(vp.width / 2, vp.height / 2);
+    await p2.mouse.click(vp.width - 5, vp.height - 5);
     await sleep(500);
-    const after = await p2.evaluate(() => ({ page: document.documentElement.getAttribute("data-sfw-page"), h1: document.getElementById("h1").getAttribute("data-sfw") }));
+    const after = await p2.evaluate(() => ({ h1: document.getElementById("h1").getAttribute("data-sfw") }));
     await ctx2.close();
-    if (after.page === "shield") return "page click did not reveal page (setup)";
-    if (after.h1 !== "shield") return "revealing the page revealed the item inside: " + JSON.stringify(after);
+    if (after.h1 !== "shield") return "a click outside the item revealed it: " + JSON.stringify(after);
   });
 
   await browser.close();

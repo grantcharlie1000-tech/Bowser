@@ -6271,6 +6271,13 @@ SFW.runtime = (function () {
         pageWant = want;
         if (recomputePageHot()) rescanAll(false);
       }
+      // Item masking needs a working engine: with the MutationObserver unusable (rescan polling, not zero-flash) or the
+      // classifier broken, new content can paint before it is judged. Then a hot page fails closed with the page cover.
+      if (moMode === "poll" || detectionBroken) {
+        if (want && pageRevealedKey !== loc.href) {
+          if (doc.documentElement && S.shield.pageState(doc) !== "shielded") S.shield.applyPage(doc, "page");
+        } else if (!want && S.shield.pageState(doc) === "shielded" && !coverShown) S.shield.releasePage(doc);
+      }
       guardTitle();
     }
 
