@@ -1,5 +1,41 @@
 [
  {
+  "tag": "v0.0.35",
+  "date": "2026-11-18",
+  "prs": [
+   [
+    153,
+    "Pin Stable to v0.0.34"
+   ],
+   [
+    154,
+    "Spoiler Firewall X and YouTube fixes; real file icons in downloads"
+   ],
+   [
+    156,
+    "Pinned Downloads button, first-run welcome, blank new tabs, tighter toolbar"
+   ],
+   [
+    157,
+    "Keep tabs open through restarts, crashes and every window"
+   ],
+   [
+    155,
+    "Settings page overhaul: calmer cards, labels only, Zen-style shortcuts"
+   ],
+   [
+    158,
+    "Spoiler Firewall: cut the per-page cost of everyday browsing"
+   ],
+   [
+    160,
+    "Bump Bowser to 0.0.35"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from a218da1ac70ec7c85cfafc6f59b2f9cdb22cb9ab. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.34",
   "date": "2026-11-18",
   "prs": [
