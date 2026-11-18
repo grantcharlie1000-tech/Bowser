@@ -501,6 +501,14 @@
   white-space: nowrap;
 }
 
+/* Search suggestions is the one row with a sub-line (what turning it on sends): under the label, wrapping. */
+.sp-row[data-row="searchSuggestions"] > .sp-text {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+.sp-row[data-row="searchSuggestions"] .sp-desc { white-space: normal; }
+
 /* The download location stays on the label's line. */
 .sp-path {
   unicode-bidi: isolate;

@@ -575,7 +575,7 @@ mod tests {
     /// Every option, changed as the page changes it: command -> `set` -> settings.txt -> parse -> snapshot.
     #[test]
     fn every_option_survives_the_page_command_the_file_and_the_snapshot() {
-        let changes: [(&str, &str); 42] = [
+        let changes: [(&str, &str); 43] = [
             ("address_bar_show", "false"), ("address_autocomplete", "false"), ("address_show_full", "true"), ("address_select_on_activate", "false"),
             ("address_copy_encoded", "false"), ("address_qr_button", "true"), ("dd_show_while_typing", "false"), ("dd_always_badge", "true"),
             ("dd_typed_history", "true"), ("dd_typed_include_searches", "false"), ("dd_history_button", "true"), ("dd_max_results", "13"),
@@ -583,7 +583,7 @@ mod tests {
             ("sec_strip_js", "false"), ("sec_highlight_base", "true"), ("domain_expansion_suffix", "co.uk"), ("search_field", "button"),
             ("search_show_nickname", "false"), ("search_new_tab", "true"), ("search_show_icon", "false"), ("search_in_address", "false"),
             ("search_keep_engine", "true"), ("search_keep_text", "true"), ("search_selection_background", "true"), ("search_suggest_address", "false"),
-            ("search_suggest_field", "false"), ("search_last_engine", "bing"), ("nick_bookmarks", "marks"), ("nick_history", "past"),
+            ("search_suggest_field", "false"), ("search_suggestions", "true"), ("search_last_engine", "bing"), ("nick_bookmarks", "marks"), ("nick_history", "past"),
             ("nick_tabs", "t"), ("bm_open_new_tab", "true"), ("bm_panel_single_click", "false"), ("bm_confirm_open", "7"),
             ("bm_fetch_metadata", "false"), ("bm_always_dialog", "true"), ("bm_bar_folder", "4"), ("bm_bar_position", "bottom"),
             ("bm_bar_display", "bookmark-icon"), ("bar_groups", "a.example,b.example"),

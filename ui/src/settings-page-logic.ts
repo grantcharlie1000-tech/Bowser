@@ -1036,7 +1036,7 @@ export function readSettingsView(raw: string | null): SettingsView {
 }
 
 /** Existing rows the simple page lifts out of All settings, in the order it shows them. */
-export const SIMPLE_MOVED: readonly string[] = ['searchDefault', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser'];
+export const SIMPLE_MOVED: readonly string[] = ['searchDefault', 'searchSuggestions', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser'];
 
 export const SIMPLE_TITLE = 'Settings';
 export const SIMPLE_LEAD = '';

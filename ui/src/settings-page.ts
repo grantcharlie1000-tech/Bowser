@@ -1721,7 +1721,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const extensionsSlot = simpleRow('simpleExtensions', 'Extensions', simpleExtensions);
   const profileSlot = simpleRow('simpleProfile', 'Profile', simpleProfile);
   const simpleExtras = new Map<string, HTMLElement>([['simpleProfile', profileSlot], ['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
-  const simpleOrder = ['simpleProfile', 'searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
+  const simpleOrder = ['simpleProfile', 'searchDefault', 'searchSuggestions', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
   const simpleSlots: ReadonlyArray<{ readonly id: string; readonly moved: boolean; readonly el?: HTMLElement }> = simpleOrder.map((id) => {
     const extra = simpleExtras.get(id);
     return extra ? { id, moved: false, el: extra } : { id, moved: (SIMPLE_MOVED as readonly string[]).includes(id) };

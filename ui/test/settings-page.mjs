@@ -1284,6 +1284,26 @@ test('Address bar section: every switch sends one addrset command, never part of
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'addrset', text: 'domain_expansion_suffix=co.uk' }]);
 });
 
+test('Search suggestions: off from the snapshot, one addrset command, a sub-line that says what is sent', () => {
+  deliver(addressFixture.snap);
+  const row = app.querySelector('.sp-row[data-row="searchSuggestions"]');
+  assert.ok(row, 'the row is drawn');
+  assert.equal(row.querySelector('.sp-label').textContent, 'Search suggestions');
+  assert.match(row.querySelector('.sp-desc').textContent, /Sends what you type to your search engine before you press Enter/);
+  assert.match(row.querySelector('.sp-desc').textContent, /private/);
+  assert.ok(app.querySelector('section[data-area="profile"]').contains(row), 'in General, with the engine choice');
+  const sw = row.querySelector('[role="switch"]');
+  assert.equal(sw.getAttribute('aria-checked'), 'false', 'off by default');
+  sent.length = 0;
+  sw.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'addrset', text: 'search_suggestions=true' }]);
+  deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, s: { ...addressFixture.snap.d.s, search_suggestions: true } } });
+  assert.equal(sw.getAttribute('aria-checked'), 'true');
+  assert.ok(logic.matchRows('google autocomplete').has('searchSuggestions'));
+  assert.ok(logic.matchRows('autofill').has('searchSuggestions'));
+  deliver(addressFixture.snap);
+});
+
 test('The suggestion sources list in order, turn off and move with one command each', () => {
   deliver(addressFixture.snap);
   const items = app.querySelectorAll('.ad-source');
@@ -2217,7 +2237,7 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(logic.simpleTabChoice('left'), 'side');
   assert.equal(logic.simpleTabChoice('right'), 'side');
   assert.equal(logic.simpleTabChoice('bottom'), null);
-  assert.deepEqual([...logic.SIMPLE_MOVED], ['searchDefault', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser']);
+  assert.deepEqual([...logic.SIMPLE_MOVED], ['searchDefault', 'searchSuggestions', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser']);
 
   deliver(fixture.snap);
   searchFor('');
@@ -2234,7 +2254,7 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(app.querySelector('.sp-nav').hidden, true);
   for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, true, area.key);
   assert.deepEqual(app.querySelector('.sp-simple').querySelectorAll('.sp-label').map((node) => node.textContent), [
-    'Profile', 'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
+    'Profile', 'Search engine', 'Search suggestions', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
   ]);
   // --- profiles --- this window's profile, one click from the manager.
   const simpleProfile = app.querySelector('[data-simple="simpleProfile"]');
@@ -2284,8 +2304,9 @@ test('simple settings is the calm default, and All settings is one switch away',
 });
 
 test('settings rows render a single line of text', () => {
+  // Only Search suggestions carries a sub-line: it says what turning it on sends, and to whom.
   const described = logic.ROWS.filter((row) => row.description !== '').map((row) => row.id);
-  assert.deepEqual(described, []);
+  assert.deepEqual(described, ['searchSuggestions']);
   deliver(fixture.snap);
   const nodeOf = (id) => app.querySelector(`[data-opens="${id}"]`) ?? app.querySelector(`.sp-row[data-row="${id}"]`);
   for (const id of ['reset', 'deleteData', 'winReset', 'panelReset']) {

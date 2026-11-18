@@ -701,5 +701,10 @@ Toolbar: `submit` (`text`, `n` 0 plain, 1 new tab for Alt/Shift+Enter, 2 domain 
 
 The bookmarks bar takes its row from `Layout.viewport` in `window::relayout` (`bookmark_bar::reserved_viewport`),
 so the page, split panes and side panels end where the bar begins and `--bw-toolbar-h` is untouched. Search
-suggestions are fetched only for an engine nickname typed in the address field, or in the search field, from
-the engine's own suggestions address through `translate::net::get_https`; never in a private tab.
+suggestions are fetched for an engine nickname typed in the address field, in the search field, and, with
+`search_suggestions` on (off by default), for plain typing in the address field from the default engine
+(`address_suggest::remote_query` decides what may be sent: never an address, a `bowser:` page, a nickname or
+anything in a private tab). They come from the engine's own suggestions address through one worker thread's
+`translate::net::HttpsSession` (150 ms debounce, newest request wins), and plain-typing answers are listed as
+`search` rows below the local rows (at most five, at most half the list). A late answer redraws the list only
+while it is still open.
