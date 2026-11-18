@@ -6,7 +6,7 @@
 // Markup:
 //   li.dl-row[data-id][data-state][data-kind](.is-unknown)
 //     button.dl-open[aria-disabled]            the row body; opens a finished file
-//       span.dl-tile[data-kind] > svg           file-kind glyph on its tone
+//       span.dl-tile[data-kind](.has-icon) > svg | img   file-kind glyph on its tone, or the file's own picture
 //       span.dl-text > span.dl-name > span.dl-stem + span.dl-ext   (middle elision: nameParts)
 //                      span.dl-meta > span.dl-status (+ page: span.dl-host)
 //                      span.dl-bar > span.dl-fill  progress (aria-hidden; the status says it)
@@ -39,6 +39,8 @@ export interface RowNode {
   readonly time: HTMLElement | null;
   readonly acts: HTMLElement;
   entry: DlEntry | undefined;
+  /** The icon the tile shows ('' = the file-kind glyph). */
+  tileIcon: string;
   /** The search the name was last marked for (page). */
   marked: string;
 }
@@ -80,7 +82,7 @@ export function makeRow(where: Where, onAction: RowAction): RowNode {
   }
   const acts = el('span', 'dl-acts');
   root.append(open, acts);
-  const node: RowNode = { root, open, tile, stem, ext, status, host, fill, time, acts, entry: undefined, marked: '\u0000' };
+  const node: RowNode = { root, open, tile, stem, ext, status, host, fill, time, acts, entry: undefined, tileIcon: '\u0000', marked: '\u0000' };
   open.addEventListener('click', (event) => onAction(node, 'open', event));
   acts.addEventListener('click', (event) => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('.dl-act') : null;
@@ -92,6 +94,21 @@ export function makeRow(where: Where, onAction: RowAction): RowNode {
   // A status change (finished, failed) crossfades the line once; ticks only rewrite it.
   status.addEventListener('animationend', () => status.classList.remove('is-swap'));
   return node;
+}
+
+/** The file's own picture; a picture that does not decode gives way to the file-kind glyph. */
+function fileIcon(src: string, node: RowNode, kind: FileKind, where: Where): HTMLImageElement {
+  const img = el('img', 'dl-file-icon');
+  img.alt = '';
+  img.draggable = false;
+  img.decoding = 'async';
+  img.addEventListener('error', () => {
+    if (node.tileIcon !== src) return;
+    node.tile.classList.remove('has-icon');
+    node.tile.replaceChildren(icon(KIND_ICON[kind], { size: where === 'page' ? 20 : 16 }));
+  }, { once: true });
+  img.src = src;
+  return img;
 }
 
 function actButton(action: DlAction, name: string, tier: 'primary' | 'secondary', where: Where): HTMLButtonElement {
@@ -127,10 +144,12 @@ export function fillRow(node: RowNode, entry: DlEntry, where: Where, mark?: (tar
     if (mark) { mark(node.stem, head); mark(node.ext, tail); }
     else { node.stem.textContent = head; node.ext.textContent = tail; }
     const kind = fileKind(entry.name);
-    if (root.dataset.kind !== kind) {
+    if (root.dataset.kind !== kind || node.tileIcon !== entry.icon) {
       root.dataset.kind = kind;
       node.tile.dataset.kind = kind;
-      node.tile.replaceChildren(icon(KIND_ICON[kind], { size: where === 'page' ? 20 : 16 }));
+      node.tileIcon = entry.icon;
+      node.tile.classList.toggle('has-icon', entry.icon !== '');
+      node.tile.replaceChildren(entry.icon !== '' ? fileIcon(entry.icon, node, kind, where) : icon(KIND_ICON[kind], { size: where === 'page' ? 20 : 16 }));
     }
     if (node.host) {
       if (mark) mark(node.host, entry.host);

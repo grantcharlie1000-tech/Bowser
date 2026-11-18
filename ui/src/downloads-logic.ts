@@ -33,6 +33,8 @@ export interface DlEntry {
   readonly resume: boolean;
   /** `HH:MM`, local time it finished (or started, while active). */
   readonly clock: string;
+  /** The file's picture as Windows shows it (a PNG `data:` URL), or '' for the file-kind glyph. */
+  readonly icon: string;
 }
 
 /** Rust caps characters (200, 120, 200, 60); UTF-16 may need twice the units. */
@@ -40,9 +42,12 @@ const MAX_NAME_UNITS = 400;
 const MAX_HOST_UNITS = 240;
 const MAX_URL_UNITS = 400;
 const MAX_ERR_UNITS = 120;
+/** Rust caps an icon at 22 KiB of ASCII. */
+export const MAX_ICON_UNITS = 22 * 1024;
+const ICON_RE = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
 /** Byte counts and times stay exact integers in JS. */
 const MAX_COUNT = Number.MAX_SAFE_INTEGER;
-export const ENTRY_KEYS = ['id', 'name', 'host', 'url', 'state', 'got', 'total', 'eta', 'bps', 'err', 'resume', 'clock'] as const;
+export const ENTRY_KEYS = ['id', 'name', 'host', 'url', 'state', 'got', 'total', 'eta', 'bps', 'err', 'resume', 'clock', 'icon'] as const;
 const CLOCK_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
@@ -59,17 +64,18 @@ const oneOf = <T extends string>(value: unknown, list: readonly T[]): value is T
 /** One entry, every key present and nothing else; `null` for anything Bowser would never send. */
 export function parseEntry(value: unknown): DlEntry | null {
   if (!isRecord(value) || !exactKeys(value, ENTRY_KEYS)) return null;
-  const { id, name, host, url, state, got, total, eta, bps, err, resume, clock } = value;
+  const { id, name, host, url, state, got, total, eta, bps, err, resume, clock, icon } = value;
   if (!isInt(id, 1, MAX_ID) || !oneOf(state, DL_STATES) || typeof resume !== 'boolean') return null;
   if (!isStrUpTo(name, MAX_NAME_UNITS) || name.trim() === '' || /[\\/\u0000-\u001f]/.test(name)) return null;
   if (!isStrUpTo(host, MAX_HOST_UNITS) || !isStrUpTo(url, MAX_URL_UNITS) || !isStrUpTo(err, MAX_ERR_UNITS)) return null;
   if (url !== '' && !/^https?:\/\//i.test(url)) return null;
   if (!isInt(got, 0, MAX_COUNT) || !isInt(total, -1, MAX_COUNT) || !isInt(eta, -1, MAX_COUNT) || !isInt(bps, 0, MAX_COUNT)) return null;
   if (typeof clock !== 'string' || !CLOCK_RE.test(clock)) return null;
+  if (!isStrUpTo(icon, MAX_ICON_UNITS) || (icon !== '' && !ICON_RE.test(icon))) return null;
   // Only a failed download has a reason, and only an active one moves bytes.
   if (state !== 'failed' && err !== '') return null;
   if (state !== 'active' && bps !== 0) return null;
-  return { id, name, host, url, state, got, total, eta, bps, err, resume, clock };
+  return { id, name, host, url, state, got, total, eta, bps, err, resume, clock, icon };
 }
 
 /** Entries in order with unique ids, at most `max`; `null` when any one is malformed. */
@@ -443,7 +449,7 @@ export function entryChange(prev: DlEntry | undefined, next: DlEntry, where: 'bu
   if (!prev) return { name: true, state: true, status: true, bar: true, actions: true };
   const actions = (entry: DlEntry): string => { const a = actionsFor(entry); return `${a.primary.join()}|${a.secondary.join()}`; };
   return {
-    name: prev.name !== next.name || prev.host !== next.host || prev.url !== next.url || prev.clock !== next.clock,
+    name: prev.name !== next.name || prev.host !== next.host || prev.url !== next.url || prev.clock !== next.clock || prev.icon !== next.icon,
     state: prev.state !== next.state,
     status: statusText(prev, where) !== statusText(next, where),
     bar: fraction(prev) !== fraction(next) || prev.state !== next.state,
