@@ -269,10 +269,10 @@ kbd {
 .ht-line + .ht-line { animation-delay: 0.08s; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0 0.22em; }
 .word {
   position: relative;
-  display: inline-flex;
+  display: inline-grid;
   align-items: center;
-  height: 1.18em;
-  padding: 0 0.32em 0.02em 0.26em;
+  justify-items: start;
+  padding: 0.04em 0.36em 0.08em 0.28em;
   border-radius: 999px;
   background: var(--wash-strong);
   color: var(--blue);
@@ -280,17 +280,20 @@ kbd {
   vertical-align: middle;
   transition: width 0.45s cubic-bezier(.3,.7,.2,1);
 }
+/* Every word sits in the same grid cell, so the pill is always as tall as the tallest word,
+   descenders included. */
 .word-in {
+  grid-area: 1 / 1;
   display: inline-flex;
   align-items: center;
-  gap: 0.14em;
+  gap: 0.16em;
   white-space: nowrap;
   transition: transform 0.45s cubic-bezier(.3,.7,.2,1), opacity 0.3s;
 }
-.word-in:not(.is-on) { position: absolute; left: 0.26em; top: 0; height: 100%; opacity: 0; transform: translateY(70%); pointer-events: none; }
-.word-in.is-out { transform: translateY(-70%); }
-.word-in svg { width: 0.62em; height: 0.62em; flex: none; }
-.word-in em { font-size: 1.1em; line-height: 1; padding-right: 0.04em; letter-spacing: -0.02em; }
+.word-in:not(.is-on) { opacity: 0; transform: translateY(80%); pointer-events: none; }
+.word-in.is-out { transform: translateY(-80%); }
+.word-in svg { width: 0.6em; height: 0.6em; flex: none; }
+.word-in em { display: block; font-size: 1.1em; line-height: 1.12; padding: 0 0.08em 0.06em 0; letter-spacing: -0.02em; }
 .word-pause { width: 32px; height: 32px; margin-top: 18px; background: var(--wash); color: var(--blue); }
 .hero-lede { max-width: 640px; margin-top: 18px; font-size: clamp(18px, 1.6vw, 21px); line-height: 1.45; color: var(--muted); animation: rise 0.7s 0.16s both cubic-bezier(.2,.7,.2,1); }
 .hero-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 32px; animation: rise 0.7s 0.22s both cubic-bezier(.2,.7,.2,1); }
