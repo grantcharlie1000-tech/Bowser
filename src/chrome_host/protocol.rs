@@ -1234,7 +1234,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" | "tbar" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
@@ -5392,6 +5392,23 @@ mod toolbar_wire_tests {
         let panel = parse_command(r#"{"v":1,"t":"feed","a":"refresh"}"#).unwrap();
         assert!(matches!(panel, Command::Panel { kind: PanelType::Feeds, .. }));
         assert!(parse_command(r#"{"v":1,"t":"feed","a":"preview","text":"https://a.example/","extra":1}"#).is_err());
+    }
+
+    /// The exact bytes `ui/src/panels/toolbar.ts` posts for one switch. The `tbar` family once had its
+    /// parse arm but no entry in the allowed-keys table, so every customiser command was dropped as an
+    /// unknown type and no switch did anything.
+    #[test]
+    fn the_toolbar_customisers_commands_parse() {
+        for (raw, text) in [
+            (r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons=back,forward,reload,reader,site-info,split"}"#, "toolbar_buttons=back,forward,reload,reader,site-info,split"),
+            (r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_tabs=closed-tabs,cmd:history"}"#, "toolbar_tabs=closed-tabs,cmd:history"),
+            (r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons="}"#, "toolbar_buttons="),
+        ] {
+            let Command::Panel { kind: PanelType::Toolbar, f } = parse_command(raw).unwrap_or_else(|error| panic!("{raw}: {error:?}")) else { panic!("{raw}") };
+            assert_eq!((f.a.as_str(), f.text.as_deref()), ("set", Some(text)));
+        }
+        assert!(parse_command(r#"{"v":1,"t":"tbar"}"#).is_err(), "an action is required");
+        assert!(parse_command(r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons=back","extra":1}"#).is_err());
     }
 
     #[test]

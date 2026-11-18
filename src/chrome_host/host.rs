@@ -2747,5 +2747,19 @@ mod toolbar_view_tests {
         assert!(view_accepts_command(View::Toolbar, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
         assert!(!view_accepts_command(View::Tabs, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
     }
+
+    #[test]
+    fn the_toolbar_customiser_takes_its_own_family_and_the_dismiss_and_nothing_else() {
+        let set = parse_command(r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons=back,forward,reload"}"#).unwrap();
+        let dismiss = parse_command(r#"{"v":1,"t":"panel","a":"dismiss"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogToolbar, &set));
+        assert!(view_accepts_command(View::DialogToolbar, &dismiss));
+        for foreign in [r#"{"v":1,"t":"feed","a":"refresh"}"#, r#"{"v":1,"t":"set","a":"reset"}"#, r#"{"v":1,"t":"nav","a":"back"}"#] {
+            assert!(!view_accepts_command(View::DialogToolbar, &parse_command(foreign).unwrap()), "{foreign}");
+        }
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSessions, View::DialogFeeds, View::Settings] {
+            assert!(!view_accepts_command(view, &set), "{view:?} accepted the tbar family");
+        }
+    }
 }
 // --- end toolbars and feeds ---
