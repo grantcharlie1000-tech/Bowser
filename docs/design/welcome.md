@@ -20,7 +20,7 @@ menu is marked answered. Guest windows never get it. Typing `bowser://settings/w
 | Step | Sends |
 |---|---|
 | Welcome | nothing (Get started, Skip setup) |
-| Import | `importfrom` + `chrome`/`edge`/`brave`/`firefox` (one click: that browser's profile, previewed before import); "From a file" sends `import` |
+| Import | `importfrom` + `chrome`/`edge`/`brave`/`firefox`/`opera`/`vivaldi`/`helium` (one click: that browser's profile, previewed before import; Opera falls back to Opera GX, Helium is read from `imput\Helium` or `Helium` under Local AppData); the File tile sends `import` |
 | Look | `themeopt` schedule/look; `save` with `theme_accent` (the only step with the preview window) |
 | Search | `engine` `default\t<id>` for Google, Bing, DuckDuckGo or Brave (only built-ins still in the list) |
 | Ad blocking | Yes / No: the protection panel's `blocklevel` `ads` or `none` |
@@ -35,7 +35,10 @@ Inspired by Zen (a look with a live picture), Helium (say little) and Dia (bring
 end on a few keys). Hello and Done are a centred hero with the Bowser logo (`ui/src/assets/bowser-logo.png`,
 icons/bowser.png at 192px, served as `bowser-logo.png`). The other steps are one centred column; Look adds
 a to-scale mock of Bowser's own slim chrome that follows the look and accent at once and never animates.
-Browsers and engines show their own full-colour logos (`ui/src/brand-marks.ts`, Gil Barbara's logos set, CC0).
+Import and Search are big logo tiles with a glow in each brand's colour (`ui/src/brand-marks.ts`: Gil Barbara's
+logos set, CC0, and Helium's own logo). Import has a transfer picture over the tiles (the picked browser, dots
+flowing across, Bowser; a fan of logos before a pick); Search has a large preview of the search bar that
+shows the picked engine.
 Copy is kept to titles and button words.
 
 Micro-animations (transform and opacity only, all off under reduced motion): the step slides in from the

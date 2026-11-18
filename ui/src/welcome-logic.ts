@@ -36,7 +36,7 @@ export const NOT_NOW_LABEL = 'Not now';
 export const BACK_LABEL = 'Back';
 export const FINISH_LABEL = 'Start browsing';
 export const SETTINGS_LABEL = 'Open Settings';
-export const IMPORT_FILE_LABEL = 'From a file';
+export const IMPORT_FILE_LABEL = 'File';
 export const IMPORT_OPENED = 'Importing…';
 export const DEFAULT_LABEL = 'Set as default browser';
 export const DEFAULT_ALREADY = 'Bowser is your default browser.';
@@ -105,10 +105,18 @@ export const BLOCK_CHOICES: ReadonlyArray<readonly [BlockChoice, string, string]
 ];
 
 /** The browsers the Import step offers, by the `importfrom` key Rust takes (import_panel::BROWSERS). */
-export type ImportBrowser = 'chrome' | 'edge' | 'brave' | 'firefox';
+export type ImportBrowser = 'chrome' | 'edge' | 'brave' | 'firefox' | 'opera' | 'vivaldi' | 'helium';
 export const IMPORT_BROWSERS: ReadonlyArray<readonly [ImportBrowser, string]> = [
-  ['chrome', 'Chrome'], ['edge', 'Edge'], ['brave', 'Brave'], ['firefox', 'Firefox'],
+  ['chrome', 'Chrome'], ['edge', 'Edge'], ['brave', 'Brave'], ['firefox', 'Firefox'], ['opera', 'Opera'], ['vivaldi', 'Vivaldi'], ['helium', 'Helium'],
 ];
+
+/** The logos fanned out on the Import step's transfer picture before a browser is picked. */
+export const IMPORT_FAN: readonly ImportBrowser[] = ['firefox', 'chrome', 'edge'];
+
+/** What the Search step's preview bar says for an engine's name. */
+export function searchPlaceholder(name: string): string {
+  return `Search ${name} or type an address`;
+}
 
 /** The built-in engines the Search step offers, by their ids in search_engines.rs. Ones missing from the
  * address snapshot's list (removed by the person) are not offered. */

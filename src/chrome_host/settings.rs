@@ -435,6 +435,9 @@ pub enum Action {
     WelcomeDone,
 }
 
+/// The browsers `importfrom` names (`win32::import_panel::BROWSERS` has the same keys, in this order).
+pub const IMPORT_BROWSERS: [&str; 7] = ["chrome", "edge", "brave", "firefox", "opera", "vivaldi", "helium"];
+
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
 pub fn map_command(f: &PanelFields) -> Option<Action> {
     if f.id.is_some() || f.parent.is_some() || f.before.is_some() || f.n.is_some() || f.url.is_some() {
@@ -522,7 +525,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "welcomedone" if bare => Action::WelcomeDone,
         "importfrom" if text_only => {
             let text = f.text.as_deref()?;
-            Action::ImportFrom(["chrome", "edge", "brave", "firefox"].into_iter().find(|key| *key == text)?)
+            Action::ImportFrom(IMPORT_BROWSERS.into_iter().find(|key| *key == text)?)
         }
         _ => return None,
     })
@@ -865,11 +868,11 @@ mod tests {
         assert_eq!(map_command(&folder), None);
         let mut from = fields("importfrom");
         assert_eq!(map_command(&from), None, "a browser is named");
-        for key in ["chrome", "edge", "brave", "firefox"] {
+        for key in IMPORT_BROWSERS {
             from.text = Some(key.into());
             assert_eq!(map_command(&from), Some(Action::ImportFrom(key)));
         }
-        for bad in ["Chrome", "opera", "", "C:\\Users"] {
+        for bad in ["Chrome", "Opera", "arc", "", "C:\\Users"] {
             from.text = Some(bad.into());
             assert_eq!(map_command(&from), None, "{bad}");
         }

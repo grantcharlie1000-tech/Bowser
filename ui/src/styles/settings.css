@@ -4174,24 +4174,236 @@
   background: var(--pv-ink-2);
 }
 
-/* ---- tiles for browsers and engines, and the file link ---- */
-:where(#app.sp-root) .wl-tiles.is-four {
+/* ---- logo tiles (Import's browsers, Search's engines) ----
+ * Square-ish cards with the logo large in the middle and the name under it. Behind the logo, a
+ * soft glow in the brand's own colour (`--wl-brand`, brand-marks.ts) fades in on hover and stays
+ * on the picked one, which also gets a ring in that colour and the tick. */
+.wl-logos {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
 
-/* A browser's or engine's own full-colour logo: no disc behind it, the logo is the picture. */
-.wl-glyph.is-brand,
-.wl-tile[aria-checked="true"] .wl-glyph.is-brand,
-.wl-browser[aria-pressed="true"] .wl-glyph.is-brand {
-  background: transparent;
+.wl-logo-tile {
+  --wl-brand: var(--wl-pick);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 18px 8px 14px;
+  overflow: hidden;
+  border: 1px solid var(--wl-line);
+  border-radius: 18px;
+  background: var(--wl-glass);
+  color: var(--bw-text);
+  font: inherit;
+  cursor: default;
+}
+
+.wl-logo-tile[hidden] {
+  display: none;
+}
+
+.wl-logo-glow {
+  position: absolute;
+  inset: -20% -20% 30%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--wl-brand) 30%, transparent), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms var(--bw-ease-fade);
+}
+
+.wl-logo-tile:hover:not(:disabled) .wl-logo-glow,
+.wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) .wl-logo-glow {
+  opacity: 1;
+}
+
+.wl-logo-tile:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--wl-brand) 40%, var(--wl-line));
+}
+
+.wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) {
+  border-color: var(--wl-brand);
+  box-shadow: 0 0 0 1px var(--wl-brand), 0 12px 32px -18px var(--wl-brand);
+}
+
+.wl-logo-tile:disabled {
+  opacity: 0.5;
+}
+
+.wl-logo-well {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
 }
 
 .wl-brand {
   display: block;
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  user-select: none;
+  filter: drop-shadow(0 4px 10px rgb(0 0 0 / 0.18));
+}
+
+.wl-file-glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bw-text) 8%, transparent);
+  color: var(--bw-text-2);
+}
+
+.wl-logo-name {
+  position: relative;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wl-logo-tile .wl-tick {
+  top: 8px;
+  right: 8px;
+  background: var(--wl-brand);
+}
+
+.wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) .wl-tick {
+  opacity: 1;
+  transform: none;
+}
+
+/* Search's engines: round app icons in one row. */
+.wl-logos.is-engines .wl-logo-tile {
+  padding: 16px 8px 12px;
+  border-radius: 20px;
+}
+
+/* ---- Import's transfer picture: [the browser] · · · [Bowser] ---- */
+.wl-transfer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.wl-transfer-slot {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border: 1px solid var(--wl-line);
+  border-radius: 22px;
+  background: var(--wl-glass);
+  box-shadow: 0 16px 36px -22px rgb(0 0 0 / 0.5);
+}
+
+.wl-transfer-logo {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  user-select: none;
+}
+
+.wl-fan {
+  position: relative;
+  width: 48px;
+  height: 40px;
+}
+
+.wl-fan-logo {
+  position: absolute;
+  top: 6px;
   width: 28px;
   height: 28px;
   object-fit: contain;
-  user-select: none;
+  filter: drop-shadow(0 2px 4px rgb(0 0 0 / 0.25));
+}
+
+.wl-fan-logo:nth-child(1) {
+  left: 0;
+  transform: rotate(-12deg);
+}
+
+.wl-fan-logo:nth-child(2) {
+  left: 10px;
+  z-index: 1;
+  transform: translateY(-4px);
+}
+
+.wl-fan-logo:nth-child(3) {
+  left: 20px;
+  transform: rotate(12deg);
+}
+
+.wl-transfer-line {
+  position: relative;
+  width: 96px;
+  height: 2px;
+  border-radius: 1px;
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--bw-text) 28%, transparent) 0 6px, transparent 6px 12px);
+}
+
+.wl-transfer-dot {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--wl-pick);
+  opacity: 0;
+}
+
+/* ---- Search's preview bar ---- */
+.wl-searchbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  margin-bottom: 20px;
+  padding: 0 10px 0 16px;
+  border: 1px solid var(--wl-line);
+  border-radius: 26px;
+  background: var(--wl-glass);
+  box-shadow: 0 18px 40px -24px rgb(0 0 0 / 0.55);
+}
+
+.wl-searchbar-logo {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--bw-text-2);
+}
+
+.wl-searchbar-logo .wl-brand {
+  width: 22px;
+  height: 22px;
+  filter: none;
+}
+
+.wl-searchbar-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: calc(15px * var(--bw-font-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Yes / No answers (Ad blocking) ---- */
@@ -4276,22 +4488,8 @@
   transform: none;
 }
 
-.wl-browser[aria-pressed="true"] {
-  border-color: var(--wl-pick);
-  box-shadow: 0 0 0 1px var(--wl-pick);
-}
 
-.wl-browser[aria-pressed="true"] .wl-tick {
-  opacity: 1;
-  transform: none;
-}
 
-.wl .bw-button.wl-link {
-  align-self: flex-start;
-  margin-top: var(--bw-space-3);
-  margin-left: -12px;
-  color: var(--bw-text-2);
-}
 
 /* ---- micro-animations ----
  * Every entrance is transform and opacity only, short, and staggered by `--wl-i` (welcome.ts): the
@@ -4356,6 +4554,23 @@
   }
 }
 
+@keyframes wl-flow {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0);
+  }
+
+  20%,
+  80% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(90px, 0, 0);
+  }
+}
+
 @keyframes wl-ring {
   from {
     transform: scale(0.8);
@@ -4392,6 +4607,62 @@
 
   .wl-stage.is-in > .wl-mark {
     animation: wl-mark-in 620ms var(--bw-ease-spring, var(--bw-ease-out)) both;
+  }
+
+  .wl-stage.is-in .wl-logos > * {
+    animation: wl-in 380ms var(--bw-ease-out) both;
+    animation-delay: calc(var(--wl-i, 0) * 35ms + 180ms);
+  }
+
+  .wl-logo-tile {
+    transition:
+      transform 220ms var(--bw-ease-out),
+      border-color var(--bw-dur-fast) var(--bw-ease-fade);
+  }
+
+  .wl-logo-tile:hover:not(:disabled) {
+    transform: translate3d(0, -3px, 0);
+  }
+
+  .wl-logo-tile:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 90ms;
+  }
+
+  .wl-logo-tile .wl-brand,
+  .wl-file-glyph {
+    transition: transform 260ms var(--bw-ease-out);
+  }
+
+  .wl-logo-tile:hover:not(:disabled) .wl-brand,
+  .wl-logo-tile:hover:not(:disabled) .wl-file-glyph {
+    transform: scale(1.08) rotate(-3deg);
+  }
+
+  .wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) .wl-tick {
+    animation: wl-pop 360ms var(--bw-ease-out) both;
+  }
+
+  .wl-transfer-slot.is-pop,
+  .wl-searchbar-logo.is-pop {
+    animation: wl-pop 420ms var(--bw-ease-out) both;
+  }
+
+  .wl-transfer.is-moving .wl-transfer-dot {
+    animation: wl-flow 900ms var(--bw-ease-move) 3 both;
+  }
+
+  .wl-transfer.is-moving .wl-transfer-dot:nth-child(2) {
+    animation-delay: 300ms;
+  }
+
+  .wl-transfer.is-moving .wl-transfer-dot:nth-child(3) {
+    animation-delay: 600ms;
+  }
+
+  .wl-stage.is-in .wl-body > * > * {
+    animation: wl-in 380ms var(--bw-ease-out) both;
+    animation-delay: calc(var(--wl-i, 0) * 45ms + 40ms);
   }
 
   .wl-stage.is-in .wl-body > .wl-choices > * {
@@ -4541,7 +4812,7 @@
   }
 
   :where(#app.sp-root) .wl-tiles,
-  :where(#app.sp-root) .wl-tiles.is-four,
+  .wl-logos,
   .wl-keys {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

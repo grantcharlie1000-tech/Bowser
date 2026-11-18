@@ -2818,12 +2818,15 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
   primary().click();
   assert.equal(wl.dataset.step, 'import');
   assert.equal(back().hidden, false);
-  assert.deepEqual(tiles().map((tile) => tile.textContent), ['Chrome', 'Edge', 'Brave', 'Firefox']);
-  assert.ok(tiles().every((tile) => tile.querySelector('.wl-brand')?.getAttribute('src').startsWith('data:image/svg+xml,')), 'each browser shows its logo');
-  tiles()[1].click();
-  assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'importfrom', text: 'edge' });
-  assert.equal(tiles()[1].getAttribute('aria-pressed'), 'true');
-  wl.querySelector('.wl-link').click();
+  const browsers = tiles().filter((tile) => tile.dataset.browser);
+  assert.deepEqual(browsers.map((tile) => tile.textContent), ['Chrome', 'Edge', 'Brave', 'Firefox', 'Opera', 'Vivaldi', 'Helium']);
+  assert.ok(browsers.every((tile) => tile.querySelector('.wl-brand')?.getAttribute('src').startsWith('data:image/svg+xml,')), 'each browser shows its logo');
+  assert.equal(wl.querySelector('.wl-transfer').querySelectorAll('.wl-fan-logo').length, 3, 'a fan of logos before a pick');
+  browsers[6].click();
+  assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'importfrom', text: 'helium' });
+  assert.equal(browsers[6].getAttribute('aria-pressed'), 'true');
+  assert.ok(wl.querySelector('.wl-transfer').querySelector('.wl-transfer-slot').querySelector('.wl-transfer-logo'), 'the picked browser takes the fan\'s place');
+  wl.querySelector('.wl-file').click();
   assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'import' }, 'From a file opens the importer');
 
   primary().click();

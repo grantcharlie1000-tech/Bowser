@@ -14,8 +14,8 @@ import type { SettingsSnapshot } from './settings-page-logic';
 import { engineFields } from './address-settings-logic';
 import { BRAND_MARKS } from './brand-marks';
 import {
-  ACCENTS, BACK_LABEL, BLOCK_CHOICES, CONTINUE_LABEL, DEFAULT_LABEL, ENGINE_CHOICES, FINISH_LABEL, IMPORT_BROWSERS, IMPORT_FILE_LABEL,
-  IMPORT_OPENED, LOOK_CHOICES, NOT_NOW_LABEL, READ_ONLY_NOTE, SETTINGS_LABEL, SHORTCUTS, SKIP_SETUP_LABEL, START_LABEL, STEP_COPY,
+  ACCENTS, BACK_LABEL, BLOCK_CHOICES, CONTINUE_LABEL, DEFAULT_LABEL, ENGINE_CHOICES, FINISH_LABEL, IMPORT_BROWSERS, IMPORT_FAN,
+  IMPORT_FILE_LABEL, IMPORT_OPENED, searchPlaceholder, LOOK_CHOICES, NOT_NOW_LABEL, READ_ONLY_NOTE, SETTINGS_LABEL, SHORTCUTS, SKIP_SETUP_LABEL, START_LABEL, STEP_COPY,
   STEP_NAMES, WELCOME_STEPS, defaultStatus, hasBack, lookChoiceOf, offeredEngines, progressText, stepAfter, stepBefore, tabChoiceOf,
   type BlockChoice, type LookChoice, type TabChoice, type WelcomeStep,
 } from './welcome-logic';
@@ -46,20 +46,36 @@ function stagger(nodes: readonly HTMLElement[], from = 0): void {
   nodes.forEach((node, index) => node.style.setProperty('--wl-i', String(from + index)));
 }
 
-/** A browser's or engine's own full-colour logo (brand-marks.ts). */
-function logoArt(key: string): HTMLElement {
-  const box = el('span', 'wl-glyph is-brand');
-  box.setAttribute('aria-hidden', 'true');
-  const mark = BRAND_MARKS[key];
-  if (!mark) return box;
-  const img = el('img', 'wl-brand');
+/** A browser's or engine's own full-colour logo (brand-marks.ts), or the Bowser logo for `bowser`. */
+function logoImg(key: string, className: string): HTMLImageElement {
+  const img = el('img', className);
   img.alt = '';
-  img.width = 24;
-  img.height = 24;
-  img.setAttribute('src', mark.src);
+  img.setAttribute('src', key === 'bowser' ? 'bowser-logo.png' : BRAND_MARKS[key]?.src ?? '');
   img.setAttribute('draggable', 'false');
-  box.append(img);
-  return box;
+  img.setAttribute('aria-hidden', 'true');
+  return img;
+}
+
+/**
+ * A logo tile (Import's browsers, Search's engines): a soft glow in the brand's colour behind the
+ * logo, the name under it, and a tick while it is the one picked.
+ */
+function logoFace(name: string, key: string, art: Element = logoImg(key, 'wl-brand')): (button: HTMLButtonElement) => void {
+  return (button) => {
+    button.className = 'wl-tile wl-logo-tile';
+    const color = BRAND_MARKS[key]?.color;
+    if (color) button.style.setProperty('--wl-brand', color);
+    const glow = el('span', 'wl-logo-glow');
+    glow.setAttribute('aria-hidden', 'true');
+    const well = el('span', 'wl-logo-well');
+    well.append(art);
+    const label = el('span', 'wl-logo-name');
+    label.textContent = name;
+    const check = el('span', 'wl-tick');
+    check.setAttribute('aria-hidden', 'true');
+    check.append(icon('check', { size: 12 }));
+    button.append(glow, well, label, check);
+  };
 }
 
 /** A choice tile: a picture, a name, a line under it, and a check that shows while it is picked. */
@@ -206,33 +222,66 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   let defaultAsked = false;
   let snapshot: SettingsSnapshot | null = null;
 
-  // Import: one tile per browser (Rust reads that browser's profile and previews before importing),
-  // and a file for anything else.
-  const importTiles = el('div', 'sp-tiles wl-tiles is-four');
+  // Import: a transfer picture (the picked browser, dots flowing across, Bowser), then one big logo
+  // tile per browser (Rust reads that browser's profile and previews before importing), and a file.
+  const transfer = el('div', 'wl-transfer');
+  transfer.setAttribute('aria-hidden', 'true');
+  const from = el('span', 'wl-transfer-slot is-from');
+  const fan = el('span', 'wl-fan');
+  for (const key of IMPORT_FAN) fan.append(logoImg(key, 'wl-fan-logo'));
+  from.append(fan);
+  const line = el('span', 'wl-transfer-line');
+  for (let i = 0; i < 3; i += 1) line.append(el('span', 'wl-transfer-dot'));
+  const to = el('span', 'wl-transfer-slot is-to');
+  to.append(logoImg('bowser', 'wl-transfer-logo'));
+  transfer.append(from, line, to);
+  line.addEventListener('animationend', (event) => { if ((event.target as HTMLElement).classList.contains('wl-transfer-dot')) transfer.classList.remove('is-moving'); });
+  const showFrom = (key: string): void => {
+    const logo = logoImg(key, 'wl-transfer-logo');
+    from.replaceChildren(logo);
+    from.classList.remove('is-pop');
+    void from.offsetWidth;
+    from.classList.add('is-pop');
+    transfer.classList.remove('is-moving');
+    void transfer.offsetWidth;
+    transfer.classList.add('is-moving');
+  };
+
+  const importTiles = el('div', 'wl-logos');
   importTiles.setAttribute('role', 'group');
   importTiles.setAttribute('aria-label', 'Import from');
   const importButtons: HTMLButtonElement[] = [];
   for (const [key, name] of IMPORT_BROWSERS) {
     const button = el('button');
     button.type = 'button';
-    tileFace(name, '', logoArt(key))(button);
+    logoFace(name, key)(button);
     button.classList.add('wl-browser');
     button.dataset.browser = key;
     button.addEventListener('click', () => {
       if (!host.send({ a: 'importfrom', text: key })) return;
       importAsked = true;
       for (const other of importButtons) other.setAttribute('aria-pressed', String(other === button));
+      showFrom(key);
       paintNote();
     });
     importButtons.push(button);
     importTiles.append(button);
   }
-  const importFile = textButton(IMPORT_FILE_LABEL, () => {
+  const importFile = el('button');
+  importFile.type = 'button';
+  const fileArt = el('span', 'wl-file-glyph');
+  fileArt.append(icon('file', { size: 22 }));
+  logoFace(IMPORT_FILE_LABEL, 'file', fileArt)(importFile);
+  importFile.classList.add('wl-file');
+  importFile.setAttribute('aria-label', 'Import from a bookmarks file');
+  importFile.addEventListener('click', () => {
     if (host.send({ a: 'import' })) { importAsked = true; paintNote(); }
-  }, { icon: 'file', subtle: true });
-  importFile.classList.add('wl-link');
+  });
+  importTiles.append(importFile);
   const importBody = el('div', 'wl-stack');
-  importBody.append(importTiles, importFile);
+  importBody.append(transfer, importTiles);
+  // The tiles arrive one after another (settings.css, `--wl-i` inside the grid).
+  stagger([...importButtons, importFile]);
 
   // The preview follows a pick at once; the next snapshot confirms it (or puts it back).
   const paintPreview = (picks: { tabs?: TabChoice | null; look?: LookChoice | null; accent?: string }): void => {
@@ -270,15 +319,37 @@ export function mountWelcome(host: WelcomeHost): Welcome {
       text.append(strong, document.createTextNode(rest));
       button.append(dot, text);
     }] as const), (value) => host.setBlocking(value === 'yes'));
-  // Search: the built-in engines the address list still has; a pick sets the default at once.
-  const engines: RadioGroup<string> = radioGroup<string>('sp-tiles wl-tiles is-rows', 'Search engine',
+  // Search: a big preview of the search bar that follows the pick, then the engines as round icons.
+  const searchBar = el('div', 'wl-searchbar');
+  searchBar.setAttribute('aria-hidden', 'true');
+  const barLogo = el('span', 'wl-searchbar-logo');
+  barLogo.append(icon('search', { size: 18 }));
+  const barText = el('span', 'wl-searchbar-text');
+  barText.textContent = 'Search or type an address';
+  const barKey = el('kbd', 'wl-kbd');
+  barKey.textContent = 'Enter';
+  searchBar.append(barLogo, barText, barKey);
+  const paintSearchBar = (id: string | null): void => {
+    const choice = ENGINE_CHOICES.find(([key]) => key === id);
+    if (!choice) return;
+    barLogo.replaceChildren(logoImg(choice[0], 'wl-brand'));
+    barText.textContent = searchPlaceholder(choice[1]);
+    barLogo.classList.remove('is-pop');
+    void barLogo.offsetWidth;
+    barLogo.classList.add('is-pop');
+  };
+  const engines: RadioGroup<string> = radioGroup<string>('wl-logos is-engines', 'Search engine',
     ENGINE_CHOICES.map(([id, name]) => [id, (button: HTMLButtonElement) => {
-      tileFace(name, '', logoArt(id))(button);
+      logoFace(name, id)(button);
       button.dataset.engine = id;
     }] as const), (id) => {
       const fields = engineFields({ op: 'default', id });
       if (fields) host.send(fields);
+      paintSearchBar(id);
     });
+  const searchBody = el('div', 'wl-stack');
+  searchBody.append(searchBar, engines.root);
+  stagger(Array.from(engines.root.children) as HTMLElement[]);
   const privacyBody = blocking.root;
 
   const defaultButton = textButton(DEFAULT_LABEL, () => {
@@ -306,7 +377,7 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   }
 
   const bodies: Readonly<Record<WelcomeStep, HTMLElement | null>> = {
-    hello: null, import: importBody, look: lookBody, search: engines.root, privacy: privacyBody, default: defaultBody, done: keys,
+    hello: null, import: importBody, look: lookBody, search: searchBody, privacy: privacyBody, default: defaultBody, done: keys,
   };
 
   // ---- painting ----
@@ -422,6 +493,7 @@ export function mountWelcome(host: WelcomeHost): Welcome {
       const offered = new Set(offeredEngines(ids).map(([id]) => id));
       for (const button of Array.from(engines.root.children) as HTMLElement[]) button.hidden = !offered.has(button.dataset.engine ?? '');
       engines.set(offered.has(def) ? def : null);
+      if (offered.has(def)) paintSearchBar(def);
     },
   };
 }

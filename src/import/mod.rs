@@ -86,6 +86,10 @@ pub fn detect_browser_profiles() -> Vec<BrowserProfile> {
             ("Chrome", local.join("Google/Chrome/User Data")),
             ("Edge", local.join("Microsoft/Edge/User Data")),
             ("Brave", local.join("BraveSoftware/Brave-Browser/User Data")),
+            ("Vivaldi", local.join("Vivaldi/User Data")),
+            // Helium (imputnet): its company folder is `imput`; a plain `Helium` folder is read too.
+            ("Helium", local.join("imput/Helium/User Data")),
+            ("Helium", local.join("Helium/User Data")),
         ] {
             if let Ok(entries) = fs::read_dir(&user_data) {
                 for entry in entries.flatten() {
@@ -110,6 +114,20 @@ pub fn detect_browser_profiles() -> Vec<BrowserProfile> {
         }
     }
     if let Some(roaming) = std::env::var_os("APPDATA").map(PathBuf::from) {
+        // Opera keeps its profile in Roaming, either as the folder itself (older versions) or as a
+        // `Default` folder inside it.
+        for (browser, root) in [
+            ("Opera", roaming.join("Opera Software/Opera Stable")),
+            ("Opera GX", roaming.join("Opera Software/Opera GX Stable")),
+        ] {
+            for (name, path) in [("Default".to_owned(), root.join("Default")), (browser.to_owned(), root.clone())] {
+                let bookmarks = path.join("Bookmarks");
+                if bookmarks.is_file() {
+                    profiles.push(BrowserProfile { browser, name, root: path, bookmarks: Some(bookmarks) });
+                    break;
+                }
+            }
+        }
         let root = roaming.join("Mozilla/Firefox/Profiles");
         if let Ok(entries) = fs::read_dir(&root) {
             for entry in entries.flatten() {
