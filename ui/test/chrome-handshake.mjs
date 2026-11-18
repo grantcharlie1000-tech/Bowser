@@ -102,3 +102,17 @@ test('render settling waits for reconciliation, fonts and image decode before tw
   frames.shift()(); await tick(); assert.equal(settled, false);
   frames.shift()(); await done; assert.equal(settled, true);
 });
+
+test('an image that cannot be decoded still settles, so one damaged favicon cannot fail the view', async () => {
+  const frames = [];
+  globalThis.document = { fonts: { ready: Promise.resolve() } };
+  globalThis.requestAnimationFrame = (cb) => { frames.push(cb); return frames.length; };
+  const broken = { getAttribute: () => 'data:image/png;base64,iVBORw0KGgo=', decode: () => Promise.reject(new Error('EncodingError')) };
+  const root = { querySelectorAll: () => [broken], getBoundingClientRect: () => {} };
+  let outcome = 'pending';
+  const done = settleChrome(root, () => {}).then(() => { outcome = 'settled'; }, () => { outcome = 'failed'; });
+  for (let i = 0; i < 5 && frames.length === 0; i++) await tick();
+  frames.shift()(); await tick();
+  frames.shift()(); await done;
+  assert.equal(outcome, 'settled');
+});

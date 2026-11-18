@@ -5,7 +5,12 @@ use std::{cell::Cell, rc::Weak, sync::atomic::{AtomicUsize, Ordering}};
 pub(super) const EVENT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x6D1;
 pub(super) const INPUT_RELEASED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x6D2;
 pub(super) const TIMER: usize = 0x5f3;
+/// How long one step of a view's restoration may go without progress (controller created, document
+/// loaded, state sent, state applied). Each step re-arms it, so a slow machine that is still moving
+/// is never cut off, while a step that never answers still falls back to the native controls.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
+/// The ceiling for one whole attempt, however much progress it keeps reporting.
+const READY_LIMIT: Duration = Duration::from_secs(90);
 static NEXT_LEASE: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,17 +75,20 @@ pub(super) struct DeferredAction {
 pub(super) struct Lifetimes {
     owners: [Owner; 3],
     deadlines: [Option<Instant>; 3],
+    /// When each armed deadline's attempt started; `READY_LIMIT` counts from here.
+    started: [Option<Instant>; 3],
     inboxes: [Rc<RefCell<Vec<Notice>>>; 3],
     pub(super) environments: Environments,
 }
 impl Lifetimes {
     pub(super) fn new() -> Self {
-        Self { owners: std::array::from_fn(|_| Owner::default()), deadlines: [None; 3], inboxes: std::array::from_fn(|_| Rc::new(RefCell::new(Vec::new()))), environments: Environments::default() }
+        Self { owners: std::array::from_fn(|_| Owner::default()), deadlines: [None; 3], started: [None; 3], inboxes: std::array::from_fn(|_| Rc::new(RefCell::new(Vec::new()))), environments: Environments::default() }
     }
     pub(super) fn begin(&mut self, now: Instant) {
         for index in 0..3 {
             self.owners[index].begin();
             self.deadlines[index] = Some(now + READY_TIMEOUT);
+            self.started[index] = Some(now);
         }
     }
     pub(super) fn lease(&self, index: usize) -> Lease {
@@ -89,11 +97,25 @@ impl Lifetimes {
     pub(super) fn accepts(&self, index: usize, token: usize) -> bool {
         token != 0 && self.owners[index].0.get() == token
     }
-    pub(super) fn navigating(&mut self, index: usize, now: Instant) { if self.deadlines[index].is_none() { self.deadlines[index] = Some(now + READY_TIMEOUT); } }
-    pub(super) fn ready(&mut self, index: usize) { self.deadlines[index] = None; }
+    pub(super) fn navigating(&mut self, index: usize, now: Instant) {
+        if self.deadlines[index].is_none() {
+            self.deadlines[index] = Some(now + READY_TIMEOUT);
+            self.started[index] = Some(now);
+        } else {
+            self.progress(index, now);
+        }
+    }
+    /// The armed attempt for `index` moved forward: it gets another `READY_TIMEOUT`, never past
+    /// `READY_LIMIT` from its start and never earlier than it already had. Unarmed views stay so.
+    pub(super) fn progress(&mut self, index: usize, now: Instant) {
+        let (Some(until), Some(started)) = (self.deadlines[index], self.started[index]) else { return; };
+        self.deadlines[index] = Some((now + READY_TIMEOUT).min(started + READY_LIMIT).max(until));
+    }
+    pub(super) fn ready(&mut self, index: usize) { self.deadlines[index] = None; self.started[index] = None; }
     pub(super) fn revoke(&mut self, index: usize) {
         self.owners[index].revoke();
         self.deadlines[index] = None;
+        self.started[index] = None;
     }
     pub(super) fn revoke_all(&mut self) { for index in 0..3 { self.revoke(index); } }
     fn expired(&self, now: Instant) -> [bool; 3] { self.deadlines.map(|until| until.is_some_and(|until| now >= until)) }
@@ -271,11 +293,15 @@ pub(super) fn document_command(hwnd: HWND, index: usize, command: ChromeCommand)
             None
         }
         ChromeCommand::ChromeReady { document, .. } => {
-            if host.document_current(&document) { initial_state(hwnd, index, &host); }
+            if host.document_current(&document) {
+                progress(hwnd, index);
+                initial_state(hwnd, index, &host);
+            }
             None
         }
         ChromeCommand::ChromeApplied(id) => {
             if !host.document_current(&id.document) { return None; }
+            progress(hwnd, index);
             let edit = with_chrome(hwnd, |s| s.edit).unwrap_or_default();
             let input = (index == 0).then(|| native_input(hwnd)).flatten();
             // A composing EDIT keeps the keyboard until WM_IME_ENDCOMPOSITION. The same
@@ -283,6 +309,8 @@ pub(super) fn document_command(hwnd: HWND, index: usize, command: ChromeCommand)
             if input.as_ref().is_some_and(|input| input.composing) { return None; }
             let input_changed = index == 0 && with_chrome(hwnd, |s| s.html_initial_native_input != input).unwrap_or(false);
             if host.needs_initial_refresh(&id) || input_changed { initial_state(hwnd, index, &host); return None; }
+            // Past the resend budget a stale bundle is revealed; the newer state follows live below.
+            let stale = host.applied_stale(&id);
             let bounds = with_chrome(hwnd, |s| {
                 let (top, bottom) = s.ah.band_shift();
                 match index {
@@ -319,6 +347,7 @@ pub(super) fn document_command(hwnd: HWND, index: usize, command: ChromeCommand)
                 request_popup_prewarm(hwnd);
             }
             sync_html_host_bounds(hwnd);
+            if stale { resend_live(hwnd, index); }
             repaint(hwnd);
             schedule(hwnd);
             None
@@ -359,6 +388,35 @@ mod restoration_tests {
         attempts.begin(3);
         assert!(!attempts.eligible(false, 4), "a wake cannot recreate healthy hosts");
     }
+
+    #[test]
+    fn a_slow_attempt_that_keeps_progressing_is_not_cut_off_but_a_stalled_one_is() {
+        let start = Instant::now();
+        let mut lifetimes = Lifetimes::new();
+        lifetimes.begin(start);
+        // Each completed step buys another stall window for that view alone.
+        let step = READY_TIMEOUT - Duration::from_secs(1);
+        let mut now = start;
+        for _ in 0..4 {
+            now += step;
+            assert!(!lifetimes.expired(now)[0], "a progressing view outlives the old fixed deadline");
+            lifetimes.progress(0, now);
+        }
+        assert!(now > start + READY_TIMEOUT * 3);
+        assert_eq!(lifetimes.expired(now + Duration::from_secs(2)), [false, true, true], "views without progress still time out");
+        assert!(lifetimes.expired(now + READY_TIMEOUT)[0], "a view that stops progressing times out one stall window later");
+        // Progress never extends an attempt past its ceiling.
+        let mut late = start;
+        while late < start + READY_LIMIT { lifetimes.progress(0, late); late += Duration::from_secs(1); }
+        assert!(lifetimes.expired(start + READY_LIMIT)[0]);
+        // Progress on a view that is ready or revoked does not re-arm it.
+        lifetimes.ready(1);
+        lifetimes.progress(1, start);
+        assert_eq!(lifetimes.deadlines[1], None);
+        lifetimes.revoke(2);
+        lifetimes.progress(2, start);
+        assert_eq!(lifetimes.deadlines[2], None);
+    }
 }
 
 /// Detach queued controller completions under the window borrow; drop/Close only after it ends.
@@ -372,5 +430,33 @@ pub(super) fn discard(hwnd: HWND, index: Option<usize>) {
 }
 
 pub(super) fn host_created(hwnd: HWND, index: usize) {
+    progress(hwnd, index);
     if let Some(host) = host(hwnd, index) { initial_state(hwnd, index, &host); }
+}
+
+/// A restoration step completed for `index`. The running timer is left alone: `tick` finds the
+/// later deadline unexpired and re-arms for it.
+fn progress(hwnd: HWND, index: usize) {
+    let _ = with_chrome(hwnd, |s| s.chrome_lifetimes.progress(index, Instant::now()));
+}
+
+/// A view was revealed with the bundle it applied while newer state was refused. Forget what that
+/// view was last sent so every idempotent snapshot goes out again, now as live updates. The
+/// toolbar keeps its address text bookkeeping: resending it could overwrite what is being typed,
+/// and a refused address update is still pending and goes out on the next sync anyway.
+fn resend_live(hwnd: HWND, index: usize) {
+    if window_closing(hwnd) { return; }
+    if index == 0 {
+        let _ = with_chrome(hwnd, |s| {
+            s.html_state_generation[0] = s.html_state_generation[0].wrapping_add(1);
+            s.html_last_state = None; s.html_dl_last = None; s.html_ext_last = None;
+        });
+        html_refresh_extensions_button(hwnd);
+        if let Some(app) = app_of(hwnd) { super::super::downloads_ui::install(hwnd, &app); }
+        html_sync(hwnd);
+        return;
+    }
+    reset_state(hwnd, index);
+    html_sync(hwnd);
+    if index == 1 { html_tabs_sync(hwnd); } else { html_rail_sync(hwnd); }
 }
