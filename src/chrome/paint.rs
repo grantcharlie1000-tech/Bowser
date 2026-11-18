@@ -210,9 +210,9 @@ pub struct ChromeSurface {
     /// here, and its region is left transparent. Native panels still open beside it.
     html_rail: bool,
     /// The HTML chrome is expected but its page is not up yet (`[toolbar, tabs, rail]`). The native
-    /// look of the toolbar and rail is not painted while they load. The tab row keeps its native
-    /// tabs until the HTML strip is ready; the vertical sidebar waits for its HTML view. The window
-    /// colour, captions and "+" are always drawn.
+    /// look of that region (tabs, address field, buttons, rail) is not painted while it loads, so
+    /// the window never shows a different design for the moment the chrome takes to load. The
+    /// window colour, captions and "+" are always drawn.
     html_pending: [bool; 3],
 }
 
@@ -475,9 +475,10 @@ impl ChromeSurface {
         }
     }
 
-    /// Marks the toolbar, tab row or rail (`index` 0, 1, 2) as waiting for its HTML page. The native
-    /// horizontal tab row remains visible while its page loads; the vertical sidebar, toolbar and
-    /// rail wait for their HTML page or fall back to native paint after a failure.
+    /// Marks the toolbar, tab row or rail (`index` 0, 1, 2) as waiting for its HTML page: the region
+    /// shows only the window colour (and the window buttons) until the page is up, so a starting
+    /// window never shows the native design. After a failure the caller clears it and the native
+    /// controls are painted instead.
     pub fn set_html_pending(&mut self, index: usize, pending: bool) {
         self.html_pending[index] = pending;
     }
@@ -775,7 +776,7 @@ impl ChromeSurface {
         }
         // Auto-hide: the top chrome is out of the window, so none of it is painted over the page.
         if !self.auto_hidden_top {
-            if !self.html_tabs {
+            if !self.html_tabs && !self.html_pending[1] {
                 self.paint_departures(view, dirty);
                 self.paint_tabs(view, dirty);
             }
@@ -3955,7 +3956,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_strip_waiting_for_html_page_keeps_native_tabs_visible() {
+    fn tab_strip_waiting_for_html_page_shows_no_native_tabs() {
         let layout = crate::chrome::layout::compute(800, 120, 96, 1, false);
         let tabs = [TabView {
             title: "Visible tab",
@@ -3986,24 +3987,32 @@ mod tests {
                 .collect()
         };
 
+        let empty = test_view(
+            &layout,
+            &[],
+            palette(Appearance::Dark, false),
+            omnibox("example.com", (0, 0), ""),
+        );
+
         let mut native = native_surface(800, 120, 96);
         native.set_html_pending(1, false);
         native.paint(&view, Rect::new(0, 0, 800, native.height()));
         let mut waiting = native_surface(800, 120, 96);
         waiting.set_html_pending(1, true);
         waiting.paint(&view, Rect::new(0, 0, 800, waiting.height()));
+        let mut no_tabs = native_surface(800, 120, 96);
+        no_tabs.set_html_pending(1, false);
+        no_tabs.paint(&empty, Rect::new(0, 0, 800, no_tabs.height()));
 
         let native_pixels = pixels(&native);
         let waiting_pixels = pixels(&waiting);
         assert!(
-            native_pixels
-                .chunks_exact(4)
-                .any(|pixel| pixel.iter().any(|channel| *channel != 0)),
+            native_pixels != pixels(&no_tabs),
             "the native row should contain the tab's painted pixels"
         );
         assert!(
-            waiting_pixels == native_pixels,
-            "the native tab row remains visible until its HTML page is ready"
+            waiting_pixels == pixels(&no_tabs),
+            "a tab row waiting for its HTML page shows no native tabs"
         );
     }
 
