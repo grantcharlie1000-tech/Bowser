@@ -247,8 +247,23 @@ is held `pending` (protective) and resolved when config arrives.
 
 ### 4.6 Context ("hot")
 Hot scopes propagate down: page (URL, title, `h1`, `og:title`, `meta description`, search query in
-URL), thread (adapter thread root: Reddit post, X conversation, YouTube watch page, forum topic),
-feed (≥3 shielded items in the same adapter feed within 30 s make the feed warm).
+URL), thread (adapter thread root: Reddit post, X conversation, YouTube watch page, forum topic).
+Page context selectors are page-level only (search box, page / channel heading, subreddit header), never a
+selector that matches every post of a feed. A thread's head post defines its heat only on real thread pages
+(`threadUrl`) or per-post roots (`threadFirst`), and `threadContext` is read inside the root only.
+
+Revision 3 (2026-11-18, after real-feed measurements): feed warmth (≥3 GTA shields within 30 s) no longer heats
+other posts. During the launch window every feed is warm within seconds, and warmth covered any post that said
+"dying", "the end" or "story", and re-ran the whole page on every warm/cold flip. One "GTA 6 before ..." joke reply
+also made its whole X conversation hot (the context selector matched every tweet). In Strict / Balanced, media is
+covered for its post's words only at mention level or with a strong franchise / entity signal; a bare "risk"
+(one common first name, a "spoiler alert" about something else) is not GTA evidence. Lockdown is unchanged.
+
+Counter ticks (revision 3): a text node or a text attribute whose value changes only in its numbers ("12 Likes" ->
+"13 Likes", "5h" -> "6h", "0:31" -> "0:32", also a text node swapped for such a value) does not re-classify its post. Feeds
+tick these many times a second, and each tick re-read and re-classified the whole post. Posters cannot change text in
+place; only the site's script can. A change next to franchise words (gta, grand theft, vice city, leonida, rockstar, гта
+in the value or its parent / grandparent text) still takes the full path, so "GTA 5" -> "GTA 6" in place is re-judged.
 
 ---
 
