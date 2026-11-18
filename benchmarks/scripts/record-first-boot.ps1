@@ -10,7 +10,7 @@
 #
 # Usage: powershell -File record-first-boot.ps1 [-Exe path] [-Out dir]
 param(
-  [string]$Exe = "$PSScriptRoot\..\..\target\debug\bowser.exe",
+  [string]$Exe = "$PSScriptRoot\..\..\target\release\bowser.exe",
   [string]$Out = "$PSScriptRoot\..\results\first-boot",
   [int]$Fps = 12
 )
@@ -103,7 +103,8 @@ New-Item -ItemType Directory -Force $data | Out-Null
 $env:BOWSER_UI = 'html'
 Start-Sleep -Milliseconds 1500   # a moment of empty desktop before the launch
 Note 'launch'
-$p = Start-Process $Exe -ArgumentList @('--data-dir', $data) -PassThru
+$diag = Join-Path $Out 'bowser-diagnostic.log'
+$p = Start-Process $Exe -ArgumentList @('--data-dir', $data, '--diagnostic-log', $diag) -PassThru
 $h = [IntPtr]::Zero
 for ($i = 0; $i -lt 400 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 50; $h = [FB]::Find([uint32]$p.Id) }
 if ($h -eq [IntPtr]::Zero) { throw 'No Bowser window' }
@@ -124,7 +125,8 @@ function FindNamed([string]$name, [int]$timeoutMs = 12000) {
       $all = (Root).FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
       foreach ($el in $all) {
         $n = $el.Current.Name
-        if ($n -and ($n -eq $name -or $n.StartsWith($name)) -and -not $el.Current.IsOffscreen) {
+        # Case-insensitive: Chromium exposes text-transform (the welcome's "YES" / "NO").
+        if ($n -and $n.StartsWith($name, [StringComparison]::OrdinalIgnoreCase) -and -not $el.Current.IsOffscreen) {
           $r = $el.Current.BoundingRectangle
           if ($r.Width -gt 4 -and $r.Height -gt 4) { return $el }
         }
@@ -207,6 +209,8 @@ try {
   New-Item -ItemType File -Force $stop | Out-Null
   $result = Receive-Job -Job $grabber -Wait -AutoRemoveJob
   Note "grabber: $result"
+  # A normal close, so Bowser writes its diagnostic log; forced only if it does not go.
+  try { $p.CloseMainWindow() | Out-Null; if (-not $p.WaitForExit(8000)) { Note 'no clean exit' } } catch { }
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
   Start-Sleep -Milliseconds 800
   Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$data*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

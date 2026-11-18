@@ -102,7 +102,14 @@ pub(crate) const BROWSERS: [(&str, &[&str], &str); 7] = [
 /// the panel. The Default profile goes first; with none, the panel says so and offers the file.
 pub(crate) fn import_from(owner: HWND, browser: &str) -> windows::core::Result<()> {
     let Some(&(_, found_as, name)) = BROWSERS.iter().find(|(key, _, _)| *key == browser) else { return Ok(()) };
+    // What the welcome's import found, for --diagnostic-log (no paths or names: only the outcome).
+    let note = |event: &str| {
+        if let Some(app) = super::window::app_of(owner) && let Ok(state) = app.try_borrow() {
+            let _ = state.log.record(event);
+        }
+    };
     if browser == "firefox" {
+        note("welcome_import_firefox");
         return import_firefox_backup(owner);
     }
     let mut profiles: Vec<_> = import::detect_browser_profiles()
@@ -116,8 +123,12 @@ pub(crate) fn import_from(owner: HWND, browser: &str) -> windows::core::Result<(
     profiles.sort_by_key(|(rank, profile, _)| (*rank, profile != "Default"));
     let profiles = profiles.into_iter().map(|(_, profile, path)| (profile, path));
     match profiles.into_iter().next() {
-        Some((_, path)) => import_bookmark_path(owner, path),
+        Some((_, path)) => {
+            note("welcome_import_found");
+            import_bookmark_path(owner, path)
+        }
         None => {
+            note("welcome_import_none");
             let _ = menu::track(
                 owner,
                 anchor(owner),

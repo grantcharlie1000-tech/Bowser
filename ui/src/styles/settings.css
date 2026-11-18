@@ -64,6 +64,12 @@
   height: 100%;
 }
 
+/* `display: grid` above beats the browser's own [hidden] rule: without this the page stayed drawn
+   (and in the accessibility tree) under the store and the welcome that hide it. */
+.sp[hidden] {
+  display: none;
+}
+
 /* ---- Sidebar: brand, search, sections ---- */
 .sp-side {
   display: flex;

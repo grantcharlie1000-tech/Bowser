@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(right_static_px(&defaults), 0, "today's address bar reserves nothing extra");
         let mut more = defaults.clone();
         more.toolbar_buttons = list("back,bookmark,newtab");
-        assert_eq!(right_static_px(&more), 64);
+        assert_eq!(right_static_px(&more), 56, "two 28 px slots");
         for bar in Bar::ALL {
             assert!(OPTION_KEYS.contains(&bar.key()));
         }

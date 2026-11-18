@@ -21,7 +21,7 @@ permissions:
 jobs:
   record:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     defaults:
       run:
         shell: pwsh
@@ -35,13 +35,13 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
-      - name: Build Bowser (HTML chrome)
+      - name: Build Bowser (HTML chrome, release, as shipped)
         run: |
-          cargo +stable build --locked --features html-chrome-default
+          cargo +stable build --locked --release --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
       - name: Record the first boot
         timeout-minutes: 10
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/record-first-boot.ps1 -Exe target/debug/bowser.exe -Out "$env:RUNNER_TEMP/first-boot"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/record-first-boot.ps1 -Exe target/release/bowser.exe -Out "$env:RUNNER_TEMP/first-boot"
       - name: Keep the frames
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -68,10 +68,12 @@ jobs:
           ls first-boot/frames | head -3
           ffmpeg -loglevel error -y -framerate 12 -i first-boot/frames/f%05d.jpg -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart first-boot.mp4
           cp first-boot/record.log record.log || true
+          cp first-boot/bowser-diagnostic.log bowser-diagnostic.log || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: first-boot-video
           path: |
             first-boot.mp4
             record.log
+            bowser-diagnostic.log
           retention-days: 14
