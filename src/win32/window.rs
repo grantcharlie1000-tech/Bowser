@@ -12396,15 +12396,17 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     dirty
                 };
                 // --- end split view ---
-                s.surface.set_page_regions(page_regions);
+                // The page's frame is drawn over the page window, which `rcPaint` leaves out (the
+                // window clips its children), so a moved page rectangle (a side panel, the DevTools
+                // dock, a split, the sidebar) repaints its old and new area here, or the old frame
+                // stays on the page as a stale line.
+                let dirty = s.surface.set_page_regions(page_regions).map_or(dirty, |moved| dirty.union(moved));
                 // A tab with no page shows an opaque themed surface. When that appears or goes
                 // (a page took over) the whole viewport is repainted, not just the dirty part.
                 let empty_viewport = (!active_has_controller).then_some(sidebar_viewport);
-                let viewport_changed = s.surface.set_empty_viewport(empty_viewport);
-                let dirty = if viewport_changed {
-                    dirty.union(sidebar_viewport)
-                } else {
-                    dirty
+                let dirty = match s.surface.set_empty_viewport(empty_viewport) {
+                    Some(moved) => dirty.union(moved).union(sidebar_viewport),
+                    None => dirty,
                 };
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);

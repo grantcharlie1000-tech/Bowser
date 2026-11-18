@@ -249,6 +249,23 @@ fn upload_decision(
     }
 }
 
+/// The overlay pixels a change of the page's regions touches: the old page area and the new one
+/// together, or `None` when nothing moved. The frame, its corner masks and the split gaps are drawn
+/// inside the page area, over the page's child window. The window's paint rectangle leaves its child
+/// windows out, so without this the old frame stayed drawn where the page used to end (a 1 px line
+/// and a corner down the page after a side panel, the DevTools dock or a split changed its
+/// rectangle) and the new one was not drawn at all. Pure.
+fn page_regions_damage(
+    previous: Option<(Rect, Option<layout::SplitPanes>)>,
+    next: Option<(Rect, Option<layout::SplitPanes>)>,
+) -> Option<Rect> {
+    if previous == next {
+        return None;
+    }
+    let area = |regions: Option<(Rect, Option<layout::SplitPanes>)>| regions.map_or(Rect::default(), |(content, _)| content);
+    Some(area(previous).union(area(next)))
+}
+
 fn last_presented_after_upload(
     previous: Option<PresentedSurface>,
     current: PresentedSurface,
@@ -385,9 +402,11 @@ impl ChromeSurface {
         self.dib.stride()
     }
 
-    /// Sets the content edges painted above the WebView2 surface.
-    pub fn set_page_regions(&mut self, content: Option<(Rect, Option<layout::SplitPanes>)>) {
-        self.page_regions = content;
+    /// Sets the content edges painted above the WebView2 surface. Returns the area the caller must
+    /// add to its dirty rectangle when they moved (see [`page_regions_damage`]).
+    pub fn set_page_regions(&mut self, content: Option<(Rect, Option<layout::SplitPanes>)>) -> Option<Rect> {
+        let previous = std::mem::replace(&mut self.page_regions, content);
+        page_regions_damage(previous, content)
     }
 
     // --- split view ---
@@ -403,11 +422,13 @@ impl ChromeSurface {
     }
     // --- end split view ---
 
-    /// Sets the viewport of the page-less (new) tab, or `None` when a page covers it. Returns whether
-    /// that changed, so the caller repaints the whole viewport (to put the surface up or take it
-    /// down above a page that has just appeared).
-    pub fn set_empty_viewport(&mut self, viewport: Option<Rect>) -> bool {
-        std::mem::replace(&mut self.empty_viewport, viewport) != viewport
+    /// Sets the viewport of the page-less (new) tab, or `None` when a page covers it. When that
+    /// changed, returns the old and the new viewport together, so the caller repaints both: to put
+    /// the surface up or take it down above a page that has just appeared, and to clear the part a
+    /// panel now covers (the window's paint rectangle leaves child windows out).
+    pub fn set_empty_viewport(&mut self, viewport: Option<Rect>) -> Option<Rect> {
+        let previous = std::mem::replace(&mut self.empty_viewport, viewport);
+        (previous != viewport).then(|| previous.unwrap_or_default().union(viewport.unwrap_or_default()))
     }
 
     /// Tells the painter whether auto-hide has the top chrome out of the window. Returns whether that
@@ -3544,6 +3565,88 @@ mod tests {
             upload_decision(None, current, Rect::default()),
             Upload::Skip
         );
+    }
+
+    #[test]
+    fn unchanged_page_regions_ask_for_no_repaint() {
+        let page = Some((Rect::new(0, 80, 900, 600), None));
+        assert_eq!(page_regions_damage(page, page), None);
+        assert_eq!(page_regions_damage(None, None), None);
+    }
+
+    #[test]
+    fn a_moved_page_repaints_its_old_and_new_area() {
+        // A docked side panel 300 px wide opens and closes beside a page at x = 0.
+        let full = Some((Rect::new(0, 80, 900, 600), None));
+        let beside = Some((Rect::new(300, 80, 900, 600), None));
+        assert_eq!(page_regions_damage(full, beside), Some(Rect::new(0, 80, 900, 600)));
+        assert_eq!(page_regions_damage(beside, full), Some(Rect::new(0, 80, 900, 600)));
+        // One animation frame: the edge moves by a few pixels, and both edges are covered.
+        let frame = Some((Rect::new(296, 80, 900, 600), None));
+        assert_eq!(page_regions_damage(beside, frame), Some(Rect::new(296, 80, 900, 600)));
+        // A page appearing or going repaints the area it covers.
+        assert_eq!(page_regions_damage(None, beside), Some(Rect::new(300, 80, 900, 600)));
+        assert_eq!(page_regions_damage(beside, None), Some(Rect::new(300, 80, 900, 600)));
+    }
+
+    #[test]
+    fn a_split_that_changes_inside_the_same_page_area_repaints_that_area() {
+        let content = Rect::new(0, 80, 900, 600);
+        let mut panes = layout::SplitPanes::default();
+        panes.panes[0] = Some(Rect::new(0, 80, 446, 600));
+        panes.panes[1] = Some(Rect::new(454, 80, 900, 600));
+        let mut moved = panes;
+        moved.panes[0] = Some(Rect::new(0, 80, 500, 600));
+        assert_eq!(page_regions_damage(Some((content, Some(panes))), Some((content, Some(moved)))), Some(content));
+    }
+
+    #[test]
+    fn a_new_tab_surface_narrowed_by_a_panel_repaints_the_part_the_panel_took() {
+        let mut surface = native_surface(500, 300, 96);
+        let full = Rect::new(0, 80, 500, 300);
+        let beside = Rect::new(200, 80, 500, 300);
+        assert_eq!(surface.set_empty_viewport(Some(full)), Some(full));
+        assert_eq!(surface.set_empty_viewport(Some(full)), None);
+        assert_eq!(surface.set_empty_viewport(Some(beside)), Some(full));
+        assert_eq!(surface.set_empty_viewport(None), Some(beside));
+    }
+
+    /// The bug: the window's paint rectangle leaves out the page window, so a repaint after a side
+    /// panel closed only covered the chrome above it. The frame painted where the page's left edge
+    /// was while the panel was open must still be cleared.
+    #[test]
+    fn closing_a_side_panel_clears_the_frame_it_left_on_the_page() {
+        let layout = crate::chrome::layout::compute(500, 300, 96, 1, true);
+        let tabs = [TabView {
+            title: "Tab",
+            loading: false,
+            favicon: None,
+            emphasis: rest(),
+            group_size: None,
+            group_control: false,
+            marker: None,
+            group_colour: None,
+            group_frame: None,
+        }];
+        let palette = palette(Appearance::Dark, false);
+        let view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
+        let viewport = layout.viewport;
+        assert!(viewport.height() > 40, "the page has room below the chrome");
+        let mut surface = native_surface(500, 300, 96);
+        let whole = Rect::new(0, 0, 500, 300);
+        // Open: the page starts right of a 200 px panel and its frame is drawn there.
+        let beside = Rect::new(viewport.left + 200, viewport.top, viewport.right, viewport.bottom);
+        let moved = surface.set_page_regions(Some((beside, None)));
+        surface.paint(&view, moved.map_or(whole, |area| whole.union(area)));
+        let (edge, middle) = (beside.left, viewport.top + viewport.height() / 2);
+        assert!(alpha_at(&surface, edge, middle) > 0, "the open page's left frame is drawn");
+        // Close: the window repaints only what its children leave uncovered, here the chrome rows.
+        let chrome_only = Rect::new(0, 0, 500, viewport.top);
+        let moved = surface.set_page_regions(Some((viewport, None)));
+        assert!(moved.is_some_and(|area| area.contains(edge, middle)));
+        surface.paint(&view, moved.map_or(chrome_only, |area| chrome_only.union(area)));
+        assert_eq!(alpha_at(&surface, edge, middle), 0, "no stale frame line is left on the page");
+        assert!(alpha_at(&surface, viewport.left, middle) > 0, "the frame is drawn at the page's new edge");
     }
 
     #[test]
