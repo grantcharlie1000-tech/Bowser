@@ -50,7 +50,8 @@ SFW.runtime = (function () {
   const OCR_MIN_W = 96; // rendered AND natural size must reach this, else the media is "small" and follows the v1 rule
   const OCR_MIN_H = 64;
   const OCR_MARGIN = "150% 150% 150% 150%"; // IntersectionObserver rootMargin: request OCR within ~1.5 viewports
-  const OCR_FLIGHT = 3; // concurrent host requests per frame
+  const OCR_FLIGHT = 3; // concurrent host requests per frame, unless the host says it can take more (host.ocr.flight)
+  const OCR_FLIGHT_MAX = 16;
   const OCR_WATCHDOG_MS = 60000; // the host must settle sooner (it enforces its own timeout); this only backs it up
   const OCR_ERR_TTL_MS = 20000; // unavailable/error results are cached briefly, then retried once
   const OCR_CACHE_MAX = 1500;
@@ -415,6 +416,11 @@ SFW.runtime = (function () {
     const bgMemo = new WeakMap(); // item -> {n: child count, v}
     const ESCALATE_SEL = "article,[role=article],li,figure,blockquote,[role=listitem]"; // escalationTarget()
     const ESC_MAX_CHILDREN = 8; // a card has few children; an article of paragraphs does not
+    // Declared up here, not next to their functions below: the first scan runs while startEngine is still being
+    // evaluated (a synchronous observer callback), and a const read before its line throws (temporal dead zone).
+    const SEARCH_NAMES = mkSet(["q", "query", "search", "search_query", "p", "keywords", "text", "s"]);
+    const SEARCH_UI = "[role=search],yt-searchbox,ytd-searchbox,form#search-form,form[action*=search],form[action*=results],[data-testid=SearchBox_Search_Input]";
+    const SEARCH_UI_TEXT_MAX = 400; // a search box carries little text; a page-wide <form action="/search.aspx"> is not one
     const escalated = new Set(); // generic cards shielded whole because a block inside them is a spoiler
     // shield targets that give "local heat" to their siblings: spoiler verdicts on the unit's own content only. Pending,
     // error and frame covers say nothing about the content, and a shield that itself came from neighbour heat must not
@@ -1436,7 +1442,6 @@ SFW.runtime = (function () {
       return !!el && (el.tagName === "BODY" || el.tagName === "HTML");
     }
 
-    const SEARCH_NAMES = mkSet(["q", "query", "search", "search_query", "p", "keywords", "text", "s"]);
     function isSearchField(e) {
       try {
         if (e.type === "search" || nGetAttr(e, "role") === "searchbox") return true;
@@ -1448,8 +1453,6 @@ SFW.runtime = (function () {
 
     // The site's own search box: what the user typed (and the site echoes back inside the box) is never masked. Suggestion
     // rows are content and stay judged (they sit in a listbox, often inside the same component).
-    const SEARCH_UI = "[role=search],yt-searchbox,ytd-searchbox,form#search-form,form[action*=search],form[action*=results],[data-testid=SearchBox_Search_Input]";
-    const SEARCH_UI_TEXT_MAX = 400; // a search box carries little text; a page-wide <form action="/search.aspx"> is not one
     function smallSearchRoot(r) {
       return !!r && textLen(r, SEARCH_UI_TEXT_MAX) <= SEARCH_UI_TEXT_MAX;
     }
@@ -2739,7 +2742,10 @@ SFW.runtime = (function () {
       if (!booted || !ocrOn()) return;
       const h = ocrHost();
       if (!h) return; // host config still loading: ocrKick() resumes once it is there
-      while (ocrFlying < OCR_FLIGHT && ocrQueue.size) {
+      // A host with its own queue (Bowser's native worker) takes more at once: with only 3 in flight, each answer waits
+      // a full drain round trip before the next image is even asked for, and thumbnails stay held for seconds.
+      const fl = typeof h.flight === "number" && h.flight >= 1 ? Math.min(OCR_FLIGHT_MAX, h.flight | 0) : OCR_FLIGHT;
+      while (ocrFlying < fl && ocrQueue.size) {
         const rec = nextRec();
         if (!rec) break;
         ocrQueue.delete(rec);

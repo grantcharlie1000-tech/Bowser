@@ -109,9 +109,10 @@ const SITES: &[(Group, &[&str])] = &[
     (Group::Fandom, &["fandom.com", "wikia.nocookie.net"]),
 ];
 
-/// The `WebResourceRequested` filter URIs (image context) under which listed platforms' image
-/// responses reach `WebResourceResponseReceived`: every listed domain and its subdomains. Narrow on
-/// purpose: a `*` image filter would put every image request of every page on the UI thread.
+/// `WebResourceRequested` filter URIs (image context) for every listed domain and its subdomains.
+/// Only a fallback: `WebResourceResponseReceived` needs no filter, and each filtered request waits on
+/// the UI thread, so a tab adds these only when it never sees a response event without them
+/// (`TabOcr::filter_fallback`). Narrow on purpose: never a `*` image filter.
 pub fn filter_uris() -> Vec<String> {
     let mut uris = Vec::with_capacity(SITES.iter().map(|(_, domains)| domains.len() * 2).sum::<usize>() + 1);
     for (_, domains) in SITES {
@@ -517,6 +518,13 @@ pub struct Worker {
     shared: Arc<Shared>,
 }
 
+/// How many OCR threads share the queue: one, or two on a machine with at least 8 hardware threads.
+/// One thread left thumbnails of a busy page (a YouTube results page holds dozens) covered for
+/// seconds; the threads run below normal priority, so the page and the browser come first.
+pub fn worker_count(parallelism: usize) -> usize {
+    if parallelism >= 8 { 2 } else { 1 }
+}
+
 impl Worker {
     pub fn spawn() -> Option<Self> {
         let shared = Arc::new(Shared {
@@ -524,12 +532,19 @@ impl Worker {
             wake: Condvar::new(),
             results: Mutex::new(Vec::new()),
         });
-        let thread_shared = shared.clone();
-        std::thread::Builder::new()
-            .name("bowser-spoiler-ocr".into())
-            .spawn(move || worker_main(thread_shared))
-            .ok()?;
-        Some(Self { shared })
+        let threads = worker_count(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+        let mut started = 0;
+        for index in 0..threads {
+            let thread_shared = shared.clone();
+            if std::thread::Builder::new()
+                .name(format!("bowser-spoiler-ocr-{index}"))
+                .spawn(move || worker_main(thread_shared))
+                .is_ok()
+            {
+                started += 1;
+            }
+        }
+        (started > 0).then_some(Self { shared })
     }
 
     /// Queues a job. Older jobs are dropped (and reported as dropped) to stay within the count and
@@ -774,6 +789,16 @@ mod tests {
     }
 
     // ---- sites ----
+
+    #[test]
+    fn ocr_threads_two_only_on_big_machines() {
+        assert_eq!(worker_count(0), 1);
+        assert_eq!(worker_count(1), 1);
+        assert_eq!(worker_count(4), 1);
+        assert_eq!(worker_count(7), 1);
+        assert_eq!(worker_count(8), 2);
+        assert_eq!(worker_count(64), 2);
+    }
 
     #[test]
     fn image_filters_cover_listed_hosts_and_never_everything() {

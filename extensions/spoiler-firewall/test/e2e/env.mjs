@@ -21,8 +21,12 @@ function newest(prefix, sub) {
   return null;
 }
 
-export const CHROMIUM = newest("chromium", join("chrome-win64", "chrome.exe"));
-export const HEADLESS_SHELL = newest("chromium_headless_shell", join("chrome-headless-shell-win64", "chrome-headless-shell.exe"));
+// Windows first (the harness's home), then Linux builds (CI containers).
+export const CHROMIUM = newest("chromium", join("chrome-win64", "chrome.exe")) || newest("chromium", join("chrome-linux64", "chrome")) || newest("chromium", join("chrome-linux", "chrome"));
+export const HEADLESS_SHELL =
+  newest("chromium_headless_shell", join("chrome-headless-shell-win64", "chrome-headless-shell.exe")) ||
+  newest("chromium_headless_shell", join("chrome-headless-shell-linux64", "chrome-headless-shell")) ||
+  newest("chromium_headless_shell", join("chrome-linux", "headless_shell"));
 
 export const HOSTS = [
   "x.com", "twitter.com", "www.reddit.com", "old.reddit.com", "www.youtube.com", "www.google.com", "www.bing.com", "duckduckgo.com",

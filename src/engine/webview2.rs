@@ -7943,6 +7943,17 @@ mod tests {
     }
 
     #[test]
+    fn spoiler_ocr_adds_no_image_filters_up_front() {
+        // Every request a filter matches waits for the UI thread. OCR reads responses through
+        // `WebResourceResponseReceived`, which needs none; filters are only the fallback.
+        let source = include_str!("webview2/ocr.rs");
+        let install = &source[source.find("unsafe fn try_install").expect("try_install")..source.find("fn filter_fallback").expect("filter_fallback")];
+        assert!(!install.contains("AddWebResourceRequestedFilter"), "try_install must not add resource filters");
+        assert!(source.contains("tab.filter_fallback();"), "the fallback runs when a navigation completes");
+        assert!(source.contains("self.responses_seen.set(true);"), "a response event marks the tab as served");
+    }
+
+    #[test]
     fn blocked_urls_params_builds_the_devtools_json() {
         assert_eq!(blocked_urls_params(&[]), r#"{"urlPatterns":[]}"#);
         assert_eq!(

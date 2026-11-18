@@ -138,7 +138,9 @@ const CONFIG = /*__SFW_CONFIG__*/null;
         const api = Object.freeze({ drain: drain, deliver: deliver, feed: feed });
         Object.defineProperty(win, hook, { value: api, enumerable: false, writable: false, configurable: false });
       } catch (e) { return null; } // a frozen window or a taken name: no hook, so no OCR
-      return ocrOn ? Object.freeze({ request: request }) : null; // hook only (feed pushes) when OCR is off
+      // flight: native keeps its own queue and drains up to MAX_DRAIN per round, so the runtime may keep 12 requests
+      // in flight per frame instead of its default 3.
+      return ocrOn ? Object.freeze({ request: request, flight: 12 }) : null; // hook only (feed pushes) when OCR is off
     };
     let ocr = null;
     try { ocr = makeOcr(); } catch (e) { ocr = null; }

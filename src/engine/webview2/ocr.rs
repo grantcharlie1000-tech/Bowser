@@ -2,7 +2,8 @@
 //! docs/spoiler-firewall.md). Everything here runs on the UI thread; only decoding and OCR run on
 //! the worker thread, whose results are collected by a short UI-thread poll timer.
 //!
-//! Flow: `WebResourceResponseReceived` on a high-risk site hands an image body (read from
+//! Flow: `WebResourceResponseReceived` (no resource filter: it is raised for every response and never
+//! holds one) on a high-risk site hands an image body (read from
 //! `GetContent`) to the worker; the page's bundle asks for text through its hook; a debounced pump
 //! drains those requests with `ExecuteScript` on the top frame and every tracked child frame, and
 //! answers from the cache with a second `ExecuteScript`. Nothing is fetched on a page's behalf and
@@ -218,6 +219,10 @@ pub(super) struct TabOcr {
     waiter_timer: Cell<bool>,
     pump_scheduled: Cell<bool>,
     tail: Cell<u8>,
+    /// A `WebResourceResponseReceived` event has been seen on this tab (see `try_install`).
+    responses_seen: Cell<bool>,
+    /// The image filters of the fallback were added (see `filter_fallback`).
+    filters_added: Cell<bool>,
     log: Option<Rc<dyn Fn(&'static str)>>,
 }
 
@@ -259,6 +264,8 @@ impl TabOcr {
             waiter_timer: Cell::new(false),
             pump_scheduled: Cell::new(false),
             tail: Cell::new(0),
+            responses_seen: Cell::new(false),
+            filters_added: Cell::new(false),
             log,
         });
         HUB.with(|hub| hub.borrow_mut().tabs.push(Rc::downgrade(&tab)));
@@ -270,11 +277,16 @@ impl TabOcr {
         self.creds.borrow().clone()
     }
 
-    /// Subscribes the tab's events. `WebResourceResponseReceived` only fires for requests a resource
-    /// filter matches, and the blocker's own filters are narrow (its rules, not images), so the tab
-    /// adds image filters for the listed platforms' hosts only: every other image request still never
-    /// waits on the UI thread. A failure leaves OCR off for this tab (the bundle is told `ocr:false`);
-    /// it is never fatal.
+    /// Subscribes the tab's events. A failure leaves OCR off for this tab (the bundle is told
+    /// `ocr:false`); it is never fatal.
+    ///
+    /// No `WebResourceRequested` filter is added. `WebResourceResponseReceived` is raised for every
+    /// response without one, and it never holds the request. A filter, on the other hand, routes every
+    /// matching request through the blocker's `WebResourceRequested` handler on the UI thread and the
+    /// request waits for it: with image filters for YouTube, ytimg, twimg and the rest, every thumbnail
+    /// of those sites queued behind Bowser's UI thread, which made the whole browser crawl. Should a
+    /// runtime only raise the response event for filtered requests, `filter_fallback` notices (no
+    /// response at all by the end of a navigation to a listed site) and adds the filters then.
     pub(super) unsafe fn install(self: &Rc<Self>, webview: &ICoreWebView2) {
         if unsafe { self.try_install(webview) }.is_err() {
             *self.creds.borrow_mut() = None;
@@ -290,18 +302,6 @@ impl TabOcr {
             let frames_api: ICoreWebView2_4 = webview.cast()?;
             let creds = OcrCredentials::generate().ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
             *self.webview.borrow_mut() = Some(webview.clone());
-            let webview22 = webview.cast::<ICoreWebView2_22>().ok();
-            for uri in ocr::filter_uris() {
-                let uri = HSTRING::from(uri);
-                match &webview22 {
-                    Some(webview22) => webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
-                        PCWSTR(uri.as_ptr()),
-                        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
-                        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
-                    )?,
-                    None => webview.AddWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE)?,
-                }
-            }
             let mut token = 0i64;
 
             let weak = Rc::downgrade(self);
@@ -377,6 +377,7 @@ impl TabOcr {
             webview.add_NavigationCompleted(
                 &NavigationCompletedEventHandler::create(Box::new(move |_sender, _args| {
                     if let Some(tab) = weak.upgrade() {
+                        tab.filter_fallback();
                         tab.kick();
                     }
                     Ok(())
@@ -387,6 +388,34 @@ impl TabOcr {
             // Set last: the credentials are what tells the bundle OCR exists.
             *self.creds.borrow_mut() = Some(creds);
             Ok(())
+        }
+    }
+
+    /// A navigation to a listed site finished and not one response event was raised on this tab, not
+    /// even the document's own: this runtime raises it only for filtered requests. Add the image
+    /// filters for the listed hosts, once per tab (the old behaviour, slower but working).
+    fn filter_fallback(&self) {
+        if self.responses_seen.get() || self.filters_added.get() || self.top_group.get().is_none() || !setting_on() {
+            return;
+        }
+        let Some(webview) = self.webview.borrow().clone() else { return };
+        self.filters_added.set(true);
+        let webview22 = webview.cast::<ICoreWebView2_22>().ok();
+        for uri in ocr::filter_uris() {
+            let uri = HSTRING::from(uri);
+            let _ = unsafe {
+                match &webview22 {
+                    Some(webview22) => webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                        PCWSTR(uri.as_ptr()),
+                        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
+                        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+                    ),
+                    None => webview.AddWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE),
+                }
+            };
+        }
+        if let Some(log) = self.log.as_ref() {
+            log("spoiler_ocr_filter_fallback");
         }
     }
 
@@ -492,6 +521,7 @@ impl TabOcr {
 
     /// An image response arrived. Decides whether to read it, and reads it.
     fn on_response(self: &Rc<Self>, args: &ICoreWebView2WebResourceResponseReceivedEventArgs) -> Result<()> {
+        self.responses_seen.set(true);
         if self.creds.borrow().is_none() || !setting_on() || ocr::engine_unavailable() {
             return Ok(());
         }

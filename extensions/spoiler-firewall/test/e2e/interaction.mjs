@@ -240,17 +240,29 @@ await test("React-style reconciler that removes foreign children: still shielded
   await ctx.close();
 });
 
-await test("title guard rewrites a spoiler title; page shield for hot URL reveals on click and restores title", async () => {
+await test("title guard rewrites a spoiler title; a hot URL masks content item by item, never the whole page or the search box", async () => {
   const a = await open("example.test", "/pages/adv-title.html");
   assert.equal(await a.page.title(), "Spoiler-protected page");
   await a.ctx.close();
   const { ctx, page } = await open("www.google.com", "/search?q=gta+6+ending+spoiler");
-  assert.match(String(await attr(page, "html", "data-sfw-page")), /shield/);
-  const t = await page.title();
-  assert.equal(t, "Spoiler-protected page".length ? t : t); // title guard only applies when the title itself matches
-  await page.mouse.click(320, 200);
-  await page.waitForFunction(() => !document.documentElement.hasAttribute("data-sfw-page"), null, { timeout: 3000 });
-  assert.equal(await page.evaluate(() => document.title), "results - Google Search", "title restored on page reveal");
+  await page.waitForFunction(() => document.querySelectorAll("[data-sfw~=shield]").length > 0, null, { timeout: 3000 });
+  const r = await page.evaluate(() => {
+    const masked = (el) => !!el && !!el.closest("[data-sfw~=shield]");
+    const g = document.querySelectorAll("#rso .g");
+    return {
+      page: document.documentElement.getAttribute("data-sfw-page"),
+      spoiler: masked(g[1]) || masked(g[1].querySelector("h3")),
+      weather: masked(g[0]) || masked(g[0].querySelector("h3")),
+      pasta: masked(g[2]) || masked(g[2].querySelector("h3")),
+      search: masked(document.querySelector("textarea[name=q]")),
+      title: document.title,
+    };
+  });
+  assert.notEqual(r.page, "shield", "a hot URL no longer covers the whole page");
+  assert.ok(r.spoiler, "the spoiler result is masked");
+  assert.ok(!r.weather && !r.pasta, "ordinary results stay visible: " + JSON.stringify(r));
+  assert.ok(!r.search, "the search box is never masked");
+  assert.equal(r.title, "results - Google Search", "a clean title is left alone");
   await ctx.close();
 });
 
