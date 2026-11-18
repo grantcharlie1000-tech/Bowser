@@ -11,7 +11,7 @@ pub const FLYOUT_MS: u32 = 220;
 /// Logical pixels of the page that stay visible beside an open flyout.
 pub const FLYOUT_KEEP: i32 = 64;
 pub const MAX_WIDTH: i32 = 360;
-pub const DEFAULT_WIDTH: i32 = 260;
+pub const DEFAULT_WIDTH: i32 = crate::settings::DEFAULT_SIDEBAR_WIDTH as i32;
 pub const RESIZE_HANDLE_WIDTH: i32 = 5;
 /// Logical pixels of window (and page, on a flyout) kept clear around the sidebar so it reads as a
 /// floating panel. The HTML host is this island; the gap is not part of the webview.

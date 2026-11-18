@@ -12,7 +12,7 @@
 //! search_engine=optimised
 //! automatic_tab_grouping=true
 //! tab_layout=horizontal
-//! sidebar_width=260
+//! sidebar_width=300
 //! efficiency_mode=auto
 //! tracking_prevention=balanced
 //! ```
@@ -31,7 +31,7 @@ pub const FILE_NAME: &str = "settings.txt";
 /// Starter file written by "Open settings file" when none exists. Every setting is commented out.
 pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n\
     # tab_layout=horizontal\r\n\
-    # sidebar_width=260\r\n\
+    # sidebar_width=300\r\n\
     # side_panel_width=340\r\n\
     # sleep_enabled=true\r\n\
     # sleep_after_secs=300\r\n\
@@ -479,7 +479,10 @@ pub const MIN_SIDEBAR_WIDTH: u16 = 180;
 /// Logical width of the collapsed (icons-only) vertical sidebar.
 pub const COLLAPSED_SIDEBAR_WIDTH: u16 = 48;
 pub const MAX_SIDEBAR_WIDTH: u16 = 360;
-pub const DEFAULT_SIDEBAR_WIDTH: u16 = 260;
+pub const DEFAULT_SIDEBAR_WIDTH: u16 = 300;
+/// The default before it grew by 15%. Every save writes the width, so a profile that never resized
+/// the sidebar still says this; it reads as the new default.
+const OLD_DEFAULT_SIDEBAR_WIDTH: u16 = 260;
 pub const MIN_SIDE_PANEL_WIDTH: u16 = 280;
 pub const MAX_SIDE_PANEL_WIDTH: u16 = 520;
 pub const DEFAULT_SIDE_PANEL_WIDTH: u16 = 340;
@@ -784,6 +787,7 @@ impl Settings {
                 }
                 "sidebar_width" => {
                     if let Ok(width) = value.parse::<u16>() {
+                        let width = if width == OLD_DEFAULT_SIDEBAR_WIDTH { DEFAULT_SIDEBAR_WIDTH } else { width };
                         settings.sidebar_width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                     }
                 }
@@ -1583,6 +1587,10 @@ mod tests {
             Settings::parse("sidebar_width=30").sidebar_width,
             MIN_SIDEBAR_WIDTH
         );
+        // The old default, written by every save, reads as the new one; any other width is kept.
+        assert_eq!(Settings::parse("sidebar_width=260").sidebar_width, DEFAULT_SIDEBAR_WIDTH);
+        assert_eq!(Settings::parse("sidebar_width=261").sidebar_width, 261);
+        assert_eq!(Settings::default().sidebar_width, 300);
     }
 
     #[test]
