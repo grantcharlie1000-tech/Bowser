@@ -69,6 +69,7 @@ pub mod tab_groups;
 pub mod tab_options;
 pub mod tab_state;
 pub mod thumbnail;
+pub mod file_icon;
 pub mod tab_organisation;
 pub mod tabs;
 pub mod theme;

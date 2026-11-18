@@ -2022,6 +2022,13 @@ SFW.policy = (function () {
 //            of <main> is just whichever post happens to be on top.
 //   media    media selector (adapter specific + generic)
 //   attrs    extra attribute names whose text is part of a unit's text (custom-element data attributes)
+//   mediaIgnore  images that do not make a unit a picture post: profile pictures and emoji images that every post of the
+//            site carries. Without it every post on X "has media", and media in any GTA context (a spoiler post opened as
+//            the thread head, a spoiler reply's own page) is covered: one spoiler covered every post on the page.
+//   ocr      false: the site's pictures are judged by the words around them (titles, descriptions), never held for the OCR
+//            gate. YouTube: every thumbnail sat under "Checking image" until OCR had read it, seconds on a busy page.
+//   exempt   { sel, live } regions that are never checked while `live` (a selector) matches the page: the player of a live
+//            YouTube stream plays uncovered; its title, description, comments and chat are still checked.
 //   hotUrl   0 cold | 1 warm | 2 hot, from the URL alone (query / path slug / subreddit) via SFW.classify
 // Selector drift degrades to the generic resolver: `own` simply stops matching and `generic` keeps applying.
 SFW.adapters = (function () {
@@ -2076,6 +2083,8 @@ SFW.adapters = (function () {
     context: ["[data-testid=SearchBox_Search_Input]"], threadFirst: true,
     media: ["[data-testid=tweetPhoto]", "[data-testid=videoPlayer]", "[data-testid='card.layoutLarge.media']", "[data-testid='card.layoutSmall.media']"],
     attrs: [],
+    mediaIgnore: ["[data-testid=Tweet-User-Avatar] *", "[data-testid^=UserAvatar-Container] *", "img[src*='/profile_images/']", "[style*='/profile_images/']",
+      "img[src*='/emoji/']", "img[src*='/hashflags/']"],
     hotUrl: classifyUrl,
   });
   // ---- Reddit (shreddit, sh.reddit, old.reddit) ---------------------------------------------------------------
@@ -2095,11 +2104,14 @@ SFW.adapters = (function () {
     id: "youtube", threadUrl: /^\/(watch|shorts\/|live\/)/, hosts: /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i, highRisk: true,
     item: ["ytd-rich-item-renderer", "ytd-video-renderer", "ytd-compact-video-renderer", "ytd-reel-item-renderer", "ytd-comment-thread-renderer", "ytd-comment-view-model", "ytd-playlist-renderer",
       "ytd-grid-video-renderer", "ytd-channel-renderer", "ytd-shelf-renderer", "ytm-shorts-lockup-view-model", "yt-lockup-view-model", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", "ytd-player",
-      ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer"],
+      ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer",
+      "yt-live-chat-text-message-renderer", "yt-live-chat-paid-message-renderer", "yt-live-chat-membership-item-renderer", "yt-live-chat-banner-renderer"],
     thread: ["ytd-watch-flexy", "ytd-watch-grid", "ytd-search", "ytd-browse"],
     context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-watch-metadata ytd-channel-name"],
     media: ["ytd-thumbnail", "yt-image", "yt-img-shadow", "#movie_player", ".ytp-cued-thumbnail-overlay-image"],
     attrs: ["title", "aria-label", "alt"],
+    ocr: false,
+    exempt: { live: ".html5-video-player.ytp-live", sel: ["#movie_player", "ytd-player", "#player-container", ".html5-video-player", ".ytp-caption-window-container", ".captions-text"] },
     hotUrl: classifyUrl,
   });
   // ---- Search engines -----------------------------------------------------------------------------------------
@@ -2361,6 +2373,10 @@ SFW.adapters = (function () {
       threadFirst: !!def.threadFirst,
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
+      mediaIgnore: join(valid(def.mediaIgnore || [], doc)),
+      ocr: def.ocr !== false,
+      exempt: def.exempt ? join(valid(def.exempt.sel, doc)) : "",
+      exemptWhen: def.exempt ? join(valid([def.exempt.live], doc)) : "",
       hotUrl: def.hotUrl,
     };
   }
@@ -3870,6 +3886,7 @@ SFW.runtime = (function () {
     let sheetsOk = false;
     let opaqueRule = false;
     let pageHot = 0;
+    let liveNow = false; // the page is a live stream and the adapter has an exempt region (checkLive)
     let pageWant = false; // the URL or title alone calls for protection (evalPage): the page is hot, its content masked item by item
     let lastHref = loc.href;
     let pageRevealedKey = null;
@@ -4686,6 +4703,7 @@ SFW.runtime = (function () {
       try {
         if (!booted) return;
         checkUrl();
+        checkLive();
         addedBurst = 0;
         handleRecords(records);
         heavy = addedBurst > BIG_INSERT;
@@ -4792,6 +4810,7 @@ SFW.runtime = (function () {
         stats.rafCaught += r.changed;
         for (const u of r.left) unitQ.add(u);
         checkUrl();
+        checkLive();
         if (workLeft()) runWork(t0, BUDGET_MS);
       } catch (e) { stats.errors++; noteError(e); report("error.raf"); }
       try { if (mo) MO_TAKE(mo); } catch (e) { /* ignore */ }
@@ -5157,6 +5176,7 @@ SFW.runtime = (function () {
       let frames = null; // embedded frames the engine cannot look into (sandboxed without allow-scripts)
       let sig = "";
       const mediaSel = adapter.media || "";
+      const noMediaSel = adapter.mediaIgnore || ""; // profile pictures / emoji images: present in every post, not a picture post
       const ownSel = adapter.own || ""; // nested adapter items are units of their own (never part of a container's text)
       const prev = U.get(u);
       const mine = prev && prev.targets && prev.targets.length ? mkSet(prev.targets) : null;
@@ -5167,9 +5187,9 @@ SFW.runtime = (function () {
         const n = rootNode.nodeType === 1 ? rootNode : null;
         const handleEl = (e) => {
           const tag = e.localName;
-          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel)))) media = true;
+          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel))) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
           if (e.hasAttributes()) {
-            if (!media && wantBg && nHasAttr(e, "style") && /background-image/i.test(nGetAttr(e, "style"))) media = true;
+            if (!media && wantBg && nHasAttr(e, "style") && /background-image/i.test(nGetAttr(e, "style")) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
             for (let i = 0; i < ATTR_TEXT.length; i++) {
               const v = nGetAttr(e, ATTR_TEXT[i]);
               if (v) add(v);
@@ -5418,7 +5438,21 @@ SFW.runtime = (function () {
       return job.res;
     }
 
+    // Live stream on a site with an exempt region (YouTube): the player is never checked or covered while the stream is live.
+    // Checked on every mutation batch (one querySelector): the player's class flips with no other attribute we observe, and
+    // YouTube's player updates its own DOM (time display, badges) many times a second.
+    function checkLive() {
+      if (!adapter || !adapter.exempt || !adapter.exemptWhen) { liveNow = false; return; }
+      let live = false;
+      try { live = !!doc.querySelector(adapter.exemptWhen); } catch (e) { live = false; }
+      if (live !== liveNow) { liveNow = live; rescanAll(false); }
+    }
+    function isExempt(u) {
+      return liveNow && !!adapter.exempt && u.nodeType === 1 && !!closestFlat(u, adapter.exempt);
+    }
+
     function decide(u, generic) {
+      if (isExempt(u)) return { u, dec: "clear", fp: "live|" + S.lexicon.version, cfp: "live", hot: 0, generic, nb: false, media: false, ocr: false, strong: false, warmOnly: false, frameErr: false };
       // A small card (article / li / figure ...) that holds a shielded block is covered whole, whether it was escalated to or is
       // itself the unit: its own text excludes the nested shielded block, which would otherwise release the card around it.
       if (escalated.has(u) || (adapter.generic && u.nodeType === 1 && !isOwn(u) && nMatches(u, ESCALATE_SEL))) {
@@ -5776,7 +5810,7 @@ SFW.runtime = (function () {
     // OCR gating applies on high-risk hosts (the only place media is quarantined). While the host config is still
     // loading, a host that may enable OCR (`host.ocrMaybe`) is treated as if it did: media is held, never released early.
     function ocrOn() {
-      if (!booted || !adapter || !adapter.highRisk || !quarSheet) return false;
+      if (!booted || !adapter || !adapter.highRisk || !quarSheet || adapter.ocr === false) return false;
       return !!ocrHost() || (configPending && !!(host && host.ocrMaybe));
     }
 
@@ -6383,6 +6417,7 @@ SFW.runtime = (function () {
       pageRevealedKey = pageRevealedKey === loc.href ? pageRevealedKey : null;
       titleRevealedFor = null;
       recomputeUrlContext();
+      checkLive();
       evalPage();
       rescanAll(false);
     }
