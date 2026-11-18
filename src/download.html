@@ -1,0 +1,72 @@
+<main id="top">
+  <section class="page-head wrap dl-head">
+    <svg class="hero-mark" width="64" height="64" aria-hidden="true"><use href="#bone"/></svg>
+    <h1>Download Bowser</h1>
+    <p>For 64-bit Windows 10 and 11. Free and open source.</p>
+    <a class="btn btn-blue btn-lg" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="20" height="20" aria-hidden="true"><use href="#i-download"/></svg>Download Bowser.exe</a>
+    <dl class="dl-meta">
+      <div><dt>Version</dt><dd><a href="releases.html">{{version}}</a></dd></div>
+      <div><dt>Size</dt><dd>{{size}}</dd></div>
+      <div><dt>Released</dt><dd>{{date}}</dd></div>
+    </dl>
+    <div class="hash-row">
+      <span class="hash-k">SHA-256</span>
+      <code id="sha">{{sha}}</code>
+      <button type="button" class="icon-btn" id="copy-sha" aria-label="Copy the SHA-256"><svg width="18" height="18" aria-hidden="true"><use href="#i-copy"/></svg></button>
+    </div>
+  </section>
+
+  <section class="doc wrap" id="install">
+    <div class="sec-head">
+      <h2>Install in three steps</h2>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Open Bowser.exe</h3>
+        <p>Open it from your Downloads folder. Windows may show a blue SmartScreen box, because Bowser isn't signed yet: choose <b>More info</b>, then <b>Run anyway</b>.</p>
+      </li>
+      <li>
+        <h3>Bowser installs itself</h3>
+        <p>It moves into <code>%LOCALAPPDATA%\Programs\Bowser</code>, adds Bowser to your desktop and Start menu, and opens. No administrator rights needed. You can delete the file in Downloads.</p>
+      </li>
+      <li>
+        <h3>Bring your things</h3>
+        <p>Import bookmarks from Chrome, Edge, Brave or Firefox in Settings, and passwords from a CSV your old browser exports.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="doc wrap" id="requirements">
+    <div class="sec-head">
+      <h2>What you need</h2>
+    </div>
+    <ul class="points">
+      <li><b>64-bit Windows 10 or 11.</b></li>
+      <li><b>The WebView2 Runtime.</b> Windows 11 and current Microsoft Edge already include it. If Bowser says it's missing, get the Evergreen runtime from <a href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section">Microsoft</a>.</li>
+      <li><b>About 10 MB</b> for Bowser itself. Your profile grows with your history and cache.</li>
+    </ul>
+  </section>
+
+  <section class="doc wrap" id="updates">
+    <div class="sec-head">
+      <h2>Staying up to date</h2>
+    </div>
+    <ul class="points">
+      <li><b>Automatic.</b> About a minute after Bowser starts, and then at most once an hour, it checks the stable version pinned in the repository.</li>
+      <li><b>Checked.</b> A new build is downloaded only when its SHA-256 matches the pin, and installs the next time you start Bowser. The main menu offers <b>Restart to update</b>, and your tabs come back.</li>
+      <li><b>Safe.</b> A build that fails to stay open is rolled back. Your browser data is never touched.</li>
+      <li><b>Your call.</b> Turn automatic updates off, or check now, in Settings, Updates.</li>
+    </ul>
+  </section>
+
+  <section class="doc wrap" id="other">
+    <div class="sec-head">
+      <h2>Other ways to get Bowser</h2>
+    </div>
+    <ul class="points">
+      <li><b>Every release</b> is on <a href="https://github.com/grantcharlie1000-tech/Bowser/releases">GitHub</a>, with its build details.</li>
+      <li><b>From a clone of the repository,</b> <code>Open-Bowser.cmd</code> installs the pinned stable build and adds the shortcuts.</li>
+      <li><b>Build it yourself</b> with Rust and the Visual Studio C++ Build Tools: <code>cargo build --release --locked</code>. See <a href="https://github.com/grantcharlie1000-tech/Bowser#build-and-run">Build and run</a>.</li>
+    </ul>
+  </section>
+</main>

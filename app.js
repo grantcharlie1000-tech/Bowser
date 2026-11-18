@@ -34,6 +34,41 @@
     onScroll();
   }
 
+  /* ---------- Small-screen menu ---------- */
+  var menuBtn = document.querySelector(".nav-menu-btn");
+  if (menuBtn && navEl) {
+    var setMenu = function (open) {
+      navEl.classList.toggle("is-open", open);
+      menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    menuBtn.addEventListener("click", function () { setMenu(!navEl.classList.contains("is-open")); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") setMenu(false); });
+    window.addEventListener("resize", function () { if (window.innerWidth > 1020) setMenu(false); });
+  }
+
+  /* ---------- Copy the SHA-256 on the download page ---------- */
+  var copyBtn = document.getElementById("copy-sha");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", function () {
+      var code = document.getElementById("sha");
+      var done = function () {
+        copyBtn.setAttribute("aria-label", "Copied");
+        copyBtn.classList.add("is-done");
+        setTimeout(function () { copyBtn.setAttribute("aria-label", "Copy the SHA-256"); copyBtn.classList.remove("is-done"); }, 1600);
+      };
+      var select = function () {
+        var range = document.createRange();
+        range.selectNodeContents(code);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      };
+      try {
+        navigator.clipboard.writeText(code.textContent.trim()).then(done, select);
+      } catch (e) { select(); }
+    });
+  }
+
   /* ---------- Compare slider ---------- */
   Array.prototype.forEach.call(document.querySelectorAll("[data-compare]"), function (cmp) {
     var range = cmp.querySelector(".cmp-range");

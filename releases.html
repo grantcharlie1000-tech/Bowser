@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Release notes — Bowser</title>
+<meta name="description" content="What changed in each Bowser release.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/png" href="img/bowser-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script>try{var t=localStorage.getItem("bowser-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="bone-disc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b97ff"/>
+      <stop offset="1" stop-color="#1462dc"/>
+    </linearGradient>
+    <symbol id="bone" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="48" fill="url(#bone-disc)"/>
+      <g fill="none" stroke-linecap="round">
+        <path d="M28 60.5Q50 38 72 60.5" stroke="#dde5f4" stroke-width="15"/>
+        <path d="M28 39.5Q50 62 72 39.5" stroke="#fff" stroke-width="15"/>
+      </g>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7.5-5 4.5 5 4.5m7-9 5 4.5-5 4.5M13.5 5l-3 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M14 5h5v5m0-5-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></g></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2.5a9.5 9.5 0 0 0-3 18.5c.5.1.6-.2.6-.5v-1.7c-2.6.6-3.2-1.2-3.2-1.2-.4-1.1-1-1.4-1-1.4-.9-.6 0-.6 0-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1 2.8.8.1-.6.4-1 .6-1.3-2.1-.2-4.3-1-4.3-4.7 0-1 .4-1.9 1-2.6-.1-.2-.4-1.2.1-2.5 0 0 .8-.3 2.6 1a9 9 0 0 1 4.8 0c1.8-1.3 2.6-1 2.6-1 .5 1.3.2 2.3.1 2.5.6.7 1 1.6 1 2.6 0 3.7-2.2 4.5-4.3 4.7.3.3.6.9.6 1.8v2.6c0 .3.2.6.7.5A9.5 9.5 0 0 0 12 2.5Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.8v12.4a1 1 0 0 0 1.5.9l10-6.2a1 1 0 0 0 0-1.8l-10-6.2A1 1 0 0 0 8 5.8Z" fill="currentColor"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2.2"/><path d="M15.5 8.5V6.7a2.2 2.2 0 0 0-2.2-2.2H6.7a2.2 2.2 0 0 0-2.2 2.2v6.6a2.2 2.2 0 0 0 2.2 2.2h1.8"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="./" aria-label="Bowser home"><svg width="28" height="28" aria-hidden="true"><use href="#bone"/></svg><span>Bowser</span></a>
+    <nav class="nav-links" id="site-menu" aria-label="Site">
+      <a href="features.html">Features</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="releases.html" aria-current="page">Release notes</a>
+      <a href="help.html">Help</a>
+    </nav>
+    <div class="nav-end">
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Switch to dark theme">
+        <svg class="i-moon" width="20" height="20" aria-hidden="true"><use href="#i-moon"/></svg>
+        <svg class="i-sun" width="20" height="20" aria-hidden="true"><use href="#i-sun"/></svg>
+      </button>
+      <a class="icon-btn" href="https://github.com/grantcharlie1000-tech/Bowser" aria-label="Bowser on GitHub"><svg width="20" height="20" aria-hidden="true"><use href="#i-github"/></svg></a>
+      <button type="button" class="icon-btn nav-menu-btn" aria-expanded="false" aria-controls="site-menu" aria-label="Menu"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <a class="btn btn-ink btn-sm" href="download.html">Download<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <section class="page-head wrap">
+    <h1>Release notes</h1>
+    <p>What changed in each Bowser release. Every build is on <a href="https://github.com/grantcharlie1000-tech/Bowser/releases">GitHub</a>, and installed copies update themselves to the stable one.</p>
+  </section>
+  <section class="releases wrap">
+      <article class="rel" id="v0.0.34">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.34">0.0.34</a></h2><span class="rel-badge">Stable</span><time datetime="2026-11-18">18 November 2026</time></div>
+        <div class="rel-body"><ul><li>Fix YouTube and X.com ad-blockers <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/140">#140</a></li><li>Spoiler Firewall: fix false positives, catch more spoilers, cut OCR and engine load <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/148">#148</a></li><li>Toolbar customiser, session restore, menus, settings regroup, search suggestions, group drag <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/149">#149</a></li><li>Draw folded group slivers as stacked cards behind the tab <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/151">#151</a></li><li>Overhaul password saving and add form autofill <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/150">#150</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.32">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.32">0.0.32</a></h2><time datetime="2026-11-18">18 November 2026</time></div>
+        <div class="rel-body"><p>## What's Changed
+* Make profiles useful: names, profile manager, taskbar identity, shortcuts, open link in profile by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/137
+* Promote verified v0.0.31 to stable by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/138
+* Cut the stable pin process from ~88 to ~25 minutes of CI by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/141
+* Docked toolbar customiser, per-command icons, tab menu and side panel page fixes by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/139
+* Automate the release and pin PR: two clicks, ~10 minutes of CI by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/142
+* Three-click releases; release run bounded by the release compile by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/143
+* Bump Bowser to 0.0.32 for release by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/144</p><ul><li>Make profiles useful: names, profile manager, taskbar identity, shortcuts, open link in profile <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/137">#137</a></li><li>Docked toolbar customiser, per-command icons, tab menu and side panel page fixes <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/139">#139</a></li><li>Automate the release and pin PR: two clicks, ~10 minutes of CI <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/142">#142</a></li><li>Three-click releases; release run bounded by the release compile <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/143">#143</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.31">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.31">0.0.31</a></h2><time datetime="2026-11-18">18 November 2026</time></div>
+        <div class="rel-body"><ul><li>Keep the HTML chrome from getting stuck on the native fallback on slow machines <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/134">#134</a></li><li>fix(spoiler): stop the firewall blacking out YouTube and covering whole pages <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/133">#133</a></li><li>Extensions cleanup, Edge Add-ons, cascading menus <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/135">#135</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.30">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.30">0.0.30</a></h2><time datetime="2026-11-17">17 November 2026</time></div>
+        <div class="rel-body"><ul><li>UI/UX repair: 47 verified defects fixed across chrome, settings, menus and native recovery <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/128">#128</a></li><li>Zen-style vertical tabs, Opera-style tab islands, rail and bar positions removed <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/129">#129</a></li><li>Built-in Spoiler Firewall for GTA VI (default on) + Chrome extension <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/130">#130</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.29">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.29">0.0.29</a></h2><time datetime="2026-11-16">16 November 2026</time></div>
+        <div class="rel-body"><ul><li>Reduce repeated settings-search and session-save work <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/125">#125</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.28">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.28">0.0.28</a></h2><time datetime="2026-11-16">16 November 2026</time></div>
+        <div class="rel-body"><ul><li>Recover from WebView2 browser loss and cut idle/startup delays <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/122">#122</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.27">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.27">0.0.27</a></h2><time datetime="2026-11-15">15 November 2026</time></div>
+        <div class="rel-body"><ul><li>Protect background media before automatic tab suspension <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/118">#118</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.26">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.26">0.0.26</a></h2><time datetime="2026-11-10">10 November 2026</time></div>
+        <div class="rel-body"><ul><li>Show selected-price conversions in Bowser's standard menu <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/115">#115</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.24">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.24">0.0.24</a></h2><time datetime="2026-11-01">1 November 2026</time></div>
+        <div class="rel-body"><ul><li>Fix Chrome Web Store installs: unpack cap, dead placeholder download, install page <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/93">#93</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.22">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.22">0.0.22</a></h2><time datetime="2026-10-23">23 October 2026</time></div>
+        <div class="rel-body"><ul><li>Add "Erase site data" to the tab context menu <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/84">#84</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.21">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.21">0.0.21</a></h2><time datetime="2026-10-20">20 October 2026</time></div>
+        <div class="rel-body"><ul><li>Never save bookmark details, shortcuts or tasks over a file that was not read (R-4, R-5, R-7) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/73">#73</a></li><li>Warm the CJK reader timing check before holding it to its 1500 ms budget <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/76">#76</a></li><li>Stop UI-thread file writes on read-only paths (R-6, R-11, R-12) and unbounded leftovers (R-18, R-19, R-21) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/74">#74</a></li><li>Fix remaining robustness rows: UI-thread fsyncs, size caps, orphan thumbnails, hit-test panic (R-8, R-9, R-10, R-13, R-14, R-17, R-20, R-22) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/77">#77</a></li><li>Fix blocker, web-panel, capture, updater, import, feed, sidebar and password-id leftovers <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/78">#78</a></li><li>Fix the remaining tab and tab-UI bugs (T5, T6, T8, U1, U2, U5, U6, U8-U11) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/79">#79</a></li><li>Fix the remaining window and omnibox S3 bugs (W-3, W-6, system menu, NCCALCSIZE, grips, split restore, OB-8, OB-11, OB-12) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/80">#80</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.20">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.20">0.0.20</a></h2><time datetime="2026-10-20">20 October 2026</time></div>
+        <div class="rel-body"><ul><li>Recover missing customisation fixes after v0.0.19 <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/51">#51</a></li><li>Keep a picked accent as chosen (v0.0.19 desaturated colours) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/52">#52</a></li><li>Measure production performance and attribute native controller costs <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/50">#50</a></li><li>Stop bookmark and settings saves from losing or misreporting data <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/53">#53</a></li><li>Search bare numbers and word-colon queries; run held page toggles once (OB-3/4/5) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/54">#54</a></li><li>Fix the notes panel use-after-free and window-follow bugs <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/56">#56</a></li><li>Keep the window movable and its top edge resizable over the HTML chrome <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/57">#57</a></li><li>Fix page-tools bugs: zoomed capture crop, menu mojibake, private default zoom, IP registrable domain, silent reader <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/60">#60</a></li><li>Fix default-browser link launches, update trial, shared downloads list and script hazards <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/61">#61</a></li><li>Run the measurement baseline job on pull requests only for its branch <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/59">#59</a></li><li>Keep workspaces across restarts; fix pinned-move, split drag sides and selection sync <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/55">#55</a></li><li>Keep private split views private, drop deleted history from suggestions, apply filter rules to open tabs <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/58">#58</a></li><li>Make surface-modules Edge smoke test robust (timeout + EPERM) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/62">#62</a></li><li>Keep bookmarks in one store (OB-1, OB-2, P-02, P-03) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/63">#63</a></li><li>Fix flaky password bias test <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/64">#64</a></li><li>Build native Bowser Store and verify extension compatibility <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/49">#49</a></li><li>Add guarded v0.0.20 release tooling <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/65">#65</a></li><li>Stop links injecting launch flags; harden download names and the save prompt (SEC-2/3/4) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/66">#66</a></li><li>Keep settings size limits consistent so big allow lists still save (H3-3) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/67">#67</a></li><li>Never read settings, tasks or sessions as empty and then save over them (R-1, R-2, R-3) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/69">#69</a></li><li>Open local files from the command line; never self-update a local build (L-2, L-4) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/70">#70</a></li><li>Fix window layout after minimise, rail in full screen, and thin resize edges (L-1, L-3, L-5) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/71">#71</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.19">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.19">0.0.19</a></h2><time datetime="2026-10-17">17 October 2026</time></div>
+        <div class="rel-body"><ul><li>Recover UI fixes and verify Windows release candidate <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/45">#45</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.18">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.18">0.0.18</a></h2><time datetime="2026-10-16">16 October 2026</time></div>
+        <div class="rel-body"><p>Tab pick-up with a lifted ghost tab, stacked and four-pane split view, top-bar downloads fix, submenu slide, private-window icon, and the in-app version now follows the release.</p><ul><li>Translate pages with Google Translate; remove the on-device engine <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/23">#23</a></li><li>Lift tabs while dragging, split into up to four panes, fix downloads (v0.0.18) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/24">#24</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.17">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.17">0.0.17</a></h2><time datetime="2026-10-15">15 October 2026</time></div>
+        <div class="rel-body"><p>Stable build of the agent interface. The human browser is unchanged unless --agent is passed.</p><ul><li>Translate pages on this device without a paid API <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/20">#20</a></li><li>Add an opt-in localhost interface so agents can read a page as text and drive it with page scripts. <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/21">#21</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.16">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.16">0.0.16</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>The Extensions page's empty state is a compact row instead of a tall centred block.</p><ul><li>Compact the Extensions empty state <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/18">#18</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.15">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.15">0.0.15</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>The hidden menu waits until the toolbar is ready, and switching tabs no longer waits on a fade or a save.</p><ul><li>Cut hidden chrome work off the path to a usable window <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/16">#16</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.14">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.14">0.0.14</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Let people run a Chrome extension they already have, from an unpacked folder or a .crx file.</p><ul><li>Let people run Chrome extensions they already have. <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/14">#14</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.13">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.13">0.0.13</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Keep the native tab row on screen until the HTML tab strip is ready.</p><ul><li>Stop repeating paint, request, and startup work <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/11">#11</a></li><li>fix(chrome): keep tabs visible while HTML strip loads <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/12">#12</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.12">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.12">0.0.12</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Less work while painting, loading pages, and starting up.</p></div>
+      </article>
+      <article class="rel" id="v0.0.11">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.11">0.0.11</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Uses less CPU, disk, and memory while idle, minimized, or opening the sidebar.</p></div>
+      </article>
+      <article class="rel" id="v0.0.10">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.10">0.0.10</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Submenus keep the menu opaque while the cards slide, so no white shows where the parent card was.</p></div>
+      </article>
+      <article class="rel" id="v0.0.9">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.9">0.0.9</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>The Privacy dashboard now lives inside Settings (Privacy and security) instead of its own window; Ctrl+Shift+Delete and the History page's Clear browsing data open it there. Toolbar reset sits in the card corner, and the blocker allow-list field and Make-default-browser button sit inline with their text. Clearing browsing data from Settings now works.</p></div>
+      </article>
+      <article class="rel" id="v0.0.8">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.8">0.0.8</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Submenus sit beside the row that opened them. Each child menu is its own card, only as tall as its buttons, and the parent eases aside.</p></div>
+      </article>
+      <article class="rel" id="v0.0.7">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.7">0.0.7</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Browser customizability, docked Developer tools, and sidebar web apps. Settings that have a surface take effect. The main menu keeps its parent beside a submenu. Developer tools dock on the right of the window. A sidebar web app shows the page without the extra toolbar.</p><ul><li>Rework the browser UI (layouts, Settings and History pages, omnibox, private tabs) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/9">#9</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.6">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.6">0.0.6</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>UI rework: four selectable browser layouts, Settings and History as pages (bowser://settings, bowser://history), a shorter main menu with a More tools submenu, omnibox rework, incognito UI rework, working history recording, a three-dot menu button, a new reader view icon, and no flash of the old native toolbar at startup.</p><ul><li>Rebuild the release with the HTML chrome enabled (pin revision 6) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/7">#7</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.5">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.5">0.0.5</a></h2><time datetime="2026-10-14">14 October 2026</time></div>
+        <div class="rel-body"><p>Rebuild of v0.0.4 with the HTML chrome enabled (v0.0.4 shipped the old native UI by mistake). Same ad-block changes as v0.0.4.</p><ul><li>Close the ad-block coverage gaps (host probes, exact-URL rules) <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/5">#5</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.4">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.4">0.0.4</a></h2><time datetime="2026-10-13">13 October 2026</time></div>
+        <div class="rel-body"><p>Closes the remaining ad-block coverage gaps: ad, tracker and video-ad hosts that a page probes are now rejected in the page renderer, including the roots of hosts that also carry real traffic, which stay usable. YouTube player ad placements are still removed, and video bytes are not proxied or reduced in quality.</p></div>
+      </article>
+      <article class="rel" id="v0.0.3">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.3">0.0.3</a></h2><time datetime="2026-10-13">13 October 2026</time></div>
+        <div class="rel-body"><p>Listed ad hosts are blocked in the page renderer, and YouTube player responses have their ad placements removed. Video bytes are not proxied or reduced in quality.</p><ul><li>Block listed hosts in the renderer and strip YouTube player ads <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/3">#3</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.2">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.2">0.0.2</a></h2><time datetime="2026-10-13">13 October 2026</time></div>
+        <div class="rel-body"><p>Bowser Shield is built into the browser. The WebView2 request hook blocks ads and trackers with Bowser's own rules, and cosmetic rules are injected at the start of each page.</p><ul><li>Add Bowser Shield as the browser's own ad blocker <a class="rel-pr" href="https://github.com/grantcharlie1000-tech/Bowser/pull/1">#1</a></li></ul></div>
+      </article>
+      <article class="rel" id="v0.0.1">
+        <div class="rel-meta"><h2><a href="https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.1">0.0.1</a></h2><time datetime="2026-10-13">13 October 2026</time></div>
+        <div class="rel-body"><p>Bowser 0.0.1 for 64-bit Windows 10 and 11.</p></div>
+      </article>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <div class="foot-lead">
+      <p class="foot-word">Bowser</p>
+      <p class="foot-tag">Stupidly light. Stupidly fast. And the ads are gone.</p>
+      <a class="btn btn-white btn-sm" href="download.html">Download<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
+    <nav class="foot-cols" aria-label="Footer">
+      <div>
+        <p class="foot-h">Bowser</p>
+        <a href="features.html">Features</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="releases.html">Release notes</a>
+      </div>
+      <div>
+        <p class="foot-h">Get started</p>
+        <a href="download.html">Download</a>
+        <a href="help.html">Help</a>
+        <a href="help.html#shortcuts">Keyboard shortcuts</a>
+      </div>
+      <div>
+        <p class="foot-h">Source</p>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser/issues">Report an issue</a>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser#build-and-run">Build from source</a>
+      </div>
+    </nav>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
