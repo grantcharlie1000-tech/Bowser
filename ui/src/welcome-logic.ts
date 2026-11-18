@@ -20,7 +20,7 @@ export const STEP_COPY: Readonly<Record<WelcomeStep, StepCopy>> = {
   look: { title: 'Look', lead: '' },
   search: { title: 'Search with', lead: '' },
   privacy: { title: 'Ad blocking', lead: '' },
-  default: { title: 'Make it your default', lead: '' },
+  default: { title: 'Make Bowser your default', lead: '' },
   done: { title: 'You’re all set', lead: '' },
 };
 
@@ -38,7 +38,7 @@ export const FINISH_LABEL = 'Start browsing';
 export const SETTINGS_LABEL = 'Open Settings';
 export const IMPORT_FILE_LABEL = 'File';
 export const IMPORT_OPENED = 'Importing…';
-export const DEFAULT_LABEL = 'Set as default browser';
+export const DEFAULT_LABEL = 'Set as default';
 export const DEFAULT_ALREADY = 'Bowser is your default browser.';
 export const DEFAULT_ASKED = 'Pick Bowser in Windows settings.';
 export const READ_ONLY_NOTE = 'Settings could not be read. Choices won’t be saved.';

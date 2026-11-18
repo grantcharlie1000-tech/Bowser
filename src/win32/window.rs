@@ -4551,7 +4551,10 @@ unsafe extern "system" fn window_proc(
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 if let Some(app) = app {
-                    if !App::active_tab_is_usable(app) {
+                    // A blank new tab (the start page) never loads a web page, so it never becomes
+                    // "usable": it is ready as it is. Without this the first-run welcome waited forever.
+                    let ready = App::active_tab_is_usable(app) || App::tab_is_blank(app, App::active_tab_id(app));
+                    if !ready {
                         let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 500, None);
                         return LRESULT(0);
                     }

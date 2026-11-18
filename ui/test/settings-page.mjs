@@ -2862,8 +2862,11 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
 
   primary().click();
   assert.equal(wl.dataset.step, 'default');
-  wl.querySelector('.wl-action').click();
+  assert.match(primary().textContent, /^Set as default/, 'the step\'s own action is the main button');
+  primary().click();
   assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'setdefault' });
+  assert.equal(wl.dataset.step, 'default', 'asking Windows does not move on');
+  assert.match(primary().textContent, /^Continue/);
 
   primary().click();
   assert.equal(wl.dataset.step, 'done');
@@ -2885,7 +2888,8 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved', defaultBrowser: 'yes' } });
   for (let i = 0; i < 5; i += 1) primary().click();
   assert.equal(wl.dataset.step, 'default');
-  assert.equal(wl.querySelector('.wl-action').disabled, true);
+  assert.match(primary().textContent, /^Continue/, 'already the default: nothing to ask');
+  assert.ok(wl.querySelector('.wl-default').classList.contains('is-set'), 'the check shows on Bowser');
   assert.equal(wl.querySelector('.wl-note').textContent, 'Bowser is your default browser.');
   // Skip setup is the same as finishing.
   wl.querySelector('.wl-skip').click();

@@ -151,9 +151,6 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   root.hidden = true;
   root.setAttribute('role', 'region');
   root.setAttribute('aria-label', 'Welcome to Bowser');
-  const backdrop = el('div', 'wl-backdrop');
-  backdrop.setAttribute('aria-hidden', 'true');
-  backdrop.append(block('wl-orb is-a'), block('wl-orb is-b'), block('wl-orb is-c'));
 
   // ---- top: progress and Skip setup ----
   const top = el('div', 'wl-top');
@@ -215,7 +212,7 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   stage.append(mark, count, title, lead, body, note, readOnly, foot);
   const preview = mockWindow('wl-pv', 'top');
   main.append(stage, preview);
-  root.append(backdrop, top, main);
+  root.append(top, main);
 
   // ---- the bodies, built once so a control keeps its state between visits ----
   let importAsked = false;
@@ -352,12 +349,17 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   stagger(Array.from(engines.root.children) as HTMLElement[]);
   const privacyBody = blocking.root;
 
-  const defaultButton = textButton(DEFAULT_LABEL, () => {
-    if (host.send({ a: 'setdefault' })) { defaultAsked = true; paintNote(); }
-  }, { icon: 'globe' });
-  defaultButton.classList.add('wl-action');
-  const defaultBody = el('div', 'wl-actions');
-  defaultBody.append(defaultButton);
+  // Default browser: the Bowser logo as on the hero, with a check once Bowser is the default. The
+  // footer's primary button is the action ("Set as default"); once asked, or when Bowser already is,
+  // it is Continue.
+  const defaultArt = el('div', 'wl-default');
+  defaultArt.setAttribute('aria-hidden', 'true');
+  const badge = el('span', 'wl-default-badge');
+  badge.append(icon('check', { size: 14 }));
+  defaultArt.append(logoImg('bowser', 'wl-logo'), badge);
+  const defaultBody = defaultArt;
+  /** The Default step's primary button asks Windows instead of moving on. */
+  const asksDefault = (): boolean => current === 'default' && !defaultAsked && snapshot?.defaultBrowser !== 'yes' && snapshot?.guest !== true;
 
   const keys = el('ul', 'wl-keys');
   keys.setAttribute('aria-label', 'Keyboard shortcuts');
@@ -392,6 +394,14 @@ export function mountWelcome(host: WelcomeHost): Welcome {
 
   function primaryAction(): void {
     if (current === 'done') { finish(); return; }
+    if (asksDefault()) {
+      if (host.send({ a: 'setdefault' })) {
+        defaultAsked = true;
+        paintButtons();
+        paintNote();
+      }
+      return;
+    }
     const to = stepAfter(current);
     if (to) go(to);
   }
@@ -406,10 +416,11 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   function paintButtons(): void {
     back.hidden = !hasBack(current);
     skip.hidden = current === 'done' || current === 'hello';
-    primaryText.textContent = current === 'hello' ? START_LABEL : current === 'done' ? FINISH_LABEL : CONTINUE_LABEL;
+    primaryText.textContent = current === 'hello' ? START_LABEL : current === 'done' ? FINISH_LABEL : asksDefault() ? DEFAULT_LABEL : CONTINUE_LABEL;
+    defaultArt.classList.toggle('is-set', snapshot?.defaultBrowser === 'yes');
     secondary.lastChild!.textContent = current === 'hello' ? SKIP_SETUP_LABEL : current === 'done' ? SETTINGS_LABEL : NOT_NOW_LABEL;
     // A step with nothing to do (or nothing left to do) needs only Continue.
-    const optional = current === 'import' || (current === 'default' && snapshot?.defaultBrowser !== 'yes');
+    const optional = current === 'import' || asksDefault();
     secondary.hidden = !(current === 'hello' || current === 'done' || optional);
   }
 
@@ -485,7 +496,6 @@ export function mountWelcome(host: WelcomeHost): Welcome {
       for (const group of [looks, accents, blocking, engines]) group.disable(locked);
       readOnly.hidden = !locked;
       for (const button of [...importButtons, importFile]) button.disabled = next.guest;
-      defaultButton.disabled = next.defaultBrowser === 'yes' || next.guest;
       paintButtons();
       paintNote();
     },

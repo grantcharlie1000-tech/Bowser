@@ -3358,8 +3358,8 @@
  * The first-run flow, drawn over the settings page while the tab is on the welcome section.
  * Hello and Done are a centred hero; the steps between put the question on the left and a live
  * preview of a Bowser window on the right that follows every pick (Zen's and Dia's onboarding).
- * Behind everything: a still mesh of three soft colour fields led by the accent. Motion is one
- * short rise per step (transform and opacity only), and none under reduced motion. */
+ * The background is the page's own colour. Motion is transform and opacity only, and none under
+ * reduced motion. */
 .wl {
   --wl-pick: var(--bw-accent);
   --wl-ink: color-mix(in srgb, var(--bw-text) 8%, transparent);
@@ -3378,43 +3378,6 @@
 
 .wl[hidden] {
   display: none;
-}
-
-.wl-backdrop {
-  position: fixed;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.wl-orb {
-  position: absolute;
-  border-radius: 50%;
-  opacity: 0.9;
-}
-
-.wl-orb.is-a {
-  top: -28vmax;
-  left: -18vmax;
-  width: 70vmax;
-  height: 70vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--wl-pick) 30%, transparent), transparent);
-}
-
-.wl-orb.is-b {
-  top: -20vmax;
-  right: -24vmax;
-  width: 64vmax;
-  height: 64vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, #8b5cf6 20%, transparent), transparent);
-}
-
-.wl-orb.is-c {
-  bottom: -34vmax;
-  left: 20vw;
-  width: 80vmax;
-  height: 60vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, #14b8a6 14%, transparent), transparent);
 }
 
 /* ---- top bar ---- */
@@ -3486,10 +3449,23 @@
   min-width: 0;
 }
 
-.wl[data-step="hello"] .wl-stage,
-.wl[data-step="done"] .wl-stage {
+.wl:is([data-step="hello"], [data-step="done"], [data-step="default"]) .wl-stage {
   align-items: center;
   text-align: center;
+}
+
+.wl[data-step="default"] .wl-foot {
+  flex-direction: row-reverse;
+  justify-content: center;
+}
+
+.wl[data-step="default"] .wl-body {
+  order: -1;
+  margin: 0 0 24px;
+}
+
+.wl[data-step="default"] :is(.wl-spacer, .wl-back) {
+  display: none;
 }
 
 /* The Bowser logo: only on the hero and the last step, floating on a soft glow of its own blue. */
@@ -4009,7 +3985,6 @@
 
 .wl-pv-tab.is-on {
   background: var(--pv-page);
-  box-shadow: inset 0 -0.25cqw 0 var(--wl-pick);
 }
 
 .wl-pv-caption {
@@ -4107,7 +4082,6 @@
 
 .wl-pv-row.is-on {
   background: var(--pv-page);
-  box-shadow: inset 0.3cqw 0 0 var(--wl-pick);
 }
 
 :is(.wl-pv, .wl-mini)[data-tabs="side"] .wl-pv-side {
@@ -4367,6 +4341,50 @@
   opacity: 0;
 }
 
+/* ---- Default's picture: the Bowser logo on its own glow, a check once it is the default ---- */
+.wl-default {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+  margin: 0 auto;
+}
+
+.wl-default::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  background: #1f6fe5;
+  opacity: 0.45;
+  filter: blur(26px);
+}
+
+.wl-default-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #1f9d55;
+  box-shadow: 0 0 0 3px var(--sp-page);
+  color: #ffffff;
+  opacity: 0;
+  transform: scale(0.4);
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform 320ms var(--bw-ease-out);
+}
+
+.wl-default.is-set .wl-default-badge {
+  opacity: 1;
+  transform: none;
+}
+
 /* ---- Search's preview bar ---- */
 .wl-searchbar {
   display: flex;
@@ -4547,13 +4565,6 @@
   }
 }
 
-@keyframes wl-glow-in {
-  from {
-    opacity: 0;
-    transform: scale(0.9);
-  }
-}
-
 @keyframes wl-flow {
   0% {
     opacity: 0;
@@ -4578,18 +4589,6 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .wl-orb {
-    animation: wl-glow-in 900ms var(--bw-ease-out) both;
-  }
-
-  .wl-orb.is-b {
-    animation-delay: 120ms;
-  }
-
-  .wl-orb.is-c {
-    animation-delay: 240ms;
-  }
-
   .wl-stage.is-in {
     animation: wl-in-next 420ms var(--bw-ease-out) both;
   }
