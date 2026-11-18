@@ -1725,7 +1725,7 @@
   margin-bottom: 0;
 }
 
-/* The two install buttons share a row and a weight. */
+/* The two store buttons share a row and a weight. */
 .sp-ext-installs,
 .sp-ext-state-actions {
   display: flex;
@@ -1733,6 +1733,20 @@
   align-items: center;
   justify-content: center;
   gap: var(--bw-space-2);
+}
+
+/* Installing from this computer: quiet text buttons under the list. */
+.sp-ext-local {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-1);
+  margin-top: var(--bw-space-1);
+}
+
+.sp-ext-local > .bw-button:not(:hover, :active, :focus-visible) {
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--bw-text-2);
 }
 
 .sp-ext-item {
@@ -1945,7 +1959,7 @@
 .sp-ext-state.is-empty {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: var(--bw-space-2) var(--bw-space-3);
   padding: var(--bw-space-3) var(--sp-row-x);
   text-align: start;

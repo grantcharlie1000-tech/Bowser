@@ -357,6 +357,15 @@ function Invoke-Control($Control) {
  if(!$Control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){throw "No native InvokePattern for $($Control.Current.Name)"}
  $pattern.Invoke();Start-Sleep -Milliseconds 400
 }
+function Expand-Control($Control) {
+ $bound=Find-BoundControl 'settings' $Control.Current.Name
+ if(!$bound -or !(Same-Uia $bound.control $Control)){throw 'Trusted review control changed before expanding.'}
+ Assert-BoundControl $bound
+ $pattern=$null
+ if($Control.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$pattern)){$pattern.Expand();Start-Sleep -Milliseconds 400;return}
+ if($Control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){$pattern.Invoke();Start-Sleep -Milliseconds 400;return}
+ throw "No native expand or invoke action for $($Control.Current.Name)"
+}
 function Wait-Window {
  $deadline=[DateTime]::UtcNow.AddSeconds(60);$script:window=[IntPtr]::Zero
  do{Start-Sleep -Milliseconds 200;$app.Refresh();if($app.HasExited){throw 'Disposable native app exited.'};$script:window=$app.MainWindowHandle}while($script:window -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
@@ -505,7 +514,7 @@ function Run-InstallJourney {
  # No WebView script, test bridge, native consent bypass or user credential is involved.
  Open-ListingReview 'ddkjiahejlhfcafbddmgiahcphecmpfh'
  Capture '04-native-original-listing-to-review'
- $approve=Wait-Control 'Install uBlock Origin Lite ' -Prefix
+ $approve=Wait-Control 'Add uBlock Origin Lite ' -Prefix
  if(@(Records).Count -ne 0){throw 'An extension was recorded before consent.'}
  Capture '05-native-full-permission-review'
  $report.review_button=$approve.Current.Name
@@ -519,7 +528,9 @@ function Run-InstallJourney {
  # A separate actual signed appearance package supplies real static script declarations for
  # native visual review. This review is cancelled; it grants no installation consent.
  Open-ListingReview 'clngdbkpkpeebahjckkjfobafhncgmne'
- $appearanceApprove=Wait-Control 'Install Stylus ' -Prefix
+ $appearanceApprove=Wait-Control 'Add Stylus ' -Prefix
+ # The complete lists sit under the card's folded Details: open it with its own native action.
+ Expand-Control (Wait-Control 'Details')
  if(@(Records).Count -ne 0){throw 'Appearance review recorded an extension before consent.'}
  $reviewDocument=Find-Document 'settings';if(!$reviewDocument){throw 'Trusted native review document source unavailable.'};$owned=$reviewDocument.document
  $all=$owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
@@ -563,11 +574,11 @@ function Run-InstallJourney {
  Invoke-Control (Wait-Control 'Cancel installation')
  if(@(Records).Count -ne 0){throw 'Cancelled appearance review recorded an installation.'}
  Open-ListingReview 'ddkjiahejlhfcafbddmgiahcphecmpfh'
- $approve=Wait-Control 'Install uBlock Origin Lite ' -Prefix
+ $approve=Wait-Control 'Add uBlock Origin Lite ' -Prefix
  # Explicit authorized disposable-test consent to the real displayed package/version/permissions.
  $report.explicit_test_consent=$approve.Current.Name
  Invoke-Control $approve
- Invoke-Control (Wait-Control 'Manage installed extensions')
+ Invoke-Control (Wait-Control 'Manage extensions')
  $deadline=[DateTime]::UtcNow.AddSeconds(30)
  while(@(Records).Count -eq 0 -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 300}
  if(@(Records).Count -ne 1){throw 'Expected exactly one disposable owning-profile extension record.'}

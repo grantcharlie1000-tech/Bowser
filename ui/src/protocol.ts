@@ -746,24 +746,24 @@ export interface PopupCards {
   py: number;
   pw: number;
   ph: number;
-  cx?: number;
-  cy?: number;
-  cw?: number;
-  ch?: number;
+  /** The part of each child card that shows, outermost first (at most MAX_CHILD_CARDS). */
+  children?: ReadonlyArray<{ x: number; y: number; w: number; h: number }>;
 }
+
+/** Child cards a menu can show at once beside its parent card (menu-logic VISIBLE_PAGES - 1). */
+export const MAX_CHILD_CARDS = 2;
 
 export function sendPopupSize(tok: number, w: number, h: number, cards?: PopupCards): boolean {
   if (!isInt(tok, 0, MAX_ID) || !isInt(w, 1, 4000) || !isInt(h, 1, 4000)) return false;
   if (!cards) return send({ v: 1, t: 'size', tok, w, h });
-  const { px, py, pw, ph, cx, cy, cw, ch } = cards;
+  const { px, py, pw, ph } = cards;
+  const children = cards.children ?? [];
   if (![px, py].every((n) => isInt(n, 0, 4000)) || ![pw, ph].every((n) => isInt(n, 1, 4000))) return false;
-  // One string keeps the message inside the six-field cap (v, t, tok, w, h, c): the parent alone, or
-  // the parent and then the child.
-  if (cx === undefined && cy === undefined && cw === undefined && ch === undefined) {
-    return send({ v: 1, t: 'size', tok, w, h, c: `${px},${py},${pw},${ph}` });
-  }
-  if (![cx, cy].every((n) => isInt(n, 0, 4000)) || ![cw, ch].every((n) => isInt(n, 1, 4000))) return false;
-  const c = `${px},${py},${pw},${ph},${cx},${cy},${cw},${ch}`;
+  if (children.length > MAX_CHILD_CARDS) return false;
+  if (!children.every(({ x, y, w: cw, h: ch }) => [x, y].every((n) => isInt(n, 0, 4000)) && [cw, ch].every((n) => isInt(n, 1, 4000)))) return false;
+  // One string keeps the message inside the six-field cap (v, t, tok, w, h, c): the parent, then
+  // each child card that shows.
+  const c = [px, py, pw, ph, ...children.flatMap(({ x, y, w: cw, h: ch }) => [x, y, cw, ch])].join(',');
   return send({ v: 1, t: 'size', tok, w, h, c });
 }
 export function sendPopupPick(tok: number, id: number): boolean {

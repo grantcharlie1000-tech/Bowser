@@ -1046,7 +1046,7 @@ fn live_store_current_extension_loads() {
         ("tab-session-manager", "iaiomicjabeggjcfkbimgmglanimpnae"),
     ] {
         let profile = root.join(name);
-        let review = match crate::store::prepare(id, version, &profile.join("Extensions"), &profile.join("extensions.txt"), &cancelled) {
+        let review = match crate::store::prepare(crate::crx_fetch::StoreSource::Chrome, id, version, &profile.join("Extensions"), &profile.join("extensions.txt"), &cancelled) {
             Ok(review) => review,
             Err(reason) => { println!("REAL_STORE name={name} id={id} stage=prepare failed={reason}"); continue; }
         };

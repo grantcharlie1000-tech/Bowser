@@ -2249,7 +2249,7 @@ test('built-in Store and Settings share the trusted host without page navigation
   assert.equal(app.querySelector('.bs').hidden, false);
   assert.equal(app.querySelectorAll('iframe').length, 0);
   sent.length = 0;
-  app.querySelector('.bs').querySelectorAll('button').find((b) => b.textContent === 'Extension settings').click();
+  app.querySelector('.bs').querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Extension settings').click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'extensions' }]);
   deliver({ v: 1, t: 'settingsgo', s: 'extensions' });
   assert.equal(app.querySelector('.sp').hidden, false);

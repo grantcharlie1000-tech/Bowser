@@ -5,6 +5,8 @@ use crate::{crx_fetch, extensions::{self, PreparedInstall, Manifest}};
 
 pub const SOURCE_MARKER: &str = "bowser-store-source.txt";
 pub const BROWSE_URL: &str = "https://chromewebstore.google.com/category/extensions";
+/// Edge Add-ons' extension home: packages built for Microsoft Edge, which WebView2 is.
+pub const EDGE_BROWSE_URL: &str = "https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home";
 
 pub struct CatalogueEntry {
     pub id: &'static str, pub name: &'static str, pub description: &'static str,
@@ -125,7 +127,7 @@ fn ensure_not_installed(id: &str, extensions_dir: &Path, records_file: &Path) ->
 /// Downloads and verifies before touching a profile, then prepares its immutable, unrecorded copy.
 /// Cancellation can never commit or load. WinHTTP's finite timeouts bound a request already in flight.
 pub fn prepare(
-    id: &str, runtime: &str, extensions_dir: &Path, records_file: &Path, cancelled: &AtomicBool,
+    source: crx_fetch::StoreSource, id: &str, runtime: &str, extensions_dir: &Path, records_file: &Path, cancelled: &AtomicBool,
 ) -> Result<Review, String> {
     crx_fetch::parse_extension_id(id).map_err(|error| error.to_string())?;
     let check_cancelled = || if cancelled.load(Ordering::Acquire) { Err("Download cancelled. Nothing was installed.".to_owned()) } else { Ok(()) };
@@ -133,7 +135,7 @@ pub fn prepare(
     // Also checked again at consent, because another window may install during download/review.
     ensure_not_installed(id, extensions_dir, records_file)?;
     let staging = Staging::new()?;
-    let original = crx_fetch::download_crx_cancellable(id, runtime, cancelled).map_err(|error| format!("Package download failed: {error}. This is not a runtime compatibility verdict."))?;
+    let original = crx_fetch::download_crx_cancellable(source, id, runtime, cancelled).map_err(|error| format!("Package download failed: {error}. This is not a runtime compatibility verdict."))?;
     check_cancelled()?;
     crx_fetch::verify_and_unpack(&original, id, &staging.0).map_err(|error| verify_failure_message(&error))?;
     check_cancelled()?;

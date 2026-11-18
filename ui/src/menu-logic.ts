@@ -130,8 +130,11 @@ export interface MenuPage { readonly entries: readonly MenuEntry[]; readonly lab
 /** Keyboard state of an open menu. Pages are a stack; the last one takes the keys. */
 export interface MenuNav { pages: MenuPage[]; typed: string; typedAt: number }
 
-/** Pages on screen at once: the open page and the page it came from, side by side. */
-export const VISIBLE_PAGES = 2;
+/**
+ * Pages on screen at once: the parent card and the submenus cascading from it. A deeper submenu pushes
+ * the oldest page off. menu.css reserves room for VISIBLE_PAGES - 1 child cards on both sides.
+ */
+export const VISIBLE_PAGES = 3;
 
 /** Index of the first page on screen. Pages before it have slid out of view. */
 export function firstVisible(nav: MenuNav): number {
@@ -275,6 +278,22 @@ export function flyoutSide(room: FlyoutRoom | null, need: number): { side: 'righ
   if (room.l >= need) return { side: 'left', overlap: 0 };
   const side = room.r >= room.l ? 'right' : 'left';
   return { side, overlap: Math.min(need, need - Math.max(0, side === 'right' ? room.r : room.l)) };
+}
+
+/** The widest child card (350px, menu.css .html-menu-pane max-width) and the gap before it. */
+export const MAX_CARD = 354;
+
+/**
+ * The side of a deeper child card: the side the chain already goes (`side`) while the work area past
+ * the card that opened it (`room`) fits it, else the other side when that fits, else the chain's side
+ * pulled over the opener by what is missing.
+ */
+export function cascadeSide(side: 'right' | 'left', room: FlyoutRoom, need: number): { side: 'right' | 'left'; overlap: number } {
+  const same = side === 'right' ? room.r : room.l;
+  if (same >= need) return { side, overlap: 0 };
+  const other = side === 'right' ? 'left' : 'right';
+  if ((other === 'right' ? room.r : room.l) >= need) return { side: other, overlap: 0 };
+  return { side, overlap: Math.min(need, need - Math.max(0, same)) };
 }
 
 /**
