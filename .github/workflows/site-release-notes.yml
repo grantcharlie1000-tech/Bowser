@@ -1,0 +1,73 @@
+name: Update website release notes
+
+# Keeps the website on gh-pages in step with releases. After a release is published (Release
+# guarded Bowser) or the stable pin moves (Verify stable package), it regenerates the release notes
+# page from the GitHub releases and the pull requests merged between them, and the download
+# page's version, size and SHA-256 from main's stable/release.json, then commits the result to
+# gh-pages. GitHub Pages serves the new pages a minute later.
+#
+# It listens with workflow_run because releases are published with the workflow token, and events
+# made with that token (such as "release published") do not start other workflows.
+on:
+  workflow_run:
+    workflows: [Release guarded Bowser, Verify stable package]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-release-notes
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: >-
+      github.repository == 'grantcharlie1000-tech/Bowser' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: gh-pages
+      - name: Rebuild release notes and the download page
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/build.py ]; then
+            echo "gh-pages has no tools/build.py yet; nothing to update." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh api "repos/$REPO/contents/stable/release.json?ref=main" -H 'Accept: application/vnd.github.raw' > tools/stable.json
+          python3 -c 'import json,sys; p=json.load(open("tools/stable.json")); assert p["tag"] and p["sha256"] and p["version"], "bad pin"'
+          python3 tools/build.py --refresh-releases
+      - name: Commit to gh-pages
+        id: commit
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "Website already up to date." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "Update release notes and download page ($(python3 -c 'import json; print(json.load(open("tools/stable.json"))["tag"])') stable)"
+          git push origin HEAD:gh-pages
+          git diff --stat HEAD~1 >> "$GITHUB_STEP_SUMMARY"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Ask GitHub Pages to publish
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # A push made with the workflow token may not start a Pages build by itself.
+          gh api -X POST "repos/$REPO/pages/builds" --silent || echo "Could not request a Pages build; the next push to gh-pages publishes it." >> "$GITHUB_STEP_SUMMARY"
