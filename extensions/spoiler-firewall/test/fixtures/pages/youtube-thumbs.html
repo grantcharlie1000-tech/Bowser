@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>pasta - YouTube</title></head><body>
+<!-- Search results with thumbnails. YouTube is judged by titles and descriptions: a thumbnail shows as soon as the words
+     of its result are clear, without waiting for OCR (the e2e test gives the fake OCR a 4 s delay). -->
+<input id="search" name="search_query" value="pasta">
+<ytd-search>
+<ytd-video-renderer class="item" data-expect="clear" id="v1"><ytd-thumbnail><img src="/static/pic.svg" width="360" height="200" alt=""></ytd-thumbnail><a id="video-title" href="/watch?v=1"><span>Easy weeknight pasta recipes</span></a><yt-formatted-string class="metadata-snippet-text">Five dinners in twenty minutes, no special kit needed.</yt-formatted-string></ytd-video-renderer>
+<ytd-video-renderer class="item" data-expect="shield" id="v2"><ytd-thumbnail><img src="/static/spoiler-gta6-ending-scene.svg" width="360" height="200" alt=""></ytd-thumbnail><a id="video-title" href="/watch?v=2"><span>Cooking stream highlights</span></a><yt-formatted-string class="metadata-snippet-text"><span class="sentinel">GTA 6 ending spoiler: Lucia dies in the final mission</span></yt-formatted-string></ytd-video-renderer>
+<ytd-video-renderer class="item" data-expect="clear" id="v3"><ytd-thumbnail><img src="/static/pic.svg" width="360" height="200" alt=""></ytd-thumbnail><a id="video-title" href="/watch?v=3"><span>Fresh pasta by hand</span></a><yt-formatted-string class="metadata-snippet-text">Flour, eggs and a rolling pin.</yt-formatted-string></ytd-video-renderer>
+</ytd-search>
+</body></html>

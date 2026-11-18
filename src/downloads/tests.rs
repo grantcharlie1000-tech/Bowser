@@ -501,10 +501,70 @@ fn the_entry_object_has_exactly_the_documented_keys_in_order() {
         json,
         concat!(
             r#"{"id":1,"name":"My \"file\".zip","host":"example.com","url":"https://www.example.com/files/My%20%22file%22.zip","#,
-            r#""state":"active","got":250,"total":1000,"eta":3,"bps":250,"err":"","resume":false,"clock":"13:00"}"#
+            r#""state":"active","got":250,"total":1000,"eta":3,"bps":250,"err":"","resume":false,"clock":"13:00","icon":""}"#
         )
     );
     assert_eq!(m.entry_json(99, time()), None);
+}
+
+/// A real 1 x 1 PNG: the UI fixtures render it.
+const FAKE_ICON: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+/// Icons for two types and one program file; nothing else has one.
+fn fake_icon(key: &crate::file_icon::IconKey) -> Option<String> {
+    use crate::file_icon::IconKey;
+    match key {
+        IconKey::Type(ext) if ext == "exe" || ext == "pdf" => Some(FAKE_ICON.to_owned()),
+        IconKey::File(path) if path.ends_with("own-icon.exe") => Some(format!("{FAKE_ICON}#own")),
+        _ => None,
+    }
+}
+
+#[test]
+fn rows_carry_their_file_icon() {
+    let mut m = DownloadManager::in_memory(false);
+    m.set_icon_source(Some(fake_icon));
+    let pdf = start(&mut m, 1, "report.pdf", 10, NOON_MS);
+    let exe = start(&mut m, 2, "own-icon.exe", 10, NOON_MS);
+    let zip = start(&mut m, 3, "photos.zip", 10, NOON_MS);
+    let icon = |m: &DownloadManager, id| {
+        let json = m.entry_json(id, time()).unwrap();
+        let at = json.find(r#""icon":""#).expect("icon key") + 8;
+        json[at..json.len() - 2].to_owned()
+    };
+    assert_eq!(icon(&m, pdf), FAKE_ICON);
+    // still downloading: the type's icon; finished: the program's own
+    assert_eq!(icon(&m, exe), FAKE_ICON);
+    finish(&mut m, 2, 10, 10, NOON_MS + 1_000);
+    assert_eq!(icon(&m, exe), format!("{FAKE_ICON}#own"));
+    // a type without an icon: "" (the chrome draws its glyph)
+    assert_eq!(icon(&m, zip), "");
+    // a program whose file is gone falls back to its type
+    m.refresh_missing(&|p| !p.ends_with("own-icon.exe"));
+    assert_eq!(icon(&m, exe), FAKE_ICON);
+    // the same path downloaded again: its icon is looked up again (the cached one was the old file's)
+    m.icons.get_mut().get(&crate::file_icon::IconKey::File(path("own-icon.exe")), fake_icon);
+    assert!(!m.icons.get_mut().is_empty());
+    let before = m.icons.get_mut().len();
+    start(&mut m, 4, "own-icon.exe", 10, NOON_MS + 2_000);
+    assert_eq!(m.icons.get_mut().len(), before - 1, "the old file's icon is forgotten");
+    // no source: no icons
+    m.set_icon_source(None);
+    assert_eq!(icon(&m, pdf), "");
+}
+
+#[test]
+fn icons_never_push_rows_out_of_the_page() {
+    let mut m = DownloadManager::in_memory(false);
+    m.set_icon_source(Some(|_: &crate::file_icon::IconKey| Some(format!("data:image/png;base64,{}", "A".repeat(20_000)))));
+    for i in 0..30u64 {
+        start(&mut m, i + 1, &format!("file-{i}.bin"), 10, NOON_MS + i * 1000);
+        finish(&mut m, i + 1, 10, 10, NOON_MS + i * 1000 + 500);
+    }
+    let page = m.snapshot_for_page("", Ack::None, time());
+    assert!(page.len() <= MAX_SNAPSHOT_BYTES, "{}", page.len());
+    assert!(page.contains(r#""more":false"#), "every row is listed: icons are dropped first");
+    assert_eq!(page.matches(r#""icon":"""#).count(), 30);
 }
 
 #[test]
@@ -1145,6 +1205,7 @@ fn clocks_are_local_hours_and_minutes() {
 /// A list with every row state, on two days, built with the engine events the real list gets.
 fn fixture_list() -> DownloadManager {
     let mut m = DownloadManager::in_memory(false);
+    m.set_icon_source(Some(fake_icon));
     let yesterday_ms = (D0 - 3600) * 1000;
     start(&mut m, 90, "old-report.pdf", 2_000_000, yesterday_ms);
     finish(&mut m, 90, 2_000_000, 2_000_000, yesterday_ms + 5_000);

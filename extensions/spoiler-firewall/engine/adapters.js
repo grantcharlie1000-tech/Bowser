@@ -13,6 +13,13 @@
 //            of <main> is just whichever post happens to be on top.
 //   media    media selector (adapter specific + generic)
 //   attrs    extra attribute names whose text is part of a unit's text (custom-element data attributes)
+//   mediaIgnore  images that do not make a unit a picture post: profile pictures and emoji images that every post of the
+//            site carries. Without it every post on X "has media", and media in any GTA context (a spoiler post opened as
+//            the thread head, a spoiler reply's own page) is covered: one spoiler covered every post on the page.
+//   ocr      false: the site's pictures are judged by the words around them (titles, descriptions), never held for the OCR
+//            gate. YouTube: every thumbnail sat under "Checking image" until OCR had read it, seconds on a busy page.
+//   exempt   { sel, live } regions that are never checked while `live` (a selector) matches the page: the player of a live
+//            YouTube stream plays uncovered; its title, description, comments and chat are still checked.
 //   hotUrl   0 cold | 1 warm | 2 hot, from the URL alone (query / path slug / subreddit) via SFW.classify
 // Selector drift degrades to the generic resolver: `own` simply stops matching and `generic` keeps applying.
 SFW.adapters = (function () {
@@ -67,6 +74,8 @@ SFW.adapters = (function () {
     context: ["[data-testid=SearchBox_Search_Input]"], threadFirst: true,
     media: ["[data-testid=tweetPhoto]", "[data-testid=videoPlayer]", "[data-testid='card.layoutLarge.media']", "[data-testid='card.layoutSmall.media']"],
     attrs: [],
+    mediaIgnore: ["[data-testid=Tweet-User-Avatar] *", "[data-testid^=UserAvatar-Container] *", "img[src*='/profile_images/']", "[style*='/profile_images/']",
+      "img[src*='/emoji/']", "img[src*='/hashflags/']"],
     hotUrl: classifyUrl,
   });
   // ---- Reddit (shreddit, sh.reddit, old.reddit) ---------------------------------------------------------------
@@ -86,11 +95,14 @@ SFW.adapters = (function () {
     id: "youtube", threadUrl: /^\/(watch|shorts\/|live\/)/, hosts: /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i, highRisk: true,
     item: ["ytd-rich-item-renderer", "ytd-video-renderer", "ytd-compact-video-renderer", "ytd-reel-item-renderer", "ytd-comment-thread-renderer", "ytd-comment-view-model", "ytd-playlist-renderer",
       "ytd-grid-video-renderer", "ytd-channel-renderer", "ytd-shelf-renderer", "ytm-shorts-lockup-view-model", "yt-lockup-view-model", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", "ytd-player",
-      ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer"],
+      ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer",
+      "yt-live-chat-text-message-renderer", "yt-live-chat-paid-message-renderer", "yt-live-chat-membership-item-renderer", "yt-live-chat-banner-renderer"],
     thread: ["ytd-watch-flexy", "ytd-watch-grid", "ytd-search", "ytd-browse"],
     context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-watch-metadata ytd-channel-name"],
     media: ["ytd-thumbnail", "yt-image", "yt-img-shadow", "#movie_player", ".ytp-cued-thumbnail-overlay-image"],
     attrs: ["title", "aria-label", "alt"],
+    ocr: false,
+    exempt: { live: ".html5-video-player.ytp-live", sel: ["#movie_player", "ytd-player", "#player-container", ".html5-video-player", ".ytp-caption-window-container", ".captions-text"] },
     hotUrl: classifyUrl,
   });
   // ---- Search engines -----------------------------------------------------------------------------------------
@@ -352,6 +364,10 @@ SFW.adapters = (function () {
       threadFirst: !!def.threadFirst,
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
+      mediaIgnore: join(valid(def.mediaIgnore || [], doc)),
+      ocr: def.ocr !== false,
+      exempt: def.exempt ? join(valid(def.exempt.sel, doc)) : "",
+      exemptWhen: def.exempt ? join(valid([def.exempt.live], doc)) : "",
       hotUrl: def.hotUrl,
     };
   }

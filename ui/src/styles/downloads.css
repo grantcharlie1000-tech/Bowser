@@ -93,6 +93,26 @@
   color: color-mix(in srgb, var(--dl-tone) 62%, #000);
 }
 
+/* The file's own picture (an installer's icon, the app that opens the type): no tone behind it. */
+.dl-tile.has-icon,
+:root[data-scheme="light"] .dl-tile.has-icon {
+  background: transparent;
+}
+
+.dl-file-icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  user-select: none;
+  pointer-events: none;
+}
+
+.dp .dl-file-icon {
+  width: 32px;
+  height: 32px;
+}
+
 .dl-text {
   position: relative;
   display: flex;
