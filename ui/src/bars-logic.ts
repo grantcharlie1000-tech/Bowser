@@ -169,7 +169,7 @@ export const ITEM_ICONS: Readonly<Record<string, string>> = {
  */
 export const COMMAND_ICONS: Readonly<Record<string, string>> = {
   'new-tab': 'new-tab', 'new-private-tab': 'private', 'close-tab': 'tab-close', 'close-private-tabs': 'glasses',
-  settings: 'gear', 'toggle-notes': 'notes', passwords: 'key', profiles: 'person',
+  settings: 'gear', 'toggle-notes': 'notes', profiles: 'person',
   'save-session': 'save', sessions: 'folder', 'save-all-session': 'archive', 'open-session': 'folder-open',
   'add-bookmark': 'bookmark', 'bookmarks-panel': 'heart',
   reload: 'reload', 'hard-reload': 'reload-hard', stop: 'close-others', back: 'back', forward: 'forward',

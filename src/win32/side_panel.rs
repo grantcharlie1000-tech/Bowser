@@ -828,8 +828,8 @@ mod tests {
         assert_eq!(child_rect(false, 10, 340, 600, SidePanelPosition::Left, 96).right - child_rect(false, 10, 340, 600, SidePanelPosition::Left, 96).left, 340);
         // Right-docked, the host's left edge moves and the page stays on it.
         assert_eq!(child_rect(false, 85, 340, 600, SidePanelPosition::Right, 96), RECT { left: 0, top: 0, right: 340, bottom: 600 });
-        // A content with the native title row keeps the old margins, scaled.
-        assert_eq!(child_rect(true, 340, 340, 600, SidePanelPosition::Left, 192), RECT { left: 24, top: 96, right: 24 + 680 - 48, bottom: 600 });
+        // A content with the native title row keeps the old margins, scaled (the width is already in pixels).
+        assert_eq!(child_rect(true, 340, 340, 600, SidePanelPosition::Left, 192), RECT { left: 24, top: 96, right: 24 + 340 - 48, bottom: 600 });
     }
 
     /// W-6: from a widened web-app panel to Bookmarks (or History) the host goes back to the shared
