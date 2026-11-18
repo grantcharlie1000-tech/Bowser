@@ -37,6 +37,8 @@ export interface Welcome {
   show(): void;
   hide(): void;
   update(snapshot: SettingsSnapshot): void;
+  /** Bowser's answer to the last change, said on the welcome (the settings page's toast is under it). */
+  say(text: string, ok: boolean): void;
   /** The address section's snapshot: the default engine's id and every engine's id. */
   engines(def: string, ids: readonly string[]): void;
 }
@@ -257,6 +259,7 @@ export function mountWelcome(host: WelcomeHost): Welcome {
     button.addEventListener('click', () => {
       if (!host.send({ a: 'importfrom', text: key })) return;
       importAsked = true;
+      said = null;
       for (const other of importButtons) other.setAttribute('aria-pressed', String(other === button));
       showFrom(key);
       paintNote();
@@ -399,8 +402,15 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   // ---- painting ----
   let current: WelcomeStep = 'hello';
 
+  /** A message from Bowser about the current step (an import that found nothing); cleared on the next step. */
+  let said: { text: string; ok: boolean; step: WelcomeStep } | null = null;
+
   function paintNote(): void {
-    if (current === 'import') note.textContent = importAsked ? IMPORT_OPENED : '';
+    note.classList.remove('is-warn');
+    if (said && said.step === current) {
+      note.textContent = said.text;
+      note.classList.toggle('is-warn', !said.ok);
+    } else if (current === 'import') note.textContent = importAsked ? IMPORT_OPENED : '';
     else if (current === 'default') note.textContent = defaultStatus(snapshot?.defaultBrowser ?? 'unknown', defaultAsked);
     else note.textContent = '';
     note.hidden = note.textContent === '';
@@ -511,6 +521,11 @@ export function mountWelcome(host: WelcomeHost): Welcome {
       readOnly.hidden = !locked;
       for (const button of [...importButtons, importFile]) button.disabled = next.guest;
       paintButtons();
+      paintNote();
+    },
+    say(text: string, ok: boolean): void {
+      said = { text, ok, step: current };
+      if (!ok && current === 'import') for (const other of importButtons) other.setAttribute('aria-pressed', 'false');
       paintNote();
     },
     engines(def: string, ids: readonly string[]): void {

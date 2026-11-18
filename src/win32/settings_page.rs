@@ -913,8 +913,9 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             }
         }
         Action::ImportFrom(browser) => {
-            if let Err(error) = super::import_panel::import_from(owner, browser) {
-                super::show_error_message(&format!("Browser import could not be opened: {error}"));
+            // Nothing to import (or the importer could not open) is said in the page itself.
+            if let Err(message) = super::import_panel::import_from(owner, browser) {
+                answer(owner, Err(message));
             }
         }
         Action::WelcomeDone => {

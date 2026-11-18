@@ -59,10 +59,12 @@ export interface StartSettings {
   widgetBg: WidgetBg;
   widgetColor: string;
   widgetDrag: boolean;
+  /** `start_dials`: the speed dials on a new tab (default off: the tab is blank). */
+  dials: boolean;
 }
 
 export const START_SETTINGS_KEYS = ['groupReopen', 'titles', 'addButton', 'columns', 'thumbSize', 'dragReorder', 'homepage', 'startup',
-  'startupPages', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag'] as const;
+  'startupPages', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag', 'dials'] as const;
 
 type Rec = Record<string, unknown>;
 const isRecord = (v: unknown): v is Rec => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -105,11 +107,11 @@ export function parseStartSettings(v: unknown): StartSettings | null {
   if (!isStr(v.homepage, MAX_URL) || (v.homepage !== '' && !isWebAddress(v.homepage)) || !oneOf(v.startup, STARTUP_MODES)) return null;
   if (!Array.isArray(v.startupPages) || v.startupPages.length > MAX_STARTUP_PAGES || !v.startupPages.every((p) => typeof p === 'string' && isWebAddress(p))) return null;
   if (!isBool(v.widgets) || !isInt(v.widgetColumns, MIN_WIDGET_COLUMNS, MAX_WIDGET_COLUMNS) || !oneOf(v.widgetHeight, WIDGET_HEIGHTS)) return null;
-  if (!oneOf(v.widgetBg, WIDGET_BGS) || typeof v.widgetColor !== 'string' || !COLOR_RE.test(v.widgetColor) || !isBool(v.widgetDrag)) return null;
+  if (!oneOf(v.widgetBg, WIDGET_BGS) || typeof v.widgetColor !== 'string' || !COLOR_RE.test(v.widgetColor) || !isBool(v.widgetDrag) || !isBool(v.dials)) return null;
   return {
     groupReopen: v.groupReopen, titles: v.titles, addButton: v.addButton, columns: v.columns, thumbSize: v.thumbSize, dragReorder: v.dragReorder,
     homepage: v.homepage, startup: v.startup, startupPages: [...(v.startupPages as string[])], widgets: v.widgets, widgetColumns: v.widgetColumns,
-    widgetHeight: v.widgetHeight, widgetBg: v.widgetBg, widgetColor: v.widgetColor, widgetDrag: v.widgetDrag,
+    widgetHeight: v.widgetHeight, widgetBg: v.widgetBg, widgetColor: v.widgetColor, widgetDrag: v.widgetDrag, dials: v.dials,
   };
 }
 
@@ -132,6 +134,7 @@ export function startSaveLines(s: StartSettings): string[] | null {
     `start_widget_bg=${s.widgetBg}`,
     `start_widget_color=${s.widgetColor}`,
     `start_widget_drag=${s.widgetDrag}`,
+    `start_dials=${s.dials}`,
   ];
 }
 
@@ -149,6 +152,8 @@ export interface DisplaySettings {
   widgetBg: WidgetBg;
   widgetColor: string;
   widgetDrag: boolean;
+  /** Off (the default), the page shows no speed dials: a blank tab, or only the widgets. */
+  dials: boolean;
 }
 export interface GroupTab { id: number; title: string; n: number }
 export interface Crumb { id: number; title: string }
@@ -197,13 +202,13 @@ function list<T>(v: unknown, max: number, one: (item: unknown) => T | null): T[]
 }
 
 function parseDisplay(v: unknown): DisplaySettings | null {
-  if (!isRecord(v) || !exactKeys(v, ['columns', 'thumbSize', 'titles', 'addButton', 'dragReorder', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag'])) return null;
+  if (!isRecord(v) || !exactKeys(v, ['columns', 'thumbSize', 'titles', 'addButton', 'dragReorder', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag', 'dials'])) return null;
   if (!isInt(v.columns, MIN_COLUMNS, MAX_COLUMNS) || !isInt(v.thumbSize, MIN_THUMB_SIZE, MAX_THUMB_SIZE) || !oneOf(v.titles, TITLE_MODES)) return null;
   if (!isBool(v.addButton) || !isBool(v.dragReorder) || !isBool(v.widgets) || !isInt(v.widgetColumns, MIN_WIDGET_COLUMNS, MAX_WIDGET_COLUMNS)) return null;
-  if (!oneOf(v.widgetHeight, WIDGET_HEIGHTS) || !oneOf(v.widgetBg, WIDGET_BGS) || typeof v.widgetColor !== 'string' || !COLOR_RE.test(v.widgetColor) || !isBool(v.widgetDrag)) return null;
+  if (!oneOf(v.widgetHeight, WIDGET_HEIGHTS) || !oneOf(v.widgetBg, WIDGET_BGS) || typeof v.widgetColor !== 'string' || !COLOR_RE.test(v.widgetColor) || !isBool(v.widgetDrag) || !isBool(v.dials)) return null;
   return {
     columns: v.columns, thumbSize: v.thumbSize, titles: v.titles, addButton: v.addButton, dragReorder: v.dragReorder, widgets: v.widgets,
-    widgetColumns: v.widgetColumns, widgetHeight: v.widgetHeight, widgetBg: v.widgetBg, widgetColor: v.widgetColor, widgetDrag: v.widgetDrag,
+    widgetColumns: v.widgetColumns, widgetHeight: v.widgetHeight, widgetBg: v.widgetBg, widgetColor: v.widgetColor, widgetDrag: v.widgetDrag, dials: v.dials,
   };
 }
 

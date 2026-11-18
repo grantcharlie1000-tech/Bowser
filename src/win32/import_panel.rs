@@ -99,8 +99,9 @@ pub(crate) const BROWSERS: [(&str, &[&str], &str); 7] = [
 
 /// One click from the welcome: imports `browser`'s bookmarks (and, for Chromium browsers, its
 /// search setting) straight from the profile this PC has, through the same preview and confirm as
-/// the panel. The Default profile goes first; with none, the panel says so and offers the file.
-pub(crate) fn import_from(owner: HWND, browser: &str) -> windows::core::Result<()> {
+/// the panel. The Default profile goes first. `Err` carries what the welcome shows in its own page
+/// when there is nothing to import (a native popup over the page lost to the page's focus).
+pub(crate) fn import_from(owner: HWND, browser: &str) -> Result<(), String> {
     let Some(&(_, found_as, name)) = BROWSERS.iter().find(|(key, _, _)| *key == browser) else { return Ok(()) };
     // What the welcome's import found, for --diagnostic-log (no paths or names: only the outcome).
     let note = |event: &str| {
@@ -108,9 +109,17 @@ pub(crate) fn import_from(owner: HWND, browser: &str) -> windows::core::Result<(
             let _ = state.log.record(event);
         }
     };
+    let nothing = || format!("No {name} bookmarks were found on this PC.");
     if browser == "firefox" {
-        note("welcome_import_firefox");
-        return import_firefox_backup(owner);
+        let any = import::detect_browser_profiles()
+            .into_iter()
+            .any(|profile| profile.browser == "Firefox" && import::firefox::newest_backup(&profile.root).is_some());
+        if !any {
+            note("welcome_import_none");
+            return Err(nothing());
+        }
+        note("welcome_import_found");
+        return import_firefox_backup(owner).map_err(|error| format!("Browser import could not be opened: {error}"));
     }
     let mut profiles: Vec<_> = import::detect_browser_profiles()
         .into_iter()
@@ -121,24 +130,14 @@ pub(crate) fn import_from(owner: HWND, browser: &str) -> windows::core::Result<(
         .collect();
     // The first name tried (Opera before Opera GX), then each one's Default profile.
     profiles.sort_by_key(|(rank, profile, _)| (*rank, profile != "Default"));
-    let profiles = profiles.into_iter().map(|(_, profile, path)| (profile, path));
     match profiles.into_iter().next() {
-        Some((_, path)) => {
+        Some((_, _, path)) => {
             note("welcome_import_found");
-            import_bookmark_path(owner, path)
+            import_bookmark_path(owner, path).map_err(|error| format!("Browser import could not be opened: {error}"))
         }
         None => {
             note("welcome_import_none");
-            let _ = menu::track(
-                owner,
-                anchor(owner),
-                Menu {
-                    header: None,
-                    entries: vec![Entry::Item(Item::new(CANCEL, "Close", Icon::Close))],
-                    footer: format!("No {name} bookmarks were found on this PC."),
-                },
-            );
-            Ok(())
+            Err(nothing())
         }
     }
 }

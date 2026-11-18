@@ -361,6 +361,7 @@ fn start_snapshot(start: &crate::start_page::StartSettings, out: &mut super::jso
     out.string("widgetBg", start.widget_bg.key());
     out.string("widgetColor", &start.widget_color);
     out.bool("widgetDrag", start.widget_drag);
+    out.bool("dials", start.dials);
 }
 // --- end start page ---
 

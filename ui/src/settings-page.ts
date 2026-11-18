@@ -2233,6 +2233,9 @@ export function startSettingsPage(root: HTMLElement): void {
   });
   root.append(welcome.root);
   const showWelcome = (on: boolean): void => {
+    // Whatever else the page holds (the Privacy dashboard, the store, the toast) is out of reach and out
+    // of the accessibility tree while the welcome covers it.
+    for (const child of Array.from(root.children)) if (child !== welcome.root) child.toggleAttribute('inert', on);
     if (on) { page.hidden = true; welcome.show(); }
     else if (welcome.shown) { welcome.hide(); page.hidden = false; }
   };
@@ -2281,8 +2284,10 @@ export function startSettingsPage(root: HTMLElement): void {
     if (parsed.ack !== 'none') {
       // Bowser runs queued commands together and answers once: this snapshot is the saved state.
       pending = 0;
-      if (parsed.ack === 'saved') showToast('Saved', true);
-      else showToast(parsed.error !== '' ? parsed.error : 'Settings could not be saved.', false);
+      const text = parsed.ack === 'saved' ? 'Saved' : parsed.error !== '' ? parsed.error : 'Settings could not be saved.';
+      // Over the welcome the toast is hidden with the page: a failure is said on the welcome instead.
+      if (welcome.shown) { if (parsed.ack !== 'saved') welcome.say(text, false); }
+      else showToast(text, parsed.ack === 'saved');
     }
     snapshot = parsed;
     apply(parsed);

@@ -101,6 +101,28 @@ $data = Join-Path $env:RUNNER_TEMP ("bowser-first-boot-" + (Get-Random))
 if (-not $env:RUNNER_TEMP) { $data = Join-Path $env:TEMP ("bowser-first-boot-" + (Get-Random)) }
 New-Item -ItemType Directory -Force $data | Out-Null
 $env:BOWSER_UI = 'html'
+# A pretend Chrome on this machine, so the welcome's one-click import has something real to find: its
+# own Local AppData (Bowser looks for browsers there) with one Chrome profile and a few bookmarks.
+$fakeLocal = Join-Path $data 'local-appdata'
+$chromeProfile = Join-Path $fakeLocal 'Google\Chrome\User Data\Default'
+New-Item -ItemType Directory -Force $chromeProfile | Out-Null
+$bookmark = { param($name, $url) @{ type = 'url'; name = $name; url = $url } }
+$chromeBookmarks = @{
+  version = 1
+  roots = @{
+    bookmark_bar = @{ type = 'folder'; name = 'Bookmarks bar'; children = @(
+      (& $bookmark 'GitHub' 'https://github.com/'),
+      (& $bookmark 'Wikipedia' 'https://www.wikipedia.org/'),
+      (& $bookmark 'BBC News' 'https://www.bbc.co.uk/news'),
+      @{ type = 'folder'; name = 'Reading'; children = @((& $bookmark 'Hacker News' 'https://news.ycombinator.com/'), (& $bookmark 'The Verge' 'https://www.theverge.com/')) }
+    ) }
+    other = @{ type = 'folder'; name = 'Other bookmarks'; children = @() }
+    synced = @{ type = 'folder'; name = 'Mobile bookmarks'; children = @() }
+  }
+} | ConvertTo-Json -Depth 8
+# UTF-8 without a byte-order mark, in Windows PowerShell 5.1 as well (its Set-Content cannot).
+[IO.File]::WriteAllText((Join-Path $chromeProfile 'Bookmarks'), $chromeBookmarks, (New-Object Text.UTF8Encoding $false))
+$env:LOCALAPPDATA = $fakeLocal
 Start-Sleep -Milliseconds 1500   # a moment of empty desktop before the launch
 Note 'launch'
 $diag = Join-Path $Out 'bowser-diagnostic.log'
@@ -116,13 +138,27 @@ function IsFg { $fp = [uint32]0; [FB]::GetWindowThreadProcessId([FB]::GetForegro
 function EnsureFg { for ($i = 0; $i -lt 8; $i++) { if (IsFg) { return $true }; [FB]::Force($h); Start-Sleep -Milliseconds 250 }; return (IsFg) }
 
 $root = $null
+$welcome = $null
 function Root { if (-not $script:root) { $script:root = [System.Windows.Automation.AutomationElement]::FromHandle($h) }; return $script:root }
+# The welcome's own region ("Welcome to Bowser", the largest element with that name: the tab has it too),
+# so a button is never taken from anything else in the window.
+function Welcome {
+  if ($script:welcome) { try { $null = $script:welcome.Current.BoundingRectangle; return $script:welcome } catch { $script:welcome = $null } }
+  $best = $null; $area = 0
+  foreach ($el in (Root).FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+    if ($el.Current.Name -eq 'Welcome to Bowser') { $r = $el.Current.BoundingRectangle; if ($r.Width * $r.Height -gt $area) { $area = $r.Width * $r.Height; $best = $el } }
+  }
+  $script:welcome = $best
+  return $best
+}
 # The first on-screen element in Bowser's window whose accessible name is $name (or starts with it).
 function FindNamed([string]$name, [int]$timeoutMs = 12000) {
   $clock = [Diagnostics.Stopwatch]::StartNew()
   while ($clock.ElapsedMilliseconds -lt $timeoutMs) {
     try {
-      $all = (Root).FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+      $scope = Welcome
+      if (-not $scope) { Start-Sleep -Milliseconds 300; continue }
+      $all = $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
       foreach ($el in $all) {
         $n = $el.Current.Name
         # Case-insensitive: Chromium exposes text-transform (the welcome's "YES" / "NO").
@@ -173,8 +209,10 @@ try {
 
   # Import: hover the browsers, try one (on a fresh runner there is nothing to import, and Bowser says so).
   foreach ($b in 'Chrome', 'Edge', 'Brave', 'Firefox', 'Opera', 'Vivaldi', 'Helium') { Hover $b 220 | Out-Null }
-  Press 'Edge' 2600 | Out-Null
+  Press 'Chrome' 3500 | Out-Null       # the pretend Chrome profile: Bowser's import preview should open
   Esc
+  Start-Sleep -Milliseconds 800
+  Press 'Edge' 2600 | Out-Null         # nothing on this machine: said on the welcome
   Press 'Continue' 1600 | Out-Null
 
   # Look
@@ -201,7 +239,7 @@ try {
   Press 'Not now' 2200 | Out-Null
 
   # Done
-  Press 'Start browsing' 3500 | Out-Null
+  Press 'Start browsing' 4500 | Out-Null   # a blank new tab (speed dials are off by default)
   Note 'finished'
 } catch {
   Note "stopped: $($_.Exception.Message)"

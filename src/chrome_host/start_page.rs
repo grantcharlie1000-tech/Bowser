@@ -132,6 +132,7 @@ fn build(s: &Snapshot<'_>, favs: &[(String, String)]) -> String {
             o.string("widgetBg", settings.widget_bg.key());
             o.string("widgetColor", &settings.widget_color);
             o.bool("widgetDrag", settings.widget_drag);
+            o.bool("dials", settings.dials);
         });
         out.array("groups", |a| {
             for group in &view.groups {

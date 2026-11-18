@@ -9,7 +9,9 @@ checks it exactly as it checks Settings.
 
 On a profile's first run with the HTML chrome, after the first chrome paint (`WM_IMPORT_OFFER_TIMER`
 in `win32/window.rs`) the welcome takes the blank first tab and the old "Import from another browser?"
-menu is marked answered. Guest windows never get it. Typing `bowser://settings/welcome` opens it again.
+menu is marked answered. It only takes a blank first tab: a first launch that opens a page (a link from
+another app, `--open-url`) keeps the page in front and the welcome waits for the next launch. Guest windows
+never get it. Typing `bowser://settings/welcome` opens it again.
 
 `Section::Welcome` is a route, not a section: it is never in the page's navigation, and the page's
 `SETTINGS_SECTIONS` does not list it. The tab is titled "Welcome to Bowser" and goes back to

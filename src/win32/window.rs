@@ -4564,9 +4564,14 @@ unsafe extern "system" fn window_proc(
                 if let Ok(profile) = profile::active() {
                     if profile.import_offer_pending() && chrome_host::html_ui_enabled() && let Some(app) = app {
                         // First run with the HTML chrome: the welcome (docs/design/welcome.md) takes the
-                        // blank first tab. It offers the import itself, so the offer counts as answered.
-                        let _ = profile.remember_import_offer_choice();
-                        super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
+                        // blank first tab, and only a blank one: a first launch that opens a page (a
+                        // link from another app, --open-url) keeps that page in front, and the welcome
+                        // waits for the next launch. It offers the import itself, so showing it answers
+                        // the offer.
+                        if App::tab_is_blank(app, App::active_tab_id(app)) {
+                            let _ = profile.remember_import_offer_choice();
+                            super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
+                        }
                     } else if profile.import_offer_pending() {
                         // --- popup host (lane M) ---
                         let anchor = screen_point(hwnd, main_menu_anchor(hwnd));

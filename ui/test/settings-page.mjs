@@ -240,7 +240,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsidebar_collapsed=false\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=true\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsidebar_collapsed=false\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=true\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -1122,7 +1122,7 @@ test('the Start page section: the snapshot parses, every row exists once and the
   // The start page's own rows sit in Tabs > Start page; the startup rows in General > On startup.
   const ids = logic.ROWS.filter((row) => row.section === 'startpage').map((row) => row.id);
   assert.deepEqual(ids, [
-    'startGroupReopen', 'startTitles', 'startAddButton', 'startColumns', 'startThumbSize', 'startDragReorder',
+    'startGroupReopen', 'startTitles', 'startDials', 'startAddButton', 'startColumns', 'startThumbSize', 'startDragReorder',
     'startWidgets', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
   ]);
   assert.deepEqual(['startHomepage', 'startupMode', 'startupPages'].map((id) => logic.placementOf(id, 'startpage').group.key), ['startup', 'startup', 'startup']);
@@ -1134,13 +1134,13 @@ test('the Start page section: the snapshot parses, every row exists once and the
   const text = logic.saveText(logic.draftOf(s));
   const rustKeys = [...read(join(root, 'src', 'start_page.rs')).matchAll(/^    "([a-z_]+)",$/gm)].map((m) => m[1]);
   for (const key of rustKeys) assert.equal(text.split('\n').filter((l) => l.startsWith(`${key}=`)).length, 1, key);
-  assert.ok(rustKeys.length === 15);
+  assert.ok(rustKeys.length === 16);
   // A start object that Rust would never write is refused.
   const { start } = fixture.snap.d;
   for (const bad of [{ ...start, columns: 13 }, { ...start, columns: 0 }, { ...start, thumbSize: 6 }, { ...start, titles: 'sometimes' },
     { ...start, startup: 'restore' }, { ...start, homepage: 'ftp://x.example/' }, { ...start, startupPages: ['not a url'] },
     { ...start, startupPages: Array.from({ length: 9 }, (_, i) => `https://p${i}.example/`) }, { ...start, widgetColor: 'red' },
-    { ...start, widgetColumns: 5 }, { ...start, extra: 1 }, { ...start, widgetDrag: 'yes' }]) {
+    { ...start, widgetColumns: 5 }, { ...start, extra: 1 }, { ...start, widgetDrag: 'yes' }, { ...start, dials: 'no' }]) {
     assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, start: bad }), null, JSON.stringify(bad).slice(0, 100));
   }
   const { widgetDrag: _drop, ...missing } = start;
@@ -2804,6 +2804,7 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
   const wl = app.querySelector('.wl');
   assert.equal(wl.hidden, false);
   assert.equal(app.querySelector('.sp').hidden, true, 'the sections are hidden under it');
+  assert.ok(app.children.filter((c) => c !== wl).every((c) => c.hasAttribute('inert')), 'nothing behind it can be reached');
   assert.equal(wl.dataset.step, 'hello');
   assert.equal(wl.querySelector('.wl-title').textContent, 'Welcome to Bowser');
   assert.equal(wl.querySelectorAll('.wl-dot').length, 7);
@@ -2826,6 +2827,11 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
   assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'importfrom', text: 'helium' });
   assert.equal(browsers[6].getAttribute('aria-pressed'), 'true');
   assert.ok(wl.querySelector('.wl-transfer').querySelector('.wl-transfer-slot').querySelector('.wl-transfer-logo'), 'the picked browser takes the fan\'s place');
+  // Nothing to import: Bowser's answer is said on the welcome, not in the hidden toast.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, defaultBrowser: 'no', ack: 'failed', error: 'No Helium bookmarks were found on this PC.' } });
+  assert.equal(wl.querySelector('.wl-note').textContent, 'No Helium bookmarks were found on this PC.');
+  assert.ok(wl.querySelector('.wl-note').classList.contains('is-warn'));
+  assert.equal(browsers[6].getAttribute('aria-pressed'), 'false', 'the pick is undone');
   wl.querySelector('.wl-file').click();
   assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'import' }, 'From a file opens the importer');
 
@@ -2883,6 +2889,7 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
   assert.equal(wl.hidden, true);
   assert.equal(app.querySelector('.sp').hidden, false);
   assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'section', text: '' });
+  assert.ok(app.children.every((c) => !c.hasAttribute('inert')), 'the page is reachable again');
 
   // A snapshot that says Bowser is already the default turns the step into a statement.
   deliver({ v: 1, t: 'settingsgo', s: 'welcome' });
