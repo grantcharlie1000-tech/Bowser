@@ -116,7 +116,7 @@ const names = (node) => node.children.map((c) => (c.classList.contains('nav-grou
 const lead = (button) => ['back', 'forward', 'reload'].find((name) => button.getAttribute('aria-label')?.toLowerCase().startsWith(name)) ?? button.getAttribute('aria-label');
 const leftNames = () => nav().children.map((c) => (c.classList.contains('nav-group') ? c.children.map(lead).join('+') : lead(c)));
 const rightLabels = () => actions().children.map((c) => c.getAttribute('aria-label'));
-const DEFAULT = 'back,forward,reload,site-info,split,reader,extensions,downloads';
+const DEFAULT = 'back,forward,reload,site-info,split,reader,extensions';
 
 test('the default list lays the toolbar out as it always was', () => {
   deliver(bar(DEFAULT));
@@ -135,7 +135,7 @@ test('an older host that sends no list gets every button in its usual place', ()
 });
 
 test('taking Back, Forward or Reload off the list removes it, and the others keep their order', () => {
-  deliver(bar('forward,reload,site-info,split,reader,extensions,downloads'));
+  deliver(bar('forward,reload,site-info,split,reader,extensions'));
   assert.deepEqual(leftNames(), ['forward', 'reload']);
   deliver(bar('reload,site-info,split'));
   assert.deepEqual(leftNames(), ['reload']);
@@ -196,7 +196,7 @@ test('Bookmark and New tab join the end of the bar, send their item and index, a
 test('a command button shows the command’s name, runs only through its place in the list, and goes when the item does', () => {
   const tools = [{ k: 'cmd:new-private-tab', l: 'New private tab', i: 6 }, { k: 'chain:2', l: 'Morning', i: 7 }];
   deliver(bar('back,forward,reload,site-info,split,reader,cmd:new-private-tab,chain:2', { tools, extra: 64 }));
-  assert.deepEqual(rightLabels(), ['New private tab', 'Morning', 'Menu']);
+  assert.deepEqual(rightLabels(), ['New private tab', 'Morning', 'Downloads', 'Menu'], 'Downloads off the list waits by the menu, hidden');
   sent.length = 0;
   actions().children[0].click();
   actions().children[1].click();
@@ -205,25 +205,29 @@ test('a command button shows the command’s name, runs only through its place i
   deliver(bar('back,forward,reload,site-info,split,reader,cmd:new-private-tab,chain:2', { tools, extra: 64 }));
   assert.equal(actions().children[0], first, 'an unchanged button is kept (and keeps its focus)');
   deliver(bar('back,forward,reload,site-info,split,reader,chain:2', { tools: [{ k: 'chain:2', l: 'Morning', i: 6 }], extra: 32 }));
-  assert.deepEqual(rightLabels(), ['Morning', 'Menu']);
+  assert.deepEqual(rightLabels(), ['Morning', 'Downloads', 'Menu']);
   deliver(bar('back,forward,reload,site-info,split,reader,cmd:gone', { tools: [], extra: 32 }));
-  assert.deepEqual(rightLabels(), ['Menu'], 'a command that no longer exists shows no button');
+  assert.deepEqual(rightLabels(), ['Downloads', 'Menu'], 'a command that no longer exists shows no button');
   deliver(bar(DEFAULT));
 });
 
-test('Downloads and Extensions off the list never show, and never take room', () => {
+test('Extensions off the list never shows; Downloads off the list shows only while Rust says a download needs it', () => {
   deliver(bar('back,forward,reload,site-info,split'));
-  deliver({ v: 1, t: 'dlbtn', on: true, state: 'active', n: 1, pct: 10, burst: 0 });
   deliver({ v: 1, t: 'extbtn', on: true, n: 1, name: 'One' });
-  assert.equal(root.classList.contains('has-dl'), false);
   assert.equal(root.classList.contains('has-ext'), false);
-  assert.equal(root.querySelector('.tb-dl'), null, 'the button is not on the bar');
   assert.equal(root.querySelector('.tb-ext'), null, 'the button is not on the bar');
-  assert.deepEqual(rightLabels(), ['Menu']);
-  deliver(bar(DEFAULT));
+  assert.deepEqual(rightLabels(), ['Downloads', 'Menu'], 'Downloads keeps its place by the menu');
+  assert.equal(root.querySelector('.tb-dl').hidden, true, 'nothing running: no button');
   deliver({ v: 1, t: 'dlbtn', on: true, state: 'active', n: 1, pct: 10, burst: 0 });
-  assert.equal(root.querySelector('.tb-dl').hidden, false, 'back on the list, it shows again');
+  assert.equal(root.querySelector('.tb-dl').hidden, false, 'a running download shows it');
   assert.equal(root.classList.contains('has-dl'), true);
+  deliver(bar('back,forward,reload,site-info,split,reader,downloads,extensions'));
+  const kids = actions().children;
+  assert.equal(kids.indexOf(root.querySelector('.tb-dl')), 0, 'pinned, it sits where the list puts it');
+  assert.equal(kids.indexOf(root.querySelector('.tb-ext')), 1);
+  deliver({ v: 1, t: 'dlbtn', on: true, state: 'idle', n: 0, pct: -1, burst: 0 });
+  assert.equal(root.querySelector('.tb-dl').hidden, false, 'pinned: Rust keeps it on with nothing running');
+  deliver(bar(DEFAULT));
   deliver({ v: 1, t: 'dlbtn', on: false, state: 'idle', n: 0, pct: 0, burst: 0 });
 });
 
@@ -246,7 +250,7 @@ test('the feed button shows only while the page offers a feed, names how many, a
 test('the toolbar CSS shifts the group by --tb-extra and keeps the slot rules the download and extensions buttons use', () => {
   const css = readFileSync(join(srcDir, 'styles', 'toolbar.css'), 'utf8').replace(/\r\n/g, '\n');
   assert.match(css, /#app\.placed \.actions \{\n  position: absolute;\n  left: var\(--menu-x\);[\s\S]*?translate: calc\(var\(--tb-extra, 0px\) \* -1\) 0;/);
-  assert.match(css, /\.tb-extra \{\n  margin-inline-end: var\(--bw-space-0_5\);/);
+  assert.match(css, /\.tb-extra \{\n  margin-inline-end: 0;/, "edge to edge: a 28px slot");
   assert.match(css, /\.tb-feed\[hidden\] \{\n  display: none;/);
   assert.match(css, /\.pill\.no-site \.omni,/);
 });

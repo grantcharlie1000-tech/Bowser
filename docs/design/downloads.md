@@ -16,8 +16,9 @@ and say so in the report.
    folder (default: the user's Downloads known folder). A name clash becomes `name (1).ext`,
    `name (2).ext` (Chrome's rule). With "Ask where to save each file" on, a native Save dialog opens
    first (suggested name and folder preselected); cancelling it cancels the download and records nothing.
-2. **Toolbar button.** Right of the address pill, left of the menu button. Hidden when there is
-   nothing to show. It appears when a download starts and stays while a download is active or an
+2. **Toolbar button.** Right of the address pill, left of the menu button. **Pinned** (Downloads is on
+   the address bar's list, docs/toolbars.md) it shows all the time and opens the bubble even when it
+   is empty. Not pinned (the default), it is hidden when there is nothing to show. It appears when a download starts and stays while a download is active or an
    unseen finished one is waiting (a download finished and the bubble has not been opened since).
    Opening the bubble marks them seen; once the bubble closes with nothing active the button hides
    (Chrome hides it again; the list stays reachable from the menu, `Ctrl+J` and the page).
@@ -94,8 +95,8 @@ from the extension of `name` (image, video, audio, archive, document, code, prog
   increments for every newly started download; the page plays the start animation when it changes
   (never on the first message).
 - The toolbar page places the button itself between the pill and the menu button; Rust shrinks
-  `pillw` by the button's width (28 px + 4 px gap) while `on` so the layout stays consistent. (Rust
-  and the page agree on 32 CSS px: `DL_BUTTON_SLOT`.)
+  `pillw` by the button's width (28 px, no gap) while `on` so the layout stays consistent. (Rust
+  and the page agree on 28 CSS px: `DL_BUTTON_SLOT`.)
 
 ### Toolbar button: toolbar host -> Rust
 

@@ -35,7 +35,9 @@ html[data-scheme="dark"] #app {
 .actions {
   display: flex;
   align-items: center;
-  gap: var(--bw-space-0_5);
+  /* Buttons sit edge to edge: a 28px pitch (DL_BUTTON_SLOT, EXT_BUTTON_SLOT). Their round hover discs
+     never touch because only one is hovered at a time. */
+  gap: 0;
   flex: none;
 }
 
@@ -462,9 +464,9 @@ html[data-scheme="dark"] #app {
 }
 
 /* The buttons the address bar's list adds at its end (bookmark, new tab, command buttons): the same 28px
-   button and 4px gap as the download and extensions buttons, so each one is a 32px slot. */
+   button as the download and extensions buttons, edge to edge, so each one is a 28px slot. */
 .tb-extra {
-  margin-inline-end: var(--bw-space-0_5);
+  margin-inline-end: 0;
 }
 
 .tb-extra[hidden] {
@@ -553,8 +555,8 @@ html[data-scheme="dark"] #app {
 
 /* ---- Download button (view.ts buildDownloadButton; docs/design/downloads.md) ----
    Between the pill and the menu button, shown only while Rust says `dlbtn.on`. Rust shrinks the
-   pill by DL_BUTTON_SLOT (32px: the 28px button and a 4px gap), so the actions group moves left by
-   the same 32px and the menu button never moves. The ring is drawn around the 28px hover disc's
+   pill by DL_BUTTON_SLOT (28px: the button, edge to edge), so the actions group moves left by
+   the same 28px and the menu button never moves. The ring is drawn around the 28px hover disc's
    centre (radius 11, 2px stroke) and the arrow shrinks into it while it shows.
      appear    fades and scales .85 -> 1 (167ms out); leaving fades out (83ms) before `hidden`
      start     (burst) the arrow drops in from above with a soft landing (480ms) and the ring
@@ -568,14 +570,14 @@ html[data-scheme="dark"] #app {
    Exception, documented in the design doc: the arc uses `stroke-dashoffset` (paint only, one 28px
    SVG). Everything else is transform and opacity. */
 #app.placed.has-dl .actions {
-  left: calc(var(--menu-x) - 32px);
+  left: calc(var(--menu-x) - 28px);
 }
 
 .tb-dl {
   --tb-dl-g: 1;
   --tb-dl-tone: var(--bw-progress);
   position: relative;
-  margin-inline-end: var(--bw-space-0_5);
+  margin-inline-end: 0;
 }
 
 .tb-dl[hidden] {
@@ -963,25 +965,30 @@ html[data-scheme="dark"] #app {
 
 /* ---- Extensions button (view.ts buildExtensionsButton; docs/extensions.md) ----
    Left of the download button's slot, shown only while Rust says `extbtn.on` (an enabled extension
-   has a popup). Rust shrinks the pill by EXT_BUTTON_SLOT (32px) for it, so the actions group moves
-   left by another 32px and the menu button never moves. It enters and leaves like the download
+   has a popup). Rust shrinks the pill by EXT_BUTTON_SLOT (28px) for it, so the actions group moves
+   left by another 28px and the menu button never moves. It enters and leaves like the download
    button: fades and scales .85 -> 1 (167ms out), fades out (83ms) before `hidden`. */
 #app.placed.has-ext .actions {
-  left: calc(var(--menu-x) - 32px);
+  left: calc(var(--menu-x) - 28px);
 }
 
 #app.placed.has-ext.has-dl .actions {
-  left: calc(var(--menu-x) - 64px);
+  left: calc(var(--menu-x) - 56px);
 }
 
 .tb-ext {
-  margin-inline-end: var(--bw-space-0_5);
+  margin-inline-end: 0;
+}
+
+/* The Store's install pill keeps its 4px margin: STORE_BUTTON_SLOT (132px) is the 128px pill and it. */
+.tb-ext.is-store {
+  margin-inline-end: var(--bw-space-1);
 }
 
 /* On an extension's store listing: one compact accent pill, the puzzle and "Add to Bowser". Rust
    reserves STORE_BUTTON_SLOT (window.rs, 132px) for it: the pill is 128px and its 4px margin. */
 #app.placed.has-ext.has-store-ext .actions { left: calc(var(--menu-x) - 132px); }
-#app.placed.has-ext.has-store-ext.has-dl .actions { left: calc(var(--menu-x) - 164px); }
+#app.placed.has-ext.has-store-ext.has-dl .actions { left: calc(var(--menu-x) - 160px); }
 .tb-ext.is-store {
   display: inline-flex;
   align-items: center;

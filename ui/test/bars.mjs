@@ -33,7 +33,7 @@ test('the lists, defaults and limits match toolbar_prefs.rs', () => {
   assert.equal(bars.MAX_RIGHT_STATIC, Number(/pub const MAX_RIGHT_STATIC: usize = (\d+);/.exec(rust)[1]));
   assert.deepEqual(bars.BAR_KEYS, { address: 'toolbar_buttons', tabs: 'toolbar_tabs', panel: 'toolbar_panel' });
   for (const [bar, key] of Object.entries(bars.BAR_KEYS)) assert.match(rust, new RegExp(`Self::${bar[0].toUpperCase()}${bar.slice(1)} => "${key}"`), bar);
-  // The slot of one always-there button: the extensions button's, 32 px.
+  // The slot of one always-there button: the extensions button's, 28 px.
   assert.equal(bars.SLOT_PX, Number(/pub const EXT_BUTTON_SLOT: i32 = (\d+);/.exec(read(join(root, 'src', 'chrome_host', 'mod.rs')))[1]));
   // Today's address bar is the default: bookmark and new tab are opt-in.
   assert.ok(!bars.DEFAULT_ADDRESS.includes('bookmark') && !bars.DEFAULT_ADDRESS.includes('newtab'));

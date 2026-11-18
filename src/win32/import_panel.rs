@@ -85,11 +85,49 @@ pub fn open(owner: HWND) -> windows::core::Result<()> {
     }
 }
 
+/// The browsers the welcome's Import step offers by name (docs/design/welcome.md), by its wire key.
+pub(crate) const BROWSERS: [(&str, &str); 4] = [("chrome", "Chrome"), ("edge", "Edge"), ("brave", "Brave"), ("firefox", "Firefox")];
+
+/// One click from the welcome: imports `browser`'s bookmarks (and, for Chromium browsers, its
+/// search setting) straight from the profile this PC has, through the same preview and confirm as
+/// the panel. The Default profile goes first; with none, the panel says so and offers the file.
+pub(crate) fn import_from(owner: HWND, browser: &str) -> windows::core::Result<()> {
+    let Some(&(_, name)) = BROWSERS.iter().find(|(key, _)| *key == browser) else { return Ok(()) };
+    if browser == "firefox" {
+        return import_firefox_backup(owner);
+    }
+    let mut profiles: Vec<_> = import::detect_browser_profiles()
+        .into_iter()
+        .filter(|profile| profile.browser == name)
+        .filter_map(|profile| profile.bookmarks.map(|path| (profile.name, path)))
+        .collect();
+    profiles.sort_by_key(|(profile, _)| profile != "Default");
+    match profiles.into_iter().next() {
+        Some((_, path)) => import_bookmark_path(owner, path),
+        None => {
+            let _ = menu::track(
+                owner,
+                anchor(owner),
+                Menu {
+                    header: None,
+                    entries: vec![Entry::Item(Item::new(CANCEL, "Close", Icon::Close))],
+                    footer: format!("No {name} bookmarks were found on this PC."),
+                },
+            );
+            Ok(())
+        }
+    }
+}
+
 fn import_bookmark_file(owner: HWND) -> windows::core::Result<()> {
     show_stage(owner, "Step 1 of 5 - Detecting source data");
     let Some(path) = pick_file(owner) else {
         return Ok(());
     };
+    import_bookmark_path(owner, path)
+}
+
+fn import_bookmark_path(owner: HWND, path: PathBuf) -> windows::core::Result<()> {
     show_stage(owner, "Step 2 of 5 - Reading bookmarks");
     let (bookmarks, skipped) = match store::read_bookmark_file(&path) {
         Ok(bookmarks) => bookmarks,

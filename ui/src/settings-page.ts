@@ -21,7 +21,7 @@ import { mountProfiles, paintDisc } from './settings-profiles'; // --- profiles 
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
 import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
-import { searchEngineLabel } from './address-settings-logic';
+import { parseAddressSnapshot, searchEngineLabel } from './address-settings-logic';
 import { WINDOW_APPEARANCE_KEYS, WINDOW_PANEL_KEYS, resetWindowGroup, stepValue, windowGroupIsDefault } from './window-logic'; // --- window and panels (thread T9) ---
 // --- toolbars and feeds (thread T13) ---
 import { BAR_KEYS, DEFAULTS, itemsText } from './bars-logic';
@@ -37,6 +37,7 @@ import {
 // --- end layout ---
 import { mountPageToolsSection } from './page-tools-section'; // --- page tools (T7) ---
 import { mountPasswordsSection } from './passwords-section';
+import { mountWelcome } from './welcome'; // the first-run welcome (docs/design/welcome.md)
 import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
@@ -2187,7 +2188,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // Ctrl+F and / jump to the search field, as on Chrome's settings page. A `/` typed into any text
   // field (the startup pages list is a textarea of addresses) stays in that field.
   document.addEventListener('keydown', (event) => {
-    if (!store.root.hidden || event.isComposing) return;
+    if (!store.root.hidden || welcome.shown || event.isComposing) return;
     if ((event.key === 'f' && event.ctrlKey && !event.shiftKey && !event.altKey) || (event.key === '/' && !isTyping(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey)) {
       event.preventDefault();
       input.focus();
@@ -2211,6 +2212,31 @@ export function startSettingsPage(root: HTMLElement): void {
     if (snapshot && now - lastRefresh > 2000) { lastRefresh = now; cmd({ a: 'refresh' }); }
   });
 
+  // ---- the first-run welcome (docs/design/welcome.md) ---- shown instead of the sections while the
+  // tab is on `bowser://settings/welcome`. Its choices are the same commands Simple's rows send.
+  const welcome = mountWelcome({
+    setLook: (choice) => {
+      if (choice === 'system') sendThemeOption('theme_schedule', 'system');
+      else { sendThemeOption('theme_schedule', 'none'); sendThemeOption('theme_look', choice); }
+    },
+    setAccent: (hex) => change((d) => { d.themeAccent = hex; }),
+    // The blocking level is the protection panel's own command (Settings > Privacy uses the same one).
+    setBlocking: (on) => {
+      if (sendPanel('priv', { a: 'blocklevel', text: on ? 'ads' : 'none' }) && draft) draft.blockerEnabled = on;
+    },
+    send: (fields) => {
+      const sent = cmd(fields);
+      if (sent && fields.a === 'setdefault') pending += 1;
+      return sent;
+    },
+    openSettings: () => { showWelcome(false); go('', false, true); },
+  });
+  root.append(welcome.root);
+  const showWelcome = (on: boolean): void => {
+    if (on) { page.hidden = true; welcome.show(); }
+    else if (welcome.shown) { welcome.hide(); page.hidden = false; }
+  };
+
   // ---- Bowser's messages ----
   let wanted: SettingsSection | '' | null = null;
   const receive = (message: Inbound): void => {
@@ -2221,6 +2247,8 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     if (message.t === 'settingsgo') {
       store.hide();
+      if (message.s === 'welcome') { wanted = null; showWelcome(true); return; }
+      showWelcome(false);
       page.hidden = false;
       // Bowser moved the tab (a typed address, a menu pick): jump, as a navigation would.
       if (!snapshot) { wanted = message.s; return; }
@@ -2241,7 +2269,12 @@ export function startSettingsPage(root: HTMLElement): void {
       commandSections.receive(message);
       return;
     }
-    if (message.t === 'snap' && message.p === 'address') { addressSections.receive(message); return; } // --- address bar, search and bookmarks ---
+    if (message.t === 'snap' && message.p === 'address') { // --- address bar, search and bookmarks ---
+      addressSections.receive(message);
+      const address = parseAddressSnapshot(message.d);
+      if (address) welcome.engines(address.def, address.engines.map((engine) => engine.id));
+      return;
+    }
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);
     if (!parsed) { banner.hidden = false; banner.textContent = 'Settings could not be loaded.'; return; }
@@ -2253,6 +2286,7 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     snapshot = parsed;
     apply(parsed);
+    welcome.update(parsed);
     if (!entered) {
       entered = true;
       page.classList.add('bw-enter', 'is-rise', 'is-entered');

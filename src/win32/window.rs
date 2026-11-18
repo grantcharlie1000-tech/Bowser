@@ -651,9 +651,10 @@ struct WindowChrome {
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
     // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
-    // toolbar's slots: whether Downloads and Extensions may take theirs, and the room the always-there
-    // buttons at the end of the bar take (set by `html_sync`, read by `toolbar_slot`).
-    html_dl_allowed: bool,
+    // toolbar's slots: whether Downloads is pinned and Extensions may take its slot, and the room the
+    // always-there buttons at the end of the bar take (set by `html_sync`, read by `toolbar_slot`).
+    // Downloads takes its slot whenever its button shows (pinned, or a download needs it).
+    html_dl_pinned: bool,
     html_ext_allowed: bool,
     html_bar_extra: i32,
     /// CSS px of navigation room the address bar's list leaves empty; the pill grows left over it.
@@ -880,7 +881,7 @@ impl WindowChrome {
             html_extensions_private: false,
             html_ext_last: None,
             html_ext_rect: None,
-            html_dl_allowed: true,
+            html_dl_pinned: false,
             html_ext_allowed: true,
             html_bar_extra: 0,
             html_bar_lead: 0,
@@ -1442,7 +1443,7 @@ impl WindowChrome {
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
         // --- toolbars and feeds (thread T13) --- a button taken off the bar gives its room back.
-        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed || self.html_ext_slot == STORE_BUTTON_SLOT { self.html_ext_slot } else { 0 }) + self.html_bar_extra
+        self.html_dl_slot + (if self.html_ext_allowed || self.html_ext_slot == STORE_BUTTON_SLOT { self.html_ext_slot } else { 0 }) + self.html_bar_extra
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -4558,7 +4559,12 @@ unsafe extern "system" fn window_proc(
                     return LRESULT(0);
                 }
                 if let Ok(profile) = profile::active() {
-                    if profile.import_offer_pending() {
+                    if profile.import_offer_pending() && chrome_host::html_ui_enabled() && let Some(app) = app {
+                        // First run with the HTML chrome: the welcome (docs/design/welcome.md) takes the
+                        // blank first tab. It offers the import itself, so the offer counts as answered.
+                        let _ = profile.remember_import_offer_choice();
+                        super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
+                    } else if profile.import_offer_pending() {
                         // --- popup host (lane M) ---
                         let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
                         menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
@@ -9950,13 +9956,19 @@ fn html_sync(hwnd: HWND) {
     // --- toolbars and feeds (thread T13) --- the address bar's own list decides which buttons take room.
     let bar_extra = crate::toolbar_prefs::right_static_px(&settings);
     let bar_lead = crate::toolbar_prefs::left_free_px(&settings.toolbar_buttons);
-    let (dl_allowed, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
-    let _ = with_chrome(hwnd, |s| {
+    let (dl_pinned, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
+    let pin_moved = with_chrome(hwnd, |s| {
         s.html_bar_extra = bar_extra;
         s.html_bar_lead = bar_lead;
-        s.html_dl_allowed = dl_allowed;
         s.html_ext_allowed = ext_allowed;
-    });
+        std::mem::replace(&mut s.html_dl_pinned, dl_pinned) != dl_pinned
+    })
+    .unwrap_or(false);
+    if pin_moved {
+        // Pinning or unpinning Downloads shows or hides its button at once, not at the next download.
+        // Re-enters `html_sync` only when the slot moves, and by then the pin is already recorded.
+        super::downloads_ui::refresh(hwnd, &app);
+    }
     // --- end toolbars and feeds ---
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
     let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_room(&layout, dpi, slot, bar_lead).unwrap_or_default();

@@ -3213,10 +3213,11 @@ impl App {
         Self::post_tab_changed(hwnd, id);
     }
 
-    /// The settings page moved to another section: the tab's address follows (no title change).
+    /// The settings page moved to another section: the tab's address follows. The title changes only
+    /// when the section has its own (leaving or entering the welcome, docs/design/welcome.md).
     pub fn set_internal_section(app: &AppRef, id: TabId, page: crate::internal_page::InternalPage) {
         let url = page.url();
-        let (hwnd, edit, active) = {
+        let (hwnd, edit, active, retitled) = {
             let mut state = app.borrow_mut();
             let active = state.tab_model.active() == id;
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
@@ -3226,13 +3227,25 @@ impl App {
                 return;
             }
             tab.url = Some(url.clone());
+            let retitled = tab.title != page.title();
+            if retitled {
+                tab.title = page.title().to_owned();
+                state.tab_model.set_title(id, page.title());
+            }
             state.tab_model.set_url(id, Some(url.as_str()));
-            (state.hwnd, state.edit, active)
+            (state.hwnd, state.edit, active, retitled)
         };
         if active {
             win32::sync_address_input(hwnd, edit, id, &url, Self::settings(app).minimal_url);
+            if retitled {
+                Self::sync_window_title(app);
+            }
         }
-        Self::post_tab_changed_kind(hwnd, id, false, true);
+        if retitled {
+            Self::post_tab_changed(hwnd, id);
+        } else {
+            Self::post_tab_changed_kind(hwnd, id, false, true);
+        }
     }
 
     /// Settings saved on the settings page: sleeping tabs follow without a restart.

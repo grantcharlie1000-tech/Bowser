@@ -152,14 +152,22 @@ pub(crate) fn timer(owner: HWND, app: &AppRef) {
     flush(owner, app);
 }
 
-/// The button's state as the page should show it: while the bubble is open the button stays, even
-/// when everything is seen and nothing is running (it closes when the bubble does).
+/// The button's state as the page should show it. Pinned (Downloads is on the address bar's list,
+/// `toolbar_prefs`) it shows all the time, like Chrome's pinned button, and opens the bubble even
+/// with nothing in it. Unpinned it shows while a download needs it. While the bubble is open the
+/// button stays either way (it closes when the bubble does).
 fn button(owner: HWND, app: &AppRef) -> crate::downloads::Toolbar {
     let mut toolbar = App::downloads_toolbar(app);
-    if with(owner, |rt| rt.bubble.is_some()).unwrap_or(false) {
+    let pinned = crate::toolbar_prefs::address_has(&App::settings(app), "downloads");
+    if pinned || with(owner, |rt| rt.bubble.is_some()).unwrap_or(false) {
         toolbar.on = true;
     }
     toolbar
+}
+
+/// The address bar's list changed whether Downloads is pinned: sends the button's new state.
+pub(crate) fn refresh(owner: HWND, app: &AppRef) {
+    push_button(owner, app);
 }
 
 fn push_button(owner: HWND, app: &AppRef) {

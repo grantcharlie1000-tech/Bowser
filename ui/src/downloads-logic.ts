@@ -426,8 +426,8 @@ export function buttonTip(msg: Pick<DlButtonMsg, 'state' | 'n' | 'pct'>): string
   }
 }
 
-/** Rust and the page agree on the slot the button takes from the pill (28px + 4px gap). */
-export const DL_BUTTON_SLOT = 32;
+/** Rust and the page agree on the slot the button takes from the pill (the 28px button, edge to edge). */
+export const DL_BUTTON_SLOT = 28;
 
 // ---- Live patching ----
 

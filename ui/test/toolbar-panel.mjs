@@ -125,14 +125,14 @@ test('the filter narrows the commands, and the tab bar has its own list', () => 
 });
 
 test('Reset to default sends the default list, and is off while the bar already is', () => {
-  receive(snap('back,forward,reload,site-info,split,reader,extensions,downloads'));
+  receive(snap('back,forward,reload,site-info,split,reader,extensions'));
   const reset = root.querySelector('.tbp-reset');
   assert.equal(reset.disabled, true);
   receive(snap('back'));
   assert.equal(reset.disabled, false);
   sent.length = 0;
   reset.click();
-  assert.deepEqual(lastSet(), { v: 1, t: 'tbar', a: 'set', text: 'toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads' });
+  assert.deepEqual(lastSet(), { v: 1, t: 'tbar', a: 'set', text: 'toolbar_buttons=back,forward,reload,site-info,split,reader,extensions' });
 });
 
 test('a command whose icon Rust names shows that icon, on and off', () => {
