@@ -829,6 +829,7 @@ export const AREAS: readonly AreaSpec[] = [
   ] },
   { key: 'about', title: 'About', nav: 'About', lead: '', parts: ['updates', 'about'], groups: [
     group('updates', 'Updates', 'updates', ['autoUpdate', 'updateStatus']),
+    group('backup', 'Back up and restore', 'about', ['backupExport', 'backupImport']),
     group('about', 'About Bowser', 'about', ['version', 'file', 'reset']),
   ] },
 ];
@@ -1098,6 +1099,8 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'updateStatus', section: 'updates', label: 'Status', aria: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade Bowser updates' },
   { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release Version' },
   { id: 'file', section: 'about', label: 'Settings file', description: '', keywords: 'settings.txt advanced edit text shortcuts engines history workspace blocker updates Settings file Most settings are saved in this profile’s settings.txt, which you can also edit by hand. Kept in their own files: shortcuts and command chains, search engines, the history switch, workspace rules, and blocker rules and lists. Automatic updates are shared by all profiles.' },
+  { id: 'backupExport', section: 'about', label: 'Export browsing data', aria: 'Export browsing data to a file', description: 'Cookies, saved passwords, history, bookmarks and settings in one file, locked with a password you choose.', keywords: 'backup back up export save file reinstall uninstall move new pc computer cookies passwords history bookmarks settings sign-ins encrypted password' },
+  { id: 'backupImport', section: 'about', label: 'Import browsing data', aria: 'Import browsing data from a backup file', description: 'Adds the backup’s cookies and passwords, replaces this profile’s history, bookmarks and settings with its own, then closes and reopens Bowser. Close Bowser’s other windows first.', keywords: 'restore import backup file reinstall uninstall move new pc computer cookies passwords history bookmarks settings open' },
   { id: 'reset', section: 'about', label: 'Reset', aria: 'Reset settings', description: '', keywords: 'defaults restore Restores defaults factory start over tracking prevention Reset settings Puts layout, appearance, toolbars, tabs, start page, address bar, search engines, bookmarks bar, page tools, feeds, blocking and website appearance, performance, downloads and translation back to their defaults. Tracking prevention goes back to its default the next time Bowser starts. Not changed: how long history is kept, your history and bookmarks, the Keyboard section and Quick commands, extensions, site permissions and updates.' },
   { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: '', keywords: 'default browser make bowser windows handler http https web links Default browser Open links from other apps in Bowser.' },
 ];
@@ -1287,3 +1290,18 @@ export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' 
   return { title, detail, action: 'check', busy: false, tone: s.lastCheck === 'failed' ? 'warn' : 'ok' };
 }
 
+
+// --- back up and restore --- (Rust: src/backup, `chrome_host::settings` `backupexport` / `backupimport`)
+
+/** A new backup's password, in characters (Rust's `backup::MIN_PASSWORD_CHARS` and its ceiling). */
+export const MIN_BACKUP_PASSWORD = 8;
+export const MAX_BACKUP_PASSWORD = 1024;
+
+/** Why a new backup's password cannot be used yet, or `null` when it can. */
+export function backupPasswordProblem(password: string, repeat: string): string | null {
+  const length = [...password].length;
+  if (length < MIN_BACKUP_PASSWORD) return `Use a password of at least ${MIN_BACKUP_PASSWORD} characters.`;
+  if (length > MAX_BACKUP_PASSWORD) return 'That password is too long.';
+  if (password !== repeat) return 'The two passwords are different.';
+  return null;
+}
