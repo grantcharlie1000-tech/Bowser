@@ -98,7 +98,7 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
     '', 'page load progress bar spinner favicon indicator loading Page load progress How a tab shows that its page is loading.'),
   toggle('tabs_wheel_switch', 'bar', false, 'Wheel switch', '', 'switch tabs scroll wheel mouse Switch tabs by scrolling The mouse wheel over the tab bar switches to the next or previous tab.'),
   toggle('tabs_minimise_active', 'bar', false, 'Click to previous', '', 'minimize minimise active tab click previous cycling Minimise the active tab Clicking the active tab goes back to the tab you used before it.'),
-  toggle('tabs_title_notifications', 'bar', true, 'Title counts', '', 'page title notifications count badge Detect page title notifications A title such as “(3) Inbox” puts its count on the tab.'),
+  toggle('tabs_title_notifications', 'bar', true, 'Title alerts', '', 'page title notifications count alert Detect page title notifications A background tab whose title gains a count, such as “(3) Inbox”, gets the unread dot.'),
   toggle('tabs_unread_indicator', 'bar', true, 'Unread dots', '', 'unread indicator dot background Show unread indicators A tab that changed while you were elsewhere carries a dot until you open it.'),
   toggle('tabs_dim_hibernated', 'bar', true, 'Dim sleeping', '', 'dim icon hibernated sleeping tabs Dim the icon of hibernated tabs A tab whose page is asleep shows a dimmed icon.'),
   number('tabs_inactive_days', 'bar', 0, 0, 365, 'days', 'Inactive days', '', 'inactive tabs days old unused threshold Inactive tabs threshold Tabs not used for this many days are shown dimmed.', 'Off'),

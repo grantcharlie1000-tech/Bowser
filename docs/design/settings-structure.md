@@ -77,7 +77,7 @@ Shown rows first, then More (in brackets):
 | | Bookmarks bar | [Groups on bar, Bar folder, Bar position, Bar display, Pin groups] |
 | | Window | [Rounded page, Auto-hide, Hidden bars, Full screen, Animation, Steppers, Fade inactive, Scrollbars, Plain icons, Reset] |
 | | Panels | [Close button, Folder counts, Auto-close, Reset] |
-| **Tabs** | Tab bar (`tabs`) | Tab position (Top / Side) [Scroll tabs, Wheel switch, Tight when max, Active width, Load progress, Click to previous, Title counts, Unread dots, Dim sleeping, Inactive days, Preview images, Preview memory] |
+| **Tabs** | Tab bar (`tabs`) | Tab position (Top / Side) [Scroll tabs, Wheel switch, Tight when max, Active width, Load progress, Click to previous, Title alerts, Unread dots, Dim sleeping, Inactive days, Preview images, Preview memory] |
 | | New tabs | New tab page, Page address, New tab position [Background, Duplicate, Focus page] |
 | | Groups and workspaces (`stacks`) | Auto group, Workspaces, Rules (sub-page) [Edge split, Tile titles, Tight tiles, Workspace wheel, Tab counts] |
 | | Start page (`startpage`) | Titles, Tile size, Dashboard [Start group, Add button, Columns, Reorder, Widget columns, Height, Background, Colour, Rearrange] |

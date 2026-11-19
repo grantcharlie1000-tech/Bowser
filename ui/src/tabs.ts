@@ -46,7 +46,7 @@ import { blockDropIndex, clampBlock, groupDragAnnouncement, groupMoveBefore, gro
 // --- end group drag ---
 // --- tab options (Settings > Tabs) ---
 import {
-  clickSelection, loadMark, lockedWidth, markedName, notifyLabel, pruneSelection, reloadLabel, reloadRemaining, stepTab, stripClasses, wheelSteps,
+  clickSelection, loadMark, lockedWidth, markedName, pruneSelection, reloadLabel, reloadRemaining, stepTab, stripClasses, wheelSteps,
   type LoadIndicatorChoice,
 } from './tab-marks-logic';
 // --- end tab options ---
@@ -94,7 +94,6 @@ export interface TabNode {
   bar?: HTMLSpanElement;
   ring?: HTMLSpanElement;
   dot?: HTMLSpanElement;
-  badge?: HTMLSpanElement;
   rl?: HTMLSpanElement;
   /** Seconds left in the tab's reload when the strip last heard (and when), so the label can count down locally. */
   rlFrom?: number;
@@ -270,14 +269,14 @@ export function createTab(id: number): TabNode {
 }
 
 /** A mark node of a tab: created and put before `before` the first time, dropped when the mark goes. */
-function mark(n: TabNode, key: 'bar' | 'ring' | 'dot' | 'badge' | 'rl', on: boolean, parent: HTMLElement, before: Node | null): HTMLSpanElement | undefined {
+function mark(n: TabNode, key: 'bar' | 'ring' | 'dot' | 'rl', on: boolean, parent: HTMLElement, before: Node | null): HTMLSpanElement | undefined {
   const have = n[key];
   if (!on) {
     if (have) { have.remove(); delete n[key]; }
     return undefined;
   }
   if (have) return have;
-  const node = el('span', key === 'bar' ? 'loadbar' : key === 'ring' ? 'ring' : key === 'dot' ? 'unread' : key === 'badge' ? 'notify' : 'rl');
+  const node = el('span', key === 'bar' ? 'loadbar' : key === 'ring' ? 'ring' : key === 'dot' ? 'unread' : 'rl');
   node.setAttribute('aria-hidden', 'true');
   parent.insertBefore(node, before);
   n[key] = node;
@@ -318,9 +317,10 @@ export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: str
   if (ring) ring.style.setProperty('--pct', String(item.pct ?? 0));
   const bar = mark(n, 'bar', loading === 'bar', n.root, null);
   if (bar) bar.style.setProperty('--pct', String((item.pct ?? 0) / 100));
-  mark(n, 'dot', item.unread === true, n.root, n.audio);
-  const badge = mark(n, 'badge', item.notify !== undefined, n.root, n.audio);
-  if (badge) badge.textContent = notifyLabel(item.notify ?? 0);
+  // The one notification: a dot on the favicon's corner, on every tab shape (row, pinned tile, narrow tab).
+  const unread = item.unread === true;
+  mark(n, 'dot', unread, n.img.parentElement ?? n.root, null);
+  n.root.classList.toggle('unread-tab', unread);
   const rl = mark(n, 'rl', item.rl !== undefined, n.root, n.audio);
   if (rl && item.rl !== undefined) {
     n.rlFrom = item.rl;

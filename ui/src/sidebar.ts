@@ -12,7 +12,7 @@ import { itemIcon } from './bars-logic'; // --- toolbars and feeds (thread T13) 
 import { DRAG_ATTR } from './view';
 import { beforeId, buildEntries, dragScrollDelta, focusHeir, groupStepBefore, groupUnits, privateTabName, revealKey } from './tabs-logic';
 // --- tab options ---
-import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
+import { clickSelection, loadMark, markedName, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
 import { guardTitle } from './spoiler-guard'; // --- spoiler guard ---
 import {
@@ -49,7 +49,6 @@ export interface SidebarTabNode {
   shift: number;
   // --- tab options --- created only while the row needs them.
   dot?: HTMLSpanElement;
-  badge?: HTMLSpanElement;
   /** The page load bar along the row or the ring on the favicon (tabs_load_indicator `bar`/`favicon`). */
   load?: HTMLSpanElement;
   // --- end tab options ---
@@ -116,18 +115,15 @@ function setFace(node: SidebarTabNode, uri: string | undefined, indicator: LoadI
   node.load.style.setProperty('--pct', String(load === 'bar' ? pct / 100 : pct));
 }
 
-/** The marks a row can carry (Settings > Tabs): the unread dot and the notification count live beside the mute and marker flags. */
-function sideMark(node: SidebarTabNode, key: 'dot' | 'badge', on: boolean): HTMLSpanElement | undefined {
-  const have = node[key];
+/** The row's one notification: an unread dot on the favicon's corner, created while the row needs it. */
+function sideDot(node: SidebarTabNode, on: boolean): void {
   if (!on) {
-    if (have) { have.remove(); delete node[key]; }
-    return undefined;
+    if (node.dot) { node.dot.remove(); delete node.dot; }
+    return;
   }
-  if (have) return have;
-  const made = el('span', key === 'dot' ? 'side-unread' : 'side-notify');
-  node.mute.parentElement?.insertBefore(made, node.mute);
-  node[key] = made;
-  return made;
+  if (node.dot) return;
+  node.dot = el('span', 'side-unread');
+  node.face.append(node.dot);
 }
 
 export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>, picked = false, indicator: LoadIndicatorChoice = 'spinner'): void {
@@ -135,9 +131,9 @@ export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, fa
   const label = guardTitle(item.title) || 'New tab'; // --- spoiler guard ---
   node.title.textContent = label;
   // --- tab options ---
-  sideMark(node, 'dot', item.unread === true);
-  const badge = sideMark(node, 'badge', item.notify !== undefined);
-  if (badge) badge.textContent = notifyLabel(item.notify ?? 0);
+  const unread = item.unread === true;
+  sideDot(node, unread); // the one notification: a dot on the favicon's corner
+  node.root.classList.toggle('unread-tab', unread);
   node.root.classList.toggle('asleep', item.asleep === true);
   node.root.classList.toggle('idle', item.idle === true);
   node.root.classList.toggle('picked', picked);

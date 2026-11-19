@@ -585,26 +585,30 @@
   box-shadow: inset 0 0 0 2px var(--bw-accent);
 }
 
-.strip .unread {
-  flex: none;
-  width: 6px;
-  height: 6px;
+/* The one notification: a dot on the favicon's corner, ringed in the tab's own surface so it reads on any tab.
+   It rides the favicon, so every tab shape keeps it: a full row, a narrow tab and a pinned tile. A tab that
+   changed while you were elsewhere also reads brighter until you open it. */
+.strip .ico > .unread {
+  display: block;
+  position: absolute;
+  top: -3px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--bw-accent);
+  box-shadow: 0 0 0 2px var(--bw-dot-ring, var(--bw-window-opaque));
+  pointer-events: none;
+  animation: bw-notify-pop var(--bw-dur-base) var(--bw-ease-out);
 }
+.strip .tab.active .ico > .unread { --bw-dot-ring: var(--bw-tab-raised); }
+.strip .tab.unread-tab .title { color: var(--bw-text); }
 
-.strip .notify {
-  flex: none;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 var(--bw-space-1);
-  border-radius: var(--bw-r-pill);
-  background: var(--bw-accent);
-  color: var(--bw-on-accent);
-  font-size: var(--bw-text-caption);
-  line-height: 16px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
+@keyframes bw-notify-pop {
+  from { opacity: 0; transform: scale(0.5); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .strip .ico > .unread { animation: none; }
 }
 
 .strip .rl {
@@ -614,24 +618,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* A pinned tile has no room for words: the count becomes a corner badge, the countdown is in the tooltip. */
-.strip .tab.pinned .rl,
-.strip .tab.pinned .unread { display: none; }
-.strip .tab.pinned .notify {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 12px;
-  height: 12px;
-  padding: 0 2px;
-  font-size: var(--bw-text-caption);
-  line-height: 12px;
-}
+/* A pinned tile has no room for words: the countdown is in the tooltip. */
+.strip .tab.pinned .rl { display: none; }
 
-/* Narrow inactive tabs keep room for the title: the count and the countdown go, the dot stays. */
+/* Narrow inactive tabs keep room for the title: the countdown goes, the favicon's dot stays. */
 @container (max-width: 111.9px) {
-  .strip .tab:not(.active) .rl,
-  .strip .tab:not(.active) .notify { display: none; }
+  .strip .tab:not(.active, .pinned) .rl { display: none; }
 }
 
 /* Page load progress: a line along the bottom of the tab, or a ring around the favicon. */
