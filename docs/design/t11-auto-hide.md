@@ -10,8 +10,8 @@ Behind More options: **Bars to hide** (`auto_hide_bars`: tabs, address, bookmark
 - Rules in `src/auto_hide.rs` (settings, which bars hide, the reveal/hide state machine on an explicit clock, sensor
   geometry); geometry in `chrome/layout.rs` (`compute_*_auto_hide`, `auto_hide_overlay`); the window side in
   `win32/window/auto_hide.rs`.
-- Hidden bars leave the layout: the page is laid out over them and never resizes when a bar appears. A revealed bar is the
-  same HTML view in its usual place, raised above the page windows (`ChromeHost::raise_to_top`), with the solid palette.
+- Hidden bars leave the layout: the page is laid out over them. A revealed bar is laid out again in its usual place and
+  pushes the page aside (one relayout when it appears and one when it hides; no slide), with the solid palette.
   With auto-hide off the layouts are field-for-field what they were (`auto_hide_off_changes_nothing`).
 - Pointer detection (plan A): a thin child window per hidden bar's edge, on the page's edge (1 px at a screen edge with no
   monitor beyond, else 4 DIP), `WS_EX_NOACTIVATE` behaviour via `MA_NOACTIVATE`, made after first paint when first needed. No
@@ -34,7 +34,7 @@ Auto-hide off: nothing is created, no timer, no hook; `sync_sensors` and `after_
 ## Real-app checks (not run: headless only)
 
 1. Switch on, hide tabs+address: page fills the window; the top edge reveals both after ~150 ms and hides ~500 ms after leaving.
-2. Reveal does not reflow the page (watch a page with a resize listener).
+2. Reveal pushes the page aside and hiding gives the room back (watch a page with a resize listener: one resize each way).
 3. Raised HTML bars sit above the page at 100% and 150%; vertical layout sidebar from the left edge.
 4. Ctrl+L / Ctrl+T show the bar and it stays until focus returns to the page. Menus from the bar keep it up.
 5. F11 covers the taskbar, restores size and maximised state; a video's full-screen button hides every bar; Esc ends it.

@@ -239,7 +239,7 @@ test('a font-size is a type token or scales with --bw-font-scale, except glyphs 
     ['menu.css', ['.html-menu-badge']],
     ['panels.css', ['.pn-favicon']],
     ['rail.css', ['.rb-tile', '.rb-emoji', '.rb-count']],
-    ['settings.css', ['.sp-badge', '.sp-avatar', '.sp-profile-swatch']],
+    ['settings.css', ['.sp-avatar', '.sp-profile-swatch']],
     ['sidebar.css', ['.side-workspace-emoji']],
     ['start.css', ['.sp-letter']],
   ]);

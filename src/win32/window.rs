@@ -139,11 +139,10 @@ const WM_SIDEBAR_RESIZE_TIMER: usize = 0xB05B;
 /// while the flyout is open. Idle chrome does not keep it.
 const WM_SIDEBAR_FLYOUT_TIMER: usize = 0xB0A9;
 const SIDEBAR_FLYOUT_RAISE_MS: u32 = 400;
-/// Slow check, armed only while a settings, history or split page host is hidden, that closes a
-/// host hidden for `PAGE_IDLE_CLOSE`. The next use creates it again.
+/// Wakes at the next hidden page host's idle or memory-pressure check.
 const WM_PAGE_IDLE_TIMER: usize = 0xB05C;
-const PAGE_IDLE_CHECK_MS: u32 = 30_000;
 const PAGE_IDLE_CLOSE: Duration = Duration::from_secs(180);
+const PAGE_IDLE_RETRY: Duration = Duration::from_secs(30);
 /// Posted once after chrome state changed (see `mark_chrome_dirty`). The HTML views and the page
 /// hosts are brought up to date from it; `WM_PAINT` only draws.
 const WM_CHROME_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x84;
@@ -381,26 +380,25 @@ impl PaintPrefs {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PageIdle {
     seen: bool,
-    hidden_since: Option<Instant>,
+    check_at: Option<Instant>,
 }
 
 /// Advances `idle` for a host that is `shown` (or not) at `now`. True when the host has been hidden
-/// for `PAGE_IDLE_CLOSE` and should close; its clock then starts over. `may_close` is asked only
-/// once that time has passed; when it says no the host stays (suspended) and its clock keeps
-/// running, so a later check can still close it. Pure apart from `may_close`.
+/// for `PAGE_IDLE_CLOSE` and should close. When it must stay suspended, schedule the next
+/// memory-pressure check without postponing it on unrelated chrome updates.
 fn page_idle_step(idle: &mut PageIdle, shown: bool, now: Instant, may_close: impl FnOnce() -> bool) -> bool {
     if shown {
-        *idle = PageIdle { seen: true, hidden_since: None };
+        *idle = PageIdle { seen: true, check_at: None };
         return false;
     }
-    if !idle.seen {
+    if !idle.seen || now < *idle.check_at.get_or_insert(now + PAGE_IDLE_CLOSE) {
         return false;
     }
-    let since = *idle.hidden_since.get_or_insert(now);
-    if now.saturating_duration_since(since) >= PAGE_IDLE_CLOSE && may_close() {
+    if may_close() {
         *idle = PageIdle::default();
         return true;
     }
+    idle.check_at = Some(now + PAGE_IDLE_RETRY);
     false
 }
 
@@ -619,6 +617,10 @@ struct WindowChrome {
     /// A chrome view failed for good, so its region is painted natively instead of waiting for it
     /// (toolbar, tab strip, rail).
     html_failed: [bool; 3],
+    /// Until when a view whose host has not started yet may keep waiting for its HTML page instead
+    /// of showing the native controls. Covers the engine environment's startup, which no
+    /// `chrome_recovery` deadline watches; once the hosts begin, those deadlines take over.
+    html_wait_until: Option<Instant>,
     chrome_lifetimes: chrome_recovery::Lifetimes,
     html_state_building: [bool; 3],
     html_initial_native_input: Option<chrome_recovery::NativeInput>,
@@ -724,6 +726,8 @@ struct WindowChrome {
     paint_prefs: PaintPrefs,
     /// Idle clocks of the split, settings and history page hosts.
     page_idle: [PageIdle; 4],
+    page_idle_deadline: Option<Instant>,
+    import_offer_waiting_for_page: bool,
     /// The flyout panel's controller was requested (on first use, see `ensure_flyout_panel`), and
     /// whether it failed for good.
     flyout_requested: bool,
@@ -771,7 +775,6 @@ impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
         let mut surface = ChromeSurface::new(width, height, dpi);
         let _ = surface.set_rail_snap(!animations_enabled(), Instant::now());
-        for view in 0..3 { surface.set_html_pending(view, false); }
         let mut recovery = surface_recovery::Recovery::new();
         if let Some(error) = surface.allocation_error() {
             recovery.fail(surface_recovery::Fault::Storage(error));
@@ -861,6 +864,7 @@ impl WindowChrome {
             html_page_ready: false,
             html_toolbar_active: false,
             html_failed: [false; 3],
+            html_wait_until: chrome_host::html_ui_enabled().then(|| Instant::now() + HTML_WAIT_LIMIT),
             chrome_lifetimes: chrome_recovery::Lifetimes::new(),
             html_state_building: [false; 3],
             html_initial_native_input: None,
@@ -919,6 +923,8 @@ impl WindowChrome {
             chrome_sync_posted: false,
             paint_prefs: PaintPrefs::default(),
             page_idle: [PageIdle::default(); 4],
+            page_idle_deadline: None,
+            import_offer_waiting_for_page: false,
             flyout_requested: false,
             flyout_failed: false,
             hover_requested: false,
@@ -1125,6 +1131,9 @@ impl WindowChrome {
     }
     fn relayout(&mut self, request: RelayoutRequest<'_>) {
         let RelayoutRequest { w, h, dpi, active, maximised, arrangement, density, sidebar_width, centred_address_bar, font_scale, ui_font } = request;
+        // What the chrome looked like before, to tell a change of design (tabs moved to a side, a bar
+        // hidden or floated) from a plain resize or a sidebar drag.
+        let before = (self.last_relayout.as_ref().map(|inputs| inputs.arrangement), self.ah.plan, self.layout.float_island.is_empty(), self.layout.float_band.is_empty());
         self.client = (w, h);
         self.dpi = dpi.max(96);
         self.last_relayout = Some(RelayoutInputs {
@@ -1152,12 +1161,22 @@ impl WindowChrome {
         // the page widens over them (`layout::compute_arranged_auto_hide`), and the layout with
         // every bar shown says where a revealed bar floats.
         let plan = crate::auto_hide::plan_for(self.ah.hidden, arrangement.tabs, arrangement.tab_bar); // A hidden tab bar hides nothing
-        let hide = plan.layout();
+        // A revealed bar takes its own place in the layout and pushes the page aside, as if it were
+        // never hidden; it leaves the layout again when it hides (`auto_hide::apply_shown`).
+        let revealed = self.ah.machine.shown();
+        let mut hide = plan.layout();
+        if revealed.contains(crate::auto_hide::Zone::Sidebar) { hide.sidebar = false; }
+        if revealed.contains(crate::auto_hide::Zone::Top) { hide.top = false; }
         let (layout, sidebar) = layout::compute_arranged_auto_hide(
             arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
             i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(), hide,
         );
-        let layout = if self.ah.rail_hidden { layout::without_rail(layout, self.dpi, maximised) } else { layout };
+        let mut layout = if self.ah.rail_hidden { layout::without_rail(layout, self.dpi, maximised) } else { layout };
+        // --- floating zen sidebar --- the window buttons' strip along the top edge pushes the page
+        // down while it is out, like any revealed bar.
+        if revealed.contains(crate::auto_hide::Zone::Top) && !layout.float_band.is_empty() {
+            layout.viewport.top = layout.viewport.top.max(layout.float_band.bottom).min(layout.viewport.bottom);
+        }
         let shown = if hide.is_off() {
             None
         } else {
@@ -1228,6 +1247,13 @@ impl WindowChrome {
         self.sync_html_bounds();
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
+        // The overlay keeps every pixel it is not told to repaint, so a new design (tabs from the top to a
+        // side and back, a bar hidden or floated) repaints all of it; otherwise the old chrome's pieces
+        // stay on screen wherever the new one draws nothing.
+        let after = (Some(arrangement), self.ah.plan, self.layout.float_island.is_empty(), self.layout.float_band.is_empty());
+        if before != after || was_vertical != self.sidebar.is_some() {
+            self.surface_recovery.full_repaint = true;
+        }
         if self.surface_recovery.can_draw() {
             match self.surface.try_resize(w, h, self.dpi) {
                 Ok(repaint) => self.surface_recovery.full_repaint |= repaint,
@@ -1445,14 +1471,38 @@ impl WindowChrome {
     fn sync_html_rail_bounds(&mut self) {
         let region = self.html_rail_region();
         self.surface.set_html_rail(region.is_some());
-        self.surface.set_html_pending(2, false);
+        let waiting = self.html_waiting(2);
+        self.surface.set_html_pending(2, waiting);
+    }
+    /// The toolbar, tab row or rail (`index` 0, 1, 2) is still waiting for its HTML page: the HTML
+    /// chrome is on, that view has not failed and its page is not up yet. Its region then shows
+    /// only the window colour and takes no native clicks or hovers, so a starting window never
+    /// shows the native design (its tabs, address field, buttons or hover card) for the moment the
+    /// HTML chrome takes to load. A view that fails, or stalls past its `chrome_recovery` deadline
+    /// (or `HTML_WAIT_LIMIT` before its host starts), falls back to the native controls.
+    fn html_waiting(&self, index: usize) -> bool {
+        if !chrome_host::html_ui_enabled() || self.html_failed[index] {
+            return false;
+        }
+        let (live, hidden) = match index {
+            0 => (self.html_region().is_some(), self.ah.visually_hidden(self.toolbar_zone())),
+            1 => (
+                self.html_tab_region().is_some(),
+                if self.sidebar.is_some() { self.ah.sidebar_hidden() } else { self.ah.top_hidden() },
+            ),
+            _ => (self.html_rail_region().is_some(), false),
+        };
+        !live
+            && !hidden
+            && (self.chrome_lifetimes.armed(index) || self.html_wait_until.is_some_and(|until| Instant::now() < until))
     }
     /// Moves the HTML tab strip over the tab row and hides it when there is none. Also tells the
     /// surface to leave the row to the page.
     fn sync_html_tabs_bounds(&mut self) {
         let region = self.html_tab_region();
         self.surface.set_html_tabs(region.is_some());
-        self.surface.set_html_pending(1, false);
+        let waiting = self.html_waiting(1);
+        self.surface.set_html_pending(1, waiting);
     }
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
@@ -1471,7 +1521,8 @@ impl WindowChrome {
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
-        self.surface.set_html_pending(0, false); // --- auto-hide (T11) ---
+        let waiting = self.html_waiting(0);
+        self.surface.set_html_pending(0, waiting);
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
@@ -1925,6 +1976,14 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     let Some(app) = app else {
         return;
     };
+    // Navigation and tab selection queue this sync. Show the offer from its own message so it
+    // can open the welcome page or the native menu outside the sync.
+    if with_chrome(hwnd, |s| s.import_offer_waiting_for_page).unwrap_or(false)
+        && import_offer_ready(app)
+        && unsafe { SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 1, None) } != 0
+    {
+        let _ = with_chrome(hwnd, |s| s.import_offer_waiting_for_page = false);
+    }
     // --- split view ---
     super::split_ui::sync(hwnd, app);
     super::settings_page::sync(hwnd, app);
@@ -1950,9 +2009,8 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     }
 }
 
-/// Times the split, settings and history page hosts while they are hidden and closes one hidden for
-/// `PAGE_IDLE_CLOSE`; its next show creates it again. A pointer drag holds the clocks (the split
-/// host's drop card follows drags). The slow timer runs only while a clock does.
+/// Tracks hidden page hosts and schedules one wake at the earliest pending check. A pointer drag
+/// defers cleanup so the split host's drop card stays available.
 fn track_idle_pages(hwnd: HWND) {
     let shown = [
         super::split_ui::picker_pane(hwnd).is_some() || super::split_ui::private_page_shown(hwnd),
@@ -1962,7 +2020,7 @@ fn track_idle_pages(hwnd: HWND) {
     ];
     let now = Instant::now();
     let dragging = unsafe { GetCapture() == hwnd };
-    let Some((close, running)) = with_chrome(hwnd, |s| {
+    let Some(close) = with_chrome(hwnd, |s| {
         let dragging = dragging || s.drag.is_some() || s.vertical_drag.is_some();
         let mut close = [false; 4];
         for (index, idle) in s.page_idle.iter_mut().enumerate() {
@@ -1976,7 +2034,25 @@ fn track_idle_pages(hwnd: HWND) {
                 });
             }
         }
-        (close, s.page_idle.iter().any(|idle| idle.hidden_since.is_some()))
+        let deadline = s.page_idle.iter().filter_map(|idle| idle.check_at).min().map(|due| {
+            if dragging && due <= now {
+                s.page_idle_deadline.filter(|&armed| armed > now).unwrap_or(now + PAGE_IDLE_RETRY)
+            } else {
+                due
+            }
+        });
+        if deadline != s.page_idle_deadline {
+            s.page_idle_deadline = unsafe {
+                if let Some(due) = deadline {
+                    let delay = due.saturating_duration_since(now).as_millis() as u32 + 1;
+                    (SetTimer(Some(hwnd), WM_PAGE_IDLE_TIMER, delay, None) != 0).then_some(due)
+                } else {
+                    let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
+                    None
+                }
+            };
+        }
+        close
     }) else {
         return;
     };
@@ -1991,13 +2067,6 @@ fn track_idle_pages(hwnd: HWND) {
             _ => super::downloads_page::close(hwnd),
         }
         perf_event(hwnd, "page_host_idle_closed");
-    }
-    unsafe {
-        if running {
-            let _ = SetTimer(Some(hwnd), WM_PAGE_IDLE_TIMER, PAGE_IDLE_CHECK_MS, None);
-        } else {
-            let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
-        }
     }
 }
 
@@ -4419,8 +4488,21 @@ unsafe extern "system" fn window_proc(
             // Only an HTML chrome run starts or fails these; in native mode they do nothing.
             WM_HTML_CHROME_START => {
                 if chrome_host::html_ui_enabled() {
+                    if let Some(until) = with_chrome(hwnd, |s| s.html_wait_until).flatten() {
+                        let left = until.saturating_duration_since(Instant::now()).as_millis().clamp(1, u32::MAX as u128) as u32;
+                        if SetTimer(Some(hwnd), HTML_WAIT_TIMER, left, None) == 0 {
+                            // No timer: never risk plain chrome with nothing to end it.
+                            let _ = with_chrome(hwnd, |s| s.html_wait_until = None);
+                        }
+                    }
                     start_html_chrome(hwnd);
                 }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == HTML_WAIT_TIMER => {
+                let _ = KillTimer(Some(hwnd), HTML_WAIT_TIMER);
+                let _ = with_chrome(hwnd, |s| s.html_wait_until = None);
+                repaint(hwnd);
                 LRESULT(0)
             }
             chrome_recovery::INPUT_RELEASED => {
@@ -4584,43 +4666,36 @@ unsafe extern "system" fn window_proc(
             // --- end popup host ---
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
-                if let Some(app) = app {
-                    // A blank new tab (the start page) never loads a web page, so it never becomes
-                    // "usable": it is ready as it is. Without this the first-run welcome waited forever.
-                    let ready = App::active_tab_is_usable(app) || App::tab_is_blank(app, App::active_tab_id(app));
-                    if !ready {
-                        let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 500, None);
-                        return LRESULT(0);
-                    }
-                } else {
+                let (Some(app), Ok(profile)) = (app, profile::active()) else {
+                    return LRESULT(0);
+                };
+                if !profile.import_offer_pending() {
                     return LRESULT(0);
                 }
-                if let Ok(profile) = profile::active() {
-                    if profile.import_offer_pending() && chrome_host::html_ui_enabled() && let Some(app) = app {
-                        // First run with the HTML chrome: the welcome (docs/design/welcome.md) takes the
-                        // blank first tab, and only a blank one: a first launch that opens a page (a
-                        // link from another app, --open-url) keeps that page in front, and the welcome
-                        // waits for the next launch. It offers the import itself, so showing it answers
-                        // the offer.
-                        if App::tab_is_blank(app, App::active_tab_id(app)) {
-                            let _ = profile.remember_import_offer_choice();
-                            super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
-                        }
-                    } else if profile.import_offer_pending() {
-                        // --- popup host (lane M) ---
-                        let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
-                        menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
-                            header: None,
-                            entries: import_offer_entries(),
-                            footer: IMPORT_OFFER_FOOTER.into(),
-                        }, "import-offer", move |_, selected| {
-                            let _ = profile.remember_import_offer_choice();
-                            if selected.is_some_and(|item| item.id == 1) {
-                                let _ = import_panel::open(hwnd);
-                            }
-                        });
-                        // --- end popup host ---
+                if !import_offer_ready(app) {
+                    let _ = with_chrome(hwnd, |s| s.import_offer_waiting_for_page = true);
+                    perf_event(hwnd, "import_offer_waiting_for_page");
+                    return LRESULT(0);
+                }
+                if chrome_host::html_ui_enabled() {
+                    // The welcome takes a blank first tab. A launch with a URL keeps it in front
+                    // and leaves the welcome for the next launch.
+                    if App::tab_is_blank(app, App::active_tab_id(app)) {
+                        let _ = profile.remember_import_offer_choice();
+                        super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
                     }
+                } else {
+                    let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
+                    menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
+                        header: None,
+                        entries: import_offer_entries(),
+                        footer: IMPORT_OFFER_FOOTER.into(),
+                    }, "import-offer", move |_, selected| {
+                        let _ = profile.remember_import_offer_choice();
+                        if selected.is_some_and(|item| item.id == 1) {
+                            let _ = import_panel::open(hwnd);
+                        }
+                    });
                 }
                 LRESULT(0)
             }
@@ -4675,6 +4750,9 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == WM_PAGE_IDLE_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
+                let _ = with_chrome(hwnd, |s| s.page_idle_deadline = None);
+                perf_event(hwnd, "page_host_idle_timer_fired");
                 track_idle_pages(hwnd);
                 LRESULT(0)
             }
@@ -5005,6 +5083,25 @@ unsafe extern "system" fn window_proc(
     }
 }
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
+    let found = native_hit(hwnd, x, y);
+    let waiting = with_chrome(hwnd, |s| [s.html_waiting(0), s.html_waiting(1), s.html_waiting(2)]).unwrap_or([false; 3]);
+    inert_while_waiting(found, waiting)
+}
+/// A native control whose region is still waiting for its HTML page is not drawn
+/// (`WindowChrome::html_waiting`), so it must not answer clicks or hovers either (a hover would
+/// open the native tab card over plain chrome). A tab in the horizontal row becomes the empty
+/// strip, which drags the window like the rest of the title bar; anything else becomes nothing.
+fn inert_while_waiting(found: Hit, waiting: [bool; 3]) -> Hit {
+    let view = match found {
+        Hit::Back | Hit::Forward | Hit::Reload | Hit::Omnibox | Hit::SiteInfo | Hit::Split | Hit::MainMenu => 0,
+        Hit::Tab(_) | Hit::TabClose(_) | Hit::GroupBall(_) => return if waiting[1] { Hit::CaptionArea } else { found },
+        Hit::SidebarWorkspace | Hit::SidebarNewTab | Hit::SidebarGroup(_) | Hit::SidebarTab(_) | Hit::SidebarTabClose(_) => 1,
+        Hit::Rail(_) | Hit::RailBackground => 2,
+        _ => return found,
+    };
+    if waiting[view] { Hit::None } else { found }
+}
+fn native_hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| {
         if s.layout.rail.contains(x, y) {
             let rail = RailView { entries: &s.rail_view, fades: &[], open_panel: None, scroll: s.rail_scroll, drop_indicator: None, focused: None, tooltip: None };
@@ -6174,6 +6271,11 @@ fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
 const IMPORT_OFFER_TITLE: &str = "Import from another browser?";
 const IMPORT_OFFER_DETAIL: &str = "Bring over bookmarks and search settings.";
 const IMPORT_OFFER_FOOTER: &str = "Also available later in the main menu.";
+
+fn import_offer_ready(app: &AppRef) -> bool {
+    // A blank new tab never reports a usable page load.
+    App::active_tab_is_usable(app) || App::tab_is_blank(app, App::active_tab_id(app))
+}
 
 fn import_offer_entries() -> Vec<Entry> {
     vec![
@@ -9868,6 +9970,12 @@ fn hand_keyboard_to_native_edit(hwnd: HWND, edit: HWND, omnibox: Option<Option<S
 
 const RECOVERY_BUTTON_ID: usize = 0x6f10;
 const ENGINE_RECOVERY_TIMER: usize = 0x5f1;
+/// Repaints once `HTML_WAIT_LIMIT` has passed, so a view still waiting for a host that never
+/// started shows its native controls.
+const HTML_WAIT_TIMER: usize = 0x5f4;
+/// How long a starting window shows plain chrome while the engine environment for its HTML chrome
+/// starts (the same span `chrome_recovery` gives each step of a host's start).
+const HTML_WAIT_LIMIT: Duration = Duration::from_secs(15);
 
 pub(crate) fn arm_engine_recovery_timeout(hwnd: HWND) -> bool {
     if hwnd.is_invalid() { return false; }
@@ -11326,9 +11434,8 @@ fn forget_closed_tab_urls(s: &mut WindowChrome, open: &HashSet<TabId>) {
 /// Keeps each live tab's favicon key and, when it passes the protocol's gate, its PNG bytes. The App
 /// is read only for tabs whose favicon key changed, and entries of closed tabs are dropped. Returns
 /// the tabs that have a sendable favicon.
-fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId> {
-    for &id in ids {
-        let key = App::tab_favicon_key(app, id);
+fn html_tabs_favicons(hwnd: HWND, app: &AppRef, keys: &[(TabId, Option<FaviconKey>)]) -> HashSet<TabId> {
+    for &(id, key) in keys {
         let cached =
             with_chrome(hwnd, |s| s.html_favicons.get(&id).map(|favicon| favicon.key)).flatten();
         if key == cached {
@@ -11347,7 +11454,7 @@ fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId>
             }
         });
     }
-    let live: HashSet<TabId> = ids.iter().copied().collect();
+    let live: HashSet<TabId> = keys.iter().map(|&(id, _)| id).collect();
     with_chrome(hwnd, |s| {
         s.html_favicons.retain(|id, _| live.contains(id));
         s.html_favicons_sent.retain(|id, _| live.contains(id));
@@ -11558,16 +11665,16 @@ fn html_tabs_sync(hwnd: HWND) {
     let inputs = App::tab_group_inputs(&app);
     let preferences = App::tab_group_preferences(&app);
     let tab_states: Vec<HtmlTabSnapshot> = snapshot
-        .iter()
+        .into_iter()
         .map(|(id, title, loading, marker)| {
             (
-                *id,
-                title.clone(),
-                *loading,
-                *marker,
-                App::tab_pinned(&app, *id),
-                App::tab_muted(&app, *id),
-                App::tab_private(&app, *id),
+                id,
+                title,
+                loading,
+                marker,
+                App::tab_pinned(&app, id),
+                App::tab_muted(&app, id),
+                App::tab_private(&app, id),
             )
         })
         .collect();
@@ -11580,8 +11687,8 @@ fn html_tabs_sync(hwnd: HWND) {
         workspace: (workspace_name, workspace_icon),
         active,
         snapshot: tab_states,
-        group_inputs: inputs.clone(),
-        group_preferences: preferences.clone(),
+        group_inputs: inputs,
+        group_preferences: preferences,
         favicons: favicon_keys,
         generation: with_chrome(hwnd, |s| s.html_state_generation[1]).unwrap_or(0),
         extras: strip_extras,
@@ -11596,10 +11703,12 @@ fn html_tabs_sync(hwnd: HWND) {
     if is_unchanged {
         return;
     }
-    let keys = tab_groups::group_keys(&inputs, &preferences);
+    let inputs = &current_inputs.group_inputs;
+    let preferences = &current_inputs.group_preferences;
+    let keys = tab_groups::group_keys(inputs, preferences);
     let group_of: HashMap<TabId, Option<tab_groups::TabGroupKey>> =
         inputs.iter().map(|input| input.id).zip(keys).collect();
-    let with_png = html_tabs_favicons(hwnd, &app, &ids);
+    let with_png = html_tabs_favicons(hwnd, &app, &current_inputs.favicons);
     // Closed tabs' addresses go too (the strip shows one workspace, so every open tab is kept).
     let open: HashSet<TabId> = App::all_tab_ids(&app).into_iter().collect();
     let _ = with_chrome(hwnd, |s| forget_closed_tab_urls(s, &open));
@@ -11620,7 +11729,7 @@ fn html_tabs_sync(hwnd: HWND) {
                 .get(&id)
                 .cloned()
                 .flatten()
-                .map(|key| chrome_host::row_group(&key, &preferences)),
+                .map(|key| chrome_host::row_group(&key, preferences)),
             has_favicon: with_png.contains(&id),
             marks: html_tab_marks(&current_inputs.extras, id),
         })
@@ -11659,17 +11768,13 @@ fn html_tabs_sync(hwnd: HWND) {
         (send_json, sends, s.html_state_generation[1])
     })
     .unwrap_or_default();
-    if send_json && host.post_json(&json).is_ok() {
+    if !send_json || host.post_json(&json).is_ok() {
         let _ = with_chrome(hwnd, |s| {
             if s.html_state_generation[1] == generation {
-                s.html_tabs_last = Some(json);
-                s.html_tabs_synced_inputs = Some(current_inputs.clone());
-            }
-        });
-    } else {
-        let _ = with_chrome(hwnd, |s| {
-            if s.html_state_generation[1] == generation && !send_json {
-                s.html_tabs_synced_inputs = Some(current_inputs.clone());
+                if send_json {
+                    s.html_tabs_last = Some(json);
+                }
+                s.html_tabs_synced_inputs = Some(current_inputs);
             }
         });
     }
@@ -13399,6 +13504,27 @@ mod tests {
         }
     }
 
+    /// Native controls under chrome still waiting for its HTML page are not drawn, so they take no
+    /// clicks or hovers (no native tab card): tabs become title-bar drag space, the rest nothing.
+    /// Window buttons and the page always answer.
+    #[test]
+    fn native_controls_are_inert_while_their_html_view_is_waiting() {
+        let none = [false; 3];
+        for (found, view) in [(Hit::Omnibox, 0), (Hit::Back, 0), (Hit::MainMenu, 0), (Hit::SidebarTab(1), 1), (Hit::RailBackground, 2)] {
+            let mut waiting = none;
+            waiting[view] = true;
+            assert_eq!(inert_while_waiting(found, waiting), Hit::None, "{found:?}");
+            assert_eq!(inert_while_waiting(found, none), found, "{found:?} once its view is live or failed");
+        }
+        for found in [Hit::Tab(0), Hit::TabClose(2), Hit::GroupBall(1)] {
+            assert_eq!(inert_while_waiting(found, [false, true, false]), Hit::CaptionArea, "{found:?}");
+            assert_eq!(inert_while_waiting(found, [true, false, true]), found, "{found:?}");
+        }
+        for found in [Hit::CaptionClose, Hit::CaptionMaximize, Hit::CaptionMinimize, Hit::CaptionArea, Hit::NewTab, Hit::Viewport, Hit::SidebarResize] {
+            assert_eq!(inert_while_waiting(found, [true; 3]), found, "{found:?}");
+        }
+    }
+
     /// Timers are scoped to the main HWND, not to each feature's module. Dispatch order must
     /// never redirect auto-hide to themes, split bounds to statistics, or reader probes to panels.
     #[test]
@@ -13407,6 +13533,7 @@ mod tests {
             ENGINE_RECOVERY_TIMER,
             surface_recovery::TIMER,
             chrome_recovery::TIMER,
+            HTML_WAIT_TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
             crate::engine::ENGINE_MENU_TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
@@ -13844,7 +13971,7 @@ mod tests {
     /// Each bar of "Bars to hide" changes the window's layout the way the plan says, and revealing a
     /// bar never moves the page.
     #[test]
-    fn hiding_the_bars_widens_the_page_and_a_reveal_leaves_it_where_it_is() {
+    fn hiding_the_bars_widens_the_page_and_a_reveal_pushes_it_back() {
         use crate::auto_hide::{Bars, Zone, Zones};
         let tab_layout = crate::settings::TabLayout::ToolbarTop;
         let mut shown = WindowChrome::new(1280, 720, 96, HWND::default());
@@ -13859,12 +13986,10 @@ mod tests {
         assert_eq!((s.layout.viewport.left, s.layout.viewport.right, s.layout.viewport.bottom), (normal.left, normal.right, normal.bottom));
         assert!(s.ah.top_hidden());
         assert_eq!(s.ah.overlay.top.bottom, normal.top, "the bars float exactly where they sit when shown");
-        let hidden_viewport = s.layout.viewport;
-
-        // A reveal changes what is drawn, never the page's rectangle.
+        // A revealed bar takes its own place and pushes the page aside; hidden again, the page widens.
         assert!(s.ah.machine.reveal(Zones::NONE.with(Zone::Top), 0));
         relaid(&mut s, 96, false, tab_layout);
-        assert_eq!(s.layout.viewport, hidden_viewport, "no relayout of the page when a bar appears");
+        assert_eq!(s.layout.viewport, normal, "a revealed bar pushes the page to where it sits with the bar shown");
         assert!(!s.ah.top_hidden());
         assert_eq!(s.ah.paint_viewport(s.layout.viewport).top, normal.top, "the page's frame is drawn below the floating bars");
 
@@ -13945,23 +14070,27 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_alive_page_host_stays_until_pressure_and_keeps_its_clock() {
+    fn a_kept_alive_page_host_retries_for_memory_pressure_without_resetting_its_deadline() {
         let start = Instant::now();
         let mut idle = PageIdle::default();
         assert!(!page_idle_step(&mut idle, true, start, || false));
         assert!(!page_idle_step(&mut idle, false, start, || false));
         // Long past the idle time but no pressure: stays, and is still being timed.
         let asked = std::cell::Cell::new(0);
-        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 4, || { asked.set(asked.get() + 1); false }));
+        let first_check = start + PAGE_IDLE_CLOSE;
+        assert!(!page_idle_step(&mut idle, false, first_check, || { asked.set(asked.get() + 1); false }));
         assert_eq!(asked.get(), 1);
-        assert_eq!(idle.hidden_since, Some(start));
+        let retry = first_check + PAGE_IDLE_RETRY;
+        assert_eq!(idle.check_at, Some(retry));
+        assert!(!page_idle_step(&mut idle, false, retry - Duration::from_secs(1), || unreachable!()));
+        assert_eq!(idle.check_at, Some(retry));
         // Before the idle time the pressure check is not even asked.
         let mut fresh = PageIdle::default();
         assert!(!page_idle_step(&mut fresh, true, start, || unreachable!()));
         assert!(!page_idle_step(&mut fresh, false, start + Duration::from_secs(1), || unreachable!()));
         // Pressure arrives later: closes then, and the clock resets.
-        assert!(page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 5, || true));
-        assert_eq!(idle.hidden_since, None);
+        assert!(page_idle_step(&mut idle, false, retry, || true));
+        assert_eq!(idle, PageIdle::default());
     }
 
     #[test]

@@ -4,11 +4,10 @@
 //! window: which bars are out of the layout right now, the pointer sensors, the reveal and hide timing,
 //! F11 and page full screen. Nothing here runs, and no window or timer exists, while auto-hide is off.
 //!
-//! How a bar floats. The page is laid out as if the hidden bars were gone (`WindowChrome::layout.viewport`)
-//! and is never resized when a bar appears. A revealed bar is the same HTML view, the same size, slid in
-//! from its outer edge over about 220 ms (ease-out on the way in, ease-in on the way out) and raised above
-//! the page (`ChromeHost::raise_to_top`). The frame timer runs only while that slide is moving. The window's
-//! solid palette is the view's background so the page does not flash through it.
+//! How a bar comes back. The page is laid out as if the hidden bars were gone (`WindowChrome::layout.viewport`).
+//! A revealed bar is laid out again in its own place, as if it were never hidden, and the page is laid
+//! out beside it: it pushes the page aside rather than floating over it (`apply_shown`), and lands at
+//! once. The window's solid palette is the view's background so the page does not flash through it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -487,19 +486,27 @@ pub(super) fn reveal_for_keyboard(hwnd: HWND) {
     }
 }
 
-/// Puts the views, the sensors and the painting in line with which zones are shown now.
-/// A change of that set starts (or retargets) the slide; the frame timer then carries it.
+/// Puts the layout, the views, the sensors and the painting in line with which zones are shown now.
+/// A revealed bar is laid out in its own place and the page is laid out again beside it (it pushes
+/// the page, never floats over it), so the change is one relayout that lands at once: no slide runs,
+/// and nothing is left drawn where a bar used to float.
 fn apply_shown(hwnd: HWND) {
+    let Some(app) = super::app_of(hwnd) else { return };
     let _ = with_chrome(hwnd, |s| {
         let ride = rules::bookmarks_ride_with_top(s.ah.plan, s.ah.bar_bottom);
-        s.ah.slide.retarget(s.ah.machine.shown(), ride, now_ms(), super::animations_enabled());
+        s.ah.slide.snap_to(s.ah.machine.shown(), ride);
+    });
+    relayout_all(hwnd, &app);
+    let _ = with_chrome(hwnd, |s| {
+        // The relayout may move the strip and the card; the slide settles on the new places.
+        let ride = rules::bookmarks_ride_with_top(s.ah.plan, s.ah.bar_bottom);
+        s.ah.slide.snap_to(s.ah.machine.shown(), ride);
         s.sync_html_bounds();
         s.sync_html_tabs_bounds();
     });
     sync_html_host_bounds(hwnd);
-    if let Some(app) = super::app_of(hwnd) {
-        super::super::bookmark_bar::sync(hwnd, &app);
-    }
+    super::super::bookmark_bar::sync(hwnd, &app);
+    after_layout(hwnd);
     raise_all(hwnd);
     repaint(hwnd);
     arm_slide(hwnd);

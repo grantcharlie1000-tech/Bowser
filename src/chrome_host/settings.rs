@@ -40,6 +40,8 @@ pub enum Ack {
     None,
     Saved,
     Failed,
+    /// Done, and `error` holds a sentence to say about it (an import's outcome), not a failure.
+    Note,
 }
 
 impl Ack {
@@ -48,6 +50,7 @@ impl Ack {
             Self::None => "none",
             Self::Saved => "saved",
             Self::Failed => "failed",
+            Self::Note => "note",
         }
     }
 }
@@ -1273,7 +1276,7 @@ block_youtube_video_ads=true".to_owned();
         let mut settings = Settings::default();
         settings.blocker_allow = vec!["example.com".into()];
         let json = snapshot_json(&sample(&settings));
-        assert!(json.starts_with(r#"{"v":1,"t":"snap","p":"settings","d":{"tabLayout":"horizontal","sidebarWidth":260,"#), "{json}");
+        assert!(json.starts_with(r#"{"v":1,"t":"snap","p":"settings","d":{"tabLayout":"horizontal","sidebarWidth":300,"#), "{json}");
         assert!(json.contains(r#""searchEngine":null,"searchFallback":"default""#), "{json}");
         assert!(json.contains(r#""profile":"Work \"\u003cb>\"""#), "{json}");
         assert!(json.contains(r#""ack":"saved","error":"","readable":true,"defaultBrowser":"yes","downloadDir":"C:\\Users\\Work\\Downloads","downloadAsk":false,"translateOffer":true,"#), "{json}");
@@ -1326,7 +1329,7 @@ block_youtube_video_ads=true".to_owned();
         let page = "toolbar_buttons=back,newtab,cmd:new-private-tab,chain:1";
         let mut text = String::new();
         for key in [
-            "tab_layout=horizontal", "sidebar_width=260", "sleep_enabled=true", "sleep_after_secs=300", "blocker_enabled=true", "blocker_allow=", "automatic_tab_grouping=true",
+            "tab_layout=horizontal", "sidebar_width=300", "sleep_enabled=true", "sleep_after_secs=300", "blocker_enabled=true", "blocker_allow=", "automatic_tab_grouping=true",
             "efficiency_mode=auto", "tracking_prevention=balanced", "theme=helium", "theme_accent=", page, "centred_address_bar=true", "minimal_url=true", "show_load_progress=true",
             "frameless=false", "rounded_content_frame=true", "show_home_button=true", "bookmarks_bar=never", "bookmarks_bar_tab_groups=false", "side_panel_position=left",
             "tab_preview_images=true", "tab_preview_memory=true", "font_size=medium", "ui_font=", "default_zoom=100", "show_zoom_indicator=true", "new_tab_beside_active=true",

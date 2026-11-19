@@ -273,9 +273,14 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   fileArt.append(icon('file', { size: 22 }));
   logoFace(IMPORT_FILE_LABEL, 'file', fileArt)(importFile);
   importFile.classList.add('wl-file');
-  importFile.setAttribute('aria-label', 'Import from a bookmarks file');
+  importFile.setAttribute('aria-label', 'Import from a bookmarks file or password export');
+  // Opens Windows' file dialog; Bowser imports the chosen file and says the outcome here (a cancel
+  // says nothing, so no "Importing…" is left behind).
   importFile.addEventListener('click', () => {
-    if (host.send({ a: 'import' })) { importAsked = true; paintNote(); }
+    if (!host.send({ a: 'import' })) return;
+    said = null;
+    for (const other of importButtons) other.setAttribute('aria-pressed', 'false');
+    paintNote();
   });
   importTiles.append(importFile);
   const importBody = el('div', 'wl-stack');

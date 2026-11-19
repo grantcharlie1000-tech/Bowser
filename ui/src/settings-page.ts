@@ -589,7 +589,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const profilesRow = row(profileCard, 'profiles', undefined, { stack: true });
   profilesRow.root.classList.add('is-profiles');
   profilesRow.root.append(...profilesView.parts);
-  row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
+  row(profileCard, 'import', textButton('Choose file…', () => cmd({ a: 'import' }), { icon: 'download' }));
 
   // Appearance: the two big visual choices first, then the chrome, tabs and text.
   // --- layout (thread T6) --- the Layout block: the presets as thumbnails, which also decide where
@@ -1256,12 +1256,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // Performance
   const powerCard = card('performance', 'Power');
   const efficiency = segmentedControl<EfficiencyMode>('Efficiency mode', EFFICIENCY_MODES.map((mode) => [mode, mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'] as const), (value) => change((d) => { d.efficiencyMode = value; }));
-  const efficiencyRow = row(powerCard, 'efficiency', efficiency.root);
-  const activeBadge = el('span', 'sp-badge');
-  activeBadge.textContent = 'Active';
-  const labelLine = el('span', 'sp-label-line');
-  efficiencyRow.label.replaceWith(labelLine);
-  labelLine.append(efficiencyRow.label, activeBadge);
+  row(powerCard, 'efficiency', efficiency.root);
   const memoryCard = card('performance', 'Memory');
   const sleep = switchControl((on) => change((d) => { d.sleepEnabled = on; }));
   row(memoryCard, 'sleep', sleep.root);
@@ -1379,7 +1374,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // Media
   const mediaCard = card('media');
   const mediaStatus = el('span', 'sp-media-status');
-  const recheck = textButton('Check', () => checkMedia(), { icon: 'reload', aria: 'Check again' });
+  const recheck = textButton('Check again', () => checkMedia(), { icon: 'reload', subtle: true });
   const mediaHead = el('div', 'sp-media-head');
   mediaHead.append(mediaStatus, recheck);
   row(mediaCard, 'media', mediaHead);
@@ -1390,28 +1385,26 @@ export function startSettingsPage(root: HTMLElement): void {
   const paintMedia = (report: MediaReport | null): void => {
     mediaResults.replaceChildren();
     if (!report) return;
-    const group = (heading: string, items: ReadonlyArray<readonly [string, string, string, string]>): HTMLElement => {
+    const group = (heading: string, items: ReadonlyArray<readonly [string, string, string]>): HTMLElement => {
       const box = el('div', 'sp-media-group');
-      const h = el('h3', 'sp-card-h');
+      const h = el('h3', 'sp-media-h');
       h.textContent = heading;
       const list = el('ul', 'sp-media-list');
-      for (const [label, , value, tone] of items) {
+      for (const [label, value, tone] of items) {
         const item = el('li', 'sp-media-item');
-        const text = el('span', 'sp-text');
         const name = el('span', 'sp-label');
         name.textContent = label;
-        text.append(name);
-        const chip = el('span', `sp-pill is-${tone}`);
-        chip.textContent = value;
-        item.append(text, chip);
+        const result = el('span', `sp-media-value is-${tone}`);
+        result.textContent = value;
+        item.append(name, result);
         list.append(item);
       }
       box.append(h, list);
       return box;
     };
     mediaResults.append(
-      group('Video', report.codecs.map((codec) => [codec.label, '', verdictText(codec.verdict), codec.verdict] as const)),
-      group('Streaming', report.drm.map((system) => [system.label, '', drmText(system.state), system.state] as const)),
+      group('Video', report.codecs.map((codec) => [codec.label, verdictText(codec.verdict), codec.verdict] as const)),
+      group('Streaming', report.drm.map((system) => [system.label, drmText(system.state), system.state] as const)),
     );
   };
   const checkMedia = (): void => {
@@ -1422,7 +1415,8 @@ export function startSettingsPage(root: HTMLElement): void {
     void runMediaCheck(browserProbes()).then((report) => {
       if (run !== mediaRun) return;
       recheck.disabled = false;
-      mediaStatus.textContent = 'Check complete';
+      // The results speak for themselves; the status line only reports a check in progress or a failure.
+      mediaStatus.textContent = '';
       paintMedia(report);
     }, () => {
       if (run !== mediaRun) return;
@@ -1984,7 +1978,6 @@ export function startSettingsPage(root: HTMLElement): void {
     history.set(s.historyEnabled);
     history.disable(s.guest);
     efficiency.set(d.efficiencyMode);
-    activeBadge.hidden = !s.efficiencyActive;
     sleep.set(d.sleepEnabled);
     paintSleepSelect(d.sleepAfterSecs);
     sleepSelect?.button.toggleAttribute('disabled', !d.sleepEnabled);
@@ -2417,11 +2410,13 @@ export function startSettingsPage(root: HTMLElement): void {
     if (parsed.ack !== 'none') {
       // Bowser runs queued commands together and answers once: this snapshot is the saved state.
       pending = 0;
-      const text = parsed.ack === 'saved' ? savedNote ?? 'Saved' : parsed.error !== '' ? parsed.error : 'Settings could not be saved.';
+      const ok = parsed.ack === 'saved' || parsed.ack === 'note';
+      const text = parsed.ack === 'saved' ? savedNote ?? 'Saved' : parsed.error !== '' ? parsed.error : ok ? 'Done' : 'Settings could not be saved.';
       savedNote = null;
-      // Over the welcome the toast is hidden with the page: a failure is said on the welcome instead.
-      if (welcome.shown) { if (parsed.ack !== 'saved') welcome.say(text, false); }
-      else showToast(text, parsed.ack === 'saved');
+      // Over the welcome the toast is hidden with the page: an import's outcome or a failure is said
+      // on the welcome instead.
+      if (welcome.shown) { if (parsed.ack !== 'saved') welcome.say(text, ok); }
+      else showToast(text, ok);
     }
     snapshot = parsed;
     apply(parsed);
