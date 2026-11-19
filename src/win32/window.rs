@@ -139,11 +139,10 @@ const WM_SIDEBAR_RESIZE_TIMER: usize = 0xB05B;
 /// while the flyout is open. Idle chrome does not keep it.
 const WM_SIDEBAR_FLYOUT_TIMER: usize = 0xB0A9;
 const SIDEBAR_FLYOUT_RAISE_MS: u32 = 400;
-/// Slow check, armed only while a settings, history or split page host is hidden, that closes a
-/// host hidden for `PAGE_IDLE_CLOSE`. The next use creates it again.
+/// Wakes at the next hidden page host's idle or memory-pressure check.
 const WM_PAGE_IDLE_TIMER: usize = 0xB05C;
-const PAGE_IDLE_CHECK_MS: u32 = 30_000;
 const PAGE_IDLE_CLOSE: Duration = Duration::from_secs(180);
+const PAGE_IDLE_RETRY: Duration = Duration::from_secs(30);
 /// Posted once after chrome state changed (see `mark_chrome_dirty`). The HTML views and the page
 /// hosts are brought up to date from it; `WM_PAINT` only draws.
 const WM_CHROME_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x84;
@@ -381,26 +380,25 @@ impl PaintPrefs {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PageIdle {
     seen: bool,
-    hidden_since: Option<Instant>,
+    check_at: Option<Instant>,
 }
 
 /// Advances `idle` for a host that is `shown` (or not) at `now`. True when the host has been hidden
-/// for `PAGE_IDLE_CLOSE` and should close; its clock then starts over. `may_close` is asked only
-/// once that time has passed; when it says no the host stays (suspended) and its clock keeps
-/// running, so a later check can still close it. Pure apart from `may_close`.
+/// for `PAGE_IDLE_CLOSE` and should close. When it must stay suspended, schedule the next
+/// memory-pressure check without postponing it on unrelated chrome updates.
 fn page_idle_step(idle: &mut PageIdle, shown: bool, now: Instant, may_close: impl FnOnce() -> bool) -> bool {
     if shown {
-        *idle = PageIdle { seen: true, hidden_since: None };
+        *idle = PageIdle { seen: true, check_at: None };
         return false;
     }
-    if !idle.seen {
+    if !idle.seen || now < *idle.check_at.get_or_insert(now + PAGE_IDLE_CLOSE) {
         return false;
     }
-    let since = *idle.hidden_since.get_or_insert(now);
-    if now.saturating_duration_since(since) >= PAGE_IDLE_CLOSE && may_close() {
+    if may_close() {
         *idle = PageIdle::default();
         return true;
     }
+    idle.check_at = Some(now + PAGE_IDLE_RETRY);
     false
 }
 
@@ -728,6 +726,8 @@ struct WindowChrome {
     paint_prefs: PaintPrefs,
     /// Idle clocks of the split, settings and history page hosts.
     page_idle: [PageIdle; 4],
+    page_idle_deadline: Option<Instant>,
+    import_offer_waiting_for_page: bool,
     /// The flyout panel's controller was requested (on first use, see `ensure_flyout_panel`), and
     /// whether it failed for good.
     flyout_requested: bool,
@@ -923,6 +923,8 @@ impl WindowChrome {
             chrome_sync_posted: false,
             paint_prefs: PaintPrefs::default(),
             page_idle: [PageIdle::default(); 4],
+            page_idle_deadline: None,
+            import_offer_waiting_for_page: false,
             flyout_requested: false,
             flyout_failed: false,
             hover_requested: false,
@@ -1974,6 +1976,14 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     let Some(app) = app else {
         return;
     };
+    // Navigation and tab selection queue this sync. Show the offer from its own message so it
+    // can open the welcome page or the native menu outside the sync.
+    if with_chrome(hwnd, |s| s.import_offer_waiting_for_page).unwrap_or(false)
+        && import_offer_ready(app)
+        && unsafe { SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 1, None) } != 0
+    {
+        let _ = with_chrome(hwnd, |s| s.import_offer_waiting_for_page = false);
+    }
     // --- split view ---
     super::split_ui::sync(hwnd, app);
     super::settings_page::sync(hwnd, app);
@@ -1999,9 +2009,8 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     }
 }
 
-/// Times the split, settings and history page hosts while they are hidden and closes one hidden for
-/// `PAGE_IDLE_CLOSE`; its next show creates it again. A pointer drag holds the clocks (the split
-/// host's drop card follows drags). The slow timer runs only while a clock does.
+/// Tracks hidden page hosts and schedules one wake at the earliest pending check. A pointer drag
+/// defers cleanup so the split host's drop card stays available.
 fn track_idle_pages(hwnd: HWND) {
     let shown = [
         super::split_ui::picker_pane(hwnd).is_some() || super::split_ui::private_page_shown(hwnd),
@@ -2011,7 +2020,7 @@ fn track_idle_pages(hwnd: HWND) {
     ];
     let now = Instant::now();
     let dragging = unsafe { GetCapture() == hwnd };
-    let Some((close, running)) = with_chrome(hwnd, |s| {
+    let Some(close) = with_chrome(hwnd, |s| {
         let dragging = dragging || s.drag.is_some() || s.vertical_drag.is_some();
         let mut close = [false; 4];
         for (index, idle) in s.page_idle.iter_mut().enumerate() {
@@ -2025,7 +2034,25 @@ fn track_idle_pages(hwnd: HWND) {
                 });
             }
         }
-        (close, s.page_idle.iter().any(|idle| idle.hidden_since.is_some()))
+        let deadline = s.page_idle.iter().filter_map(|idle| idle.check_at).min().map(|due| {
+            if dragging && due <= now {
+                s.page_idle_deadline.filter(|&armed| armed > now).unwrap_or(now + PAGE_IDLE_RETRY)
+            } else {
+                due
+            }
+        });
+        if deadline != s.page_idle_deadline {
+            s.page_idle_deadline = unsafe {
+                if let Some(due) = deadline {
+                    let delay = due.saturating_duration_since(now).as_millis() as u32 + 1;
+                    (SetTimer(Some(hwnd), WM_PAGE_IDLE_TIMER, delay, None) != 0).then_some(due)
+                } else {
+                    let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
+                    None
+                }
+            };
+        }
+        close
     }) else {
         return;
     };
@@ -2040,13 +2067,6 @@ fn track_idle_pages(hwnd: HWND) {
             _ => super::downloads_page::close(hwnd),
         }
         perf_event(hwnd, "page_host_idle_closed");
-    }
-    unsafe {
-        if running {
-            let _ = SetTimer(Some(hwnd), WM_PAGE_IDLE_TIMER, PAGE_IDLE_CHECK_MS, None);
-        } else {
-            let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
-        }
     }
 }
 
@@ -4646,43 +4666,36 @@ unsafe extern "system" fn window_proc(
             // --- end popup host ---
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
-                if let Some(app) = app {
-                    // A blank new tab (the start page) never loads a web page, so it never becomes
-                    // "usable": it is ready as it is. Without this the first-run welcome waited forever.
-                    let ready = App::active_tab_is_usable(app) || App::tab_is_blank(app, App::active_tab_id(app));
-                    if !ready {
-                        let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 500, None);
-                        return LRESULT(0);
-                    }
-                } else {
+                let (Some(app), Ok(profile)) = (app, profile::active()) else {
+                    return LRESULT(0);
+                };
+                if !profile.import_offer_pending() {
                     return LRESULT(0);
                 }
-                if let Ok(profile) = profile::active() {
-                    if profile.import_offer_pending() && chrome_host::html_ui_enabled() && let Some(app) = app {
-                        // First run with the HTML chrome: the welcome (docs/design/welcome.md) takes the
-                        // blank first tab, and only a blank one: a first launch that opens a page (a
-                        // link from another app, --open-url) keeps that page in front, and the welcome
-                        // waits for the next launch. It offers the import itself, so showing it answers
-                        // the offer.
-                        if App::tab_is_blank(app, App::active_tab_id(app)) {
-                            let _ = profile.remember_import_offer_choice();
-                            super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
-                        }
-                    } else if profile.import_offer_pending() {
-                        // --- popup host (lane M) ---
-                        let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
-                        menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
-                            header: None,
-                            entries: import_offer_entries(),
-                            footer: IMPORT_OFFER_FOOTER.into(),
-                        }, "import-offer", move |_, selected| {
-                            let _ = profile.remember_import_offer_choice();
-                            if selected.is_some_and(|item| item.id == 1) {
-                                let _ = import_panel::open(hwnd);
-                            }
-                        });
-                        // --- end popup host ---
+                if !import_offer_ready(app) {
+                    let _ = with_chrome(hwnd, |s| s.import_offer_waiting_for_page = true);
+                    perf_event(hwnd, "import_offer_waiting_for_page");
+                    return LRESULT(0);
+                }
+                if chrome_host::html_ui_enabled() {
+                    // The welcome takes a blank first tab. A launch with a URL keeps it in front
+                    // and leaves the welcome for the next launch.
+                    if App::tab_is_blank(app, App::active_tab_id(app)) {
+                        let _ = profile.remember_import_offer_choice();
+                        super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
                     }
+                } else {
+                    let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
+                    menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
+                        header: None,
+                        entries: import_offer_entries(),
+                        footer: IMPORT_OFFER_FOOTER.into(),
+                    }, "import-offer", move |_, selected| {
+                        let _ = profile.remember_import_offer_choice();
+                        if selected.is_some_and(|item| item.id == 1) {
+                            let _ = import_panel::open(hwnd);
+                        }
+                    });
                 }
                 LRESULT(0)
             }
@@ -4737,6 +4750,9 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == WM_PAGE_IDLE_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
+                let _ = with_chrome(hwnd, |s| s.page_idle_deadline = None);
+                perf_event(hwnd, "page_host_idle_timer_fired");
                 track_idle_pages(hwnd);
                 LRESULT(0)
             }
@@ -6255,6 +6271,11 @@ fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
 const IMPORT_OFFER_TITLE: &str = "Import from another browser?";
 const IMPORT_OFFER_DETAIL: &str = "Bring over bookmarks and search settings.";
 const IMPORT_OFFER_FOOTER: &str = "Also available later in the main menu.";
+
+fn import_offer_ready(app: &AppRef) -> bool {
+    // A blank new tab never reports a usable page load.
+    App::active_tab_is_usable(app) || App::tab_is_blank(app, App::active_tab_id(app))
+}
 
 fn import_offer_entries() -> Vec<Entry> {
     vec![
@@ -11413,9 +11434,8 @@ fn forget_closed_tab_urls(s: &mut WindowChrome, open: &HashSet<TabId>) {
 /// Keeps each live tab's favicon key and, when it passes the protocol's gate, its PNG bytes. The App
 /// is read only for tabs whose favicon key changed, and entries of closed tabs are dropped. Returns
 /// the tabs that have a sendable favicon.
-fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId> {
-    for &id in ids {
-        let key = App::tab_favicon_key(app, id);
+fn html_tabs_favicons(hwnd: HWND, app: &AppRef, keys: &[(TabId, Option<FaviconKey>)]) -> HashSet<TabId> {
+    for &(id, key) in keys {
         let cached =
             with_chrome(hwnd, |s| s.html_favicons.get(&id).map(|favicon| favicon.key)).flatten();
         if key == cached {
@@ -11434,7 +11454,7 @@ fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId>
             }
         });
     }
-    let live: HashSet<TabId> = ids.iter().copied().collect();
+    let live: HashSet<TabId> = keys.iter().map(|&(id, _)| id).collect();
     with_chrome(hwnd, |s| {
         s.html_favicons.retain(|id, _| live.contains(id));
         s.html_favicons_sent.retain(|id, _| live.contains(id));
@@ -11645,16 +11665,16 @@ fn html_tabs_sync(hwnd: HWND) {
     let inputs = App::tab_group_inputs(&app);
     let preferences = App::tab_group_preferences(&app);
     let tab_states: Vec<HtmlTabSnapshot> = snapshot
-        .iter()
+        .into_iter()
         .map(|(id, title, loading, marker)| {
             (
-                *id,
-                title.clone(),
-                *loading,
-                *marker,
-                App::tab_pinned(&app, *id),
-                App::tab_muted(&app, *id),
-                App::tab_private(&app, *id),
+                id,
+                title,
+                loading,
+                marker,
+                App::tab_pinned(&app, id),
+                App::tab_muted(&app, id),
+                App::tab_private(&app, id),
             )
         })
         .collect();
@@ -11667,8 +11687,8 @@ fn html_tabs_sync(hwnd: HWND) {
         workspace: (workspace_name, workspace_icon),
         active,
         snapshot: tab_states,
-        group_inputs: inputs.clone(),
-        group_preferences: preferences.clone(),
+        group_inputs: inputs,
+        group_preferences: preferences,
         favicons: favicon_keys,
         generation: with_chrome(hwnd, |s| s.html_state_generation[1]).unwrap_or(0),
         extras: strip_extras,
@@ -11683,10 +11703,12 @@ fn html_tabs_sync(hwnd: HWND) {
     if is_unchanged {
         return;
     }
-    let keys = tab_groups::group_keys(&inputs, &preferences);
+    let inputs = &current_inputs.group_inputs;
+    let preferences = &current_inputs.group_preferences;
+    let keys = tab_groups::group_keys(inputs, preferences);
     let group_of: HashMap<TabId, Option<tab_groups::TabGroupKey>> =
         inputs.iter().map(|input| input.id).zip(keys).collect();
-    let with_png = html_tabs_favicons(hwnd, &app, &ids);
+    let with_png = html_tabs_favicons(hwnd, &app, &current_inputs.favicons);
     // Closed tabs' addresses go too (the strip shows one workspace, so every open tab is kept).
     let open: HashSet<TabId> = App::all_tab_ids(&app).into_iter().collect();
     let _ = with_chrome(hwnd, |s| forget_closed_tab_urls(s, &open));
@@ -11707,7 +11729,7 @@ fn html_tabs_sync(hwnd: HWND) {
                 .get(&id)
                 .cloned()
                 .flatten()
-                .map(|key| chrome_host::row_group(&key, &preferences)),
+                .map(|key| chrome_host::row_group(&key, preferences)),
             has_favicon: with_png.contains(&id),
             marks: html_tab_marks(&current_inputs.extras, id),
         })
@@ -11746,17 +11768,13 @@ fn html_tabs_sync(hwnd: HWND) {
         (send_json, sends, s.html_state_generation[1])
     })
     .unwrap_or_default();
-    if send_json && host.post_json(&json).is_ok() {
+    if !send_json || host.post_json(&json).is_ok() {
         let _ = with_chrome(hwnd, |s| {
             if s.html_state_generation[1] == generation {
-                s.html_tabs_last = Some(json);
-                s.html_tabs_synced_inputs = Some(current_inputs.clone());
-            }
-        });
-    } else {
-        let _ = with_chrome(hwnd, |s| {
-            if s.html_state_generation[1] == generation && !send_json {
-                s.html_tabs_synced_inputs = Some(current_inputs.clone());
+                if send_json {
+                    s.html_tabs_last = Some(json);
+                }
+                s.html_tabs_synced_inputs = Some(current_inputs);
             }
         });
     }
@@ -14052,23 +14070,27 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_alive_page_host_stays_until_pressure_and_keeps_its_clock() {
+    fn a_kept_alive_page_host_retries_for_memory_pressure_without_resetting_its_deadline() {
         let start = Instant::now();
         let mut idle = PageIdle::default();
         assert!(!page_idle_step(&mut idle, true, start, || false));
         assert!(!page_idle_step(&mut idle, false, start, || false));
         // Long past the idle time but no pressure: stays, and is still being timed.
         let asked = std::cell::Cell::new(0);
-        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 4, || { asked.set(asked.get() + 1); false }));
+        let first_check = start + PAGE_IDLE_CLOSE;
+        assert!(!page_idle_step(&mut idle, false, first_check, || { asked.set(asked.get() + 1); false }));
         assert_eq!(asked.get(), 1);
-        assert_eq!(idle.hidden_since, Some(start));
+        let retry = first_check + PAGE_IDLE_RETRY;
+        assert_eq!(idle.check_at, Some(retry));
+        assert!(!page_idle_step(&mut idle, false, retry - Duration::from_secs(1), || unreachable!()));
+        assert_eq!(idle.check_at, Some(retry));
         // Before the idle time the pressure check is not even asked.
         let mut fresh = PageIdle::default();
         assert!(!page_idle_step(&mut fresh, true, start, || unreachable!()));
         assert!(!page_idle_step(&mut fresh, false, start + Duration::from_secs(1), || unreachable!()));
         // Pressure arrives later: closes then, and the clock resets.
-        assert!(page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 5, || true));
-        assert_eq!(idle.hidden_since, None);
+        assert!(page_idle_step(&mut idle, false, retry, || true));
+        assert_eq!(idle, PageIdle::default());
     }
 
     #[test]
