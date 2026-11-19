@@ -11,7 +11,7 @@
     now: P.now.bind(P), mk: D.createElement.bind(D), st: W.scrollTo.bind(W), sl: Array.prototype.slice,
     pause: W.scheduler && W.scheduler.yield ? W.scheduler.yield.bind(W.scheduler) : null, defer: W.setTimeout.bind(W)
   });
-  var KEY = Symbol.for('bowser.reader.v1'), T0, TH = ['auto', 'light', 'sepia', 'dark'];
+  var KEY = Symbol.for('bowser.reader.v1'), TH = ['auto', 'light', 'sepia', 'dark'];
   var NEG = /(^|[^a-z])(comments?|sidebar|footer|nav|menu|share|social|related|promo|adverts?|ads?|sponsor|cookies?|consent|widget|popup|modal|newsletter|subscribe|breadcrumbs?|toc|recirc|taboola|outbrain|editsection)([^a-z]|$)/;
   var POS = /(^|[^a-z])(article|post|entry|story|content|body|text|main|prose)([^a-z]|$)/;
   var COOK = /(^|[^a-z])(cookies?|consent|gdpr|cmp|onetrust|didomi|cookiebot|truste)([^a-z]|$)/;
@@ -49,7 +49,6 @@
       if (x === root) return;
     }
   }
-  function late() { return n.now() - T0 > 250; }
   function q(e, s) { return (e === D ? n.qd : n.q).call(e, s); }
   function tx(e) { return n.tc.call(e); }
   function at(e, k) { return n.ga.call(e, k) || ''; }
@@ -159,12 +158,17 @@
   }
   // Marks fixed or sticky overlays, cookie banners and (strict) sidebar-like blocks under scope as hidden.
   function sweep(scope, keep, strict) {
-    var all = q(scope, '*'), i, e, k, p, h = 0;
-    for (i = 0; i < all.length && i < 4000 && !late(); i++) {
+    var all = q(scope, '*'), start = n.now(), i, e, k, p, hide, h = 0;
+    for (i = 0; i < all.length && i < 4000; i++) {
+      if (i >= 64 && (i & 31) === 0 && n.now() - start > 250) break;
       e = all[i];
       if (keep && e.contains(keep)) continue;
-      k = key(e); p = style(e, 'position');
-      if (((p === 'fixed' || p === 'sticky') && (keep || tx(e).length < 2500)) || COOK.test(k) || (strict && NEG.test(k)) || at(e, 'role') === 'dialog' || at(e, 'aria-modal') === 'true') { set(e, 'data-bwr-x', 'h'); h++; }
+      k = key(e); hide = COOK.test(k) || (strict && NEG.test(k)) || at(e, 'role') === 'dialog' || at(e, 'aria-modal') === 'true';
+      if (!hide) {
+        p = style(e, 'position');
+        hide = (p === 'fixed' || p === 'sticky') && (keep || tx(e).length < 2500);
+      }
+      if (hide) { set(e, 'data-bwr-x', 'h'); h++; }
     }
     return h;
   }
@@ -291,7 +295,6 @@
     f = yield* find();
     if (m === 'reader' && (!f || f.w < 80)) return res('none', null, f ? f.w : 0, f ? f.l : 0);
     if (f && !f.el.isConnected) throw STOP;
-    T0 = n.now();
     return res('ok', enter(m, f), f ? f.w : 0, f ? f.l : 0);
   }
   return (async function () {
