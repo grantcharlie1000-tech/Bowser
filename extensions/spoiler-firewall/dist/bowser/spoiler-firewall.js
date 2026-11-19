@@ -2252,14 +2252,20 @@ SFW.adapters = (function () {
     hotUrl: redditHot,
   });
   // ---- YouTube -----------------------------------------------------------------------------------------------
+  const YOUTUBE_CARDS = ["ytd-rich-item-renderer", "ytd-rich-grid-media", "ytd-video-renderer", "ytd-compact-video-renderer",
+    "ytd-grid-video-renderer", "ytd-playlist-renderer", "ytd-playlist-panel-video-renderer", "ytd-reel-item-renderer",
+    "yt-lockup-view-model", "yt-lockup-view-model-wiz", "ytm-compact-video-renderer", "ytm-video-with-context-renderer",
+    "ytm-compact-playlist-renderer", "ytm-shorts-lockup-view-model",
+    ".ytp-ce-element", ".ytp-videowall-still", ".ytp-suggestion-link"];
   def({
     id: "youtube", threadUrl: /^\/(watch|shorts\/|live\/)/, hosts: /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i, highRisk: true,
-    item: ["ytd-rich-item-renderer", "ytd-video-renderer", "ytd-compact-video-renderer", "ytd-reel-item-renderer", "ytd-comment-thread-renderer", "ytd-comment-view-model", "ytd-playlist-renderer",
-      "ytd-grid-video-renderer", "ytd-channel-renderer", "ytd-shelf-renderer", "ytm-shorts-lockup-view-model", "yt-lockup-view-model", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", "ytd-player",
+    item: YOUTUBE_CARDS.concat(["ytd-comment-thread-renderer", "ytd-comment-view-model",
+      "ytd-channel-renderer", "ytd-shelf-renderer", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", ".html5-video-player",
       ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer",
-      "yt-live-chat-text-message-renderer", "yt-live-chat-paid-message-renderer", "yt-live-chat-membership-item-renderer", "yt-live-chat-banner-renderer"],
+      "yt-live-chat-text-message-renderer", "yt-live-chat-paid-message-renderer", "yt-live-chat-membership-item-renderer", "yt-live-chat-banner-renderer"]),
+    cards: YOUTUBE_CARDS,
     thread: ["ytd-watch-flexy", "ytd-watch-grid", "ytd-search", "ytd-browse"],
-    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-watch-metadata ytd-channel-name"],
+    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner"],
     media: ["ytd-thumbnail", "yt-image", "yt-img-shadow", "#movie_player", ".ytp-cued-thumbnail-overlay-image"],
     avatars: ["#avatar img", "#avatar-link img", "#author-thumbnail img", "#channel-thumbnail img", "#author-photo img", "#avatar-btn img", "yt-avatar-shape img", "yt-decorated-avatar-view-model img", "img.yt-spec-avatar-shape__image"],
     attrs: ["title", "aria-label", "alt"],
@@ -2540,6 +2546,7 @@ SFW.adapters = (function () {
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
       avatars: join(valid(def.avatars || [], doc)),
+      cards: join(valid(def.cards || [], doc)),
       mediaIgnore: join(valid((def.avatars || []).concat(def.mediaIgnore || []), doc)),
       ocr: def.ocr !== false,
       exempt: def.exempt ? join(valid(def.exempt.sel, doc)) : "",
@@ -2870,6 +2877,19 @@ SFW.shield = (function () {
   };
 
   const VOID = new Set(["IMG", "VIDEO", "AUDIO", "CANVAS", "INPUT", "TEXTAREA", "SELECT", "IFRAME", "OBJECT", "EMBED", "SVG", "BR", "HR", "PICTURE", "SOURCE", "TRACK", "METER", "PROGRESS", "BUTTON"]);
+  const EDITOR = '[contenteditable]:not([contenteditable="false" i]),[role=textbox],textarea:not(:disabled):not([readonly]),input:not(:disabled):not([readonly]):is(:not([type]),[type=text],[type=search],[type=email],[type=url],[type=tel],[type=password],[type=number])';
+  const nMatches = un(ElP, "matches");
+  const nQuery = un(ElP, "querySelector");
+
+  function isEditor(e) {
+    if (e.isContentEditable) return true;
+    if (e.localName === "input" || e.localName === "textarea") return nMatches(e, EDITOR);
+    return e.hasAttributes() && nGet(e, "role") === "textbox";
+  }
+
+  function hasEditor(e) {
+    return isEditor(e) || !!nQuery(e, EDITOR);
+  }
 
   // own keys only: a polluted Object.prototype (Prototype.js era pages) must not leak entries into the dependency table
   function configure(opts) {
@@ -2909,11 +2929,18 @@ SFW.shield = (function () {
     const seen = new Set();
     const add = (e, pos) => { if (!seen.has(e)) { seen.add(e); out.push({ el: e, needPos: pos }); } };
     const resolve = (e, depth) => {
+      if (isEditor(e)) return;
+      if (hasEditor(e)) {
+        if (depth < 12) {
+          for (const child of e.children) if (child.localName !== "sfw-shield") resolve(child, depth + 1);
+        }
+        return;
+      }
       let cs;
       try { cs = win.getComputedStyle(e); } catch (x) { add(e, true); return; }
       const display = cs.display;
       const up = e.parentElement;
-      if ((VOID.has(e.tagName) || e.tagName === "svg") && up && depth < 4 && up.tagName !== "BODY" && up.tagName !== "HTML") {
+      if ((VOID.has(e.tagName) || e.tagName === "svg") && up && depth < 4 && up.tagName !== "BODY" && up.tagName !== "HTML" && !hasEditor(up)) {
         // replaced / void elements cannot host an overlay: use the parent box (never <body> / <html>: hiding the page
         // root for one element blanks the whole page, and a 0-height body leaves the cover invisible)
         resolve(e.parentElement, depth + 1);
@@ -3511,7 +3538,7 @@ SFW.shield = (function () {
   }
 
   return {
-    TEXT, configure, prepare, apply, reveal, reblur, release, state, setFp, repair,
+    TEXT, configure, prepare, isEditor, hasEditor, apply, reveal, reblur, release, state, setFp, repair,
     ownerOfHost, shieldedAncestor, count, all, prune,
     applyPage, revealPage, releasePage, pageState, notice, emergencyCover, emergencyNotice, deepAll,
     theme: themeOf, setTheme, themeFromColor, themeFromScheme,
@@ -3744,10 +3771,14 @@ SFW.runtime = (function () {
   const OCR_FLIGHT = 3; // concurrent host requests per frame, unless the host says it can take more (host.ocr.flight)
   const OCR_FLIGHT_MAX = 16;
   const OCR_WATCHDOG_MS = 60000; // the host must settle sooner (it enforces its own timeout); this only backs it up
+  const YOUTUBE_VISUAL_TIMEOUT_MS = 1500;
   const OCR_ERR_TTL_MS = 20000; // unavailable/error results are cached briefly, then retried once
   const OCR_CACHE_MAX = 1500;
   const OCR_LOAD_FALLBACK_MS = 600; // src changed but no load event arrived (identical URL): re-check anyway
-  const OCR_SEL = 'img,video[poster],[style*="background-image"]';
+  const OCR_SEL = 'img,video[poster],[style*="background-image"],[style*="background:"]';
+  const YOUTUBE_PLAYER = "#movie_player,.html5-video-player";
+  const YOUTUBE_PLAYER_UI = ".ytp-chrome-bottom,.ytp-chrome-top,.ytp-gradient-bottom,.ytp-gradient-top,.ytp-tooltip,.ytp-settings-menu";
+  const YOUTUBE_THUMBNAIL = /^https?:\/\/(?:[\w-]+\.)*ytimg\.com\/vi(?:_webp)?\//i;
   const BG_URL = /background(?:-image)?\s*:[^;]*?url\(\s*(["']?)(.*?)\1\s*\)/i;
 
   // ---- builtins captured at bundle load ---------------------------------------------------------------------------
@@ -4131,7 +4162,6 @@ SFW.runtime = (function () {
     const ESC_MAX_CHILDREN = 8; // a card has few children; an article of paragraphs does not
     // Declared up here, not next to their functions below: the first scan runs while startEngine is still being
     // evaluated (a synchronous observer callback), and a const read before its line throws (temporal dead zone).
-    const SEARCH_NAMES = mkSet(["q", "query", "search", "search_query", "p", "keywords", "text", "s"]);
     const SEARCH_UI = "[role=search],yt-searchbox,ytd-searchbox,form#search-form,form[action*=search],form[action*=results],[data-testid=SearchBox_Search_Input]";
     const SEARCH_UI_TEXT_MAX = 400; // a search box carries little text; a page-wide <form action="/search.aspx"> is not one
     const escalated = new Set(); // generic cards shielded whole because a block inside them is a spoiler
@@ -4158,7 +4188,7 @@ SFW.runtime = (function () {
     let ocrIO = null, ocrRO = null, ocrBgMo = null;
     let ocrPumpTimer = 0, ocrEvalTimer = 0;
     let lastOcrOn = false;
-    stats.ocr = { ok: 0, unavailable: 0, error: 0, skipped: 0, requests: 0, dedupe: 0, cacheHits: 0, small: 0, released: 0, failShields: 0, ocrShields: 0, maxFlight: 0, retries: 0 };
+    stats.ocr = { ok: 0, unavailable: 0, error: 0, skipped: 0, visual: 0, requests: 0, dedupe: 0, cacheHits: 0, small: 0, released: 0, failShields: 0, ocrShields: 0, maxFlight: 0, retries: 0 };
     if (host && host.kind === "test") { stats.trace = []; stats.ocrLog = []; stats.slow = []; }
     const ctrl = { stop, stats: getStats };
     if (host && host.kind === "test") ctrl.explain = (el) => { const p = decide(el, !isOwn(el)); const ex = extract(el, isOwn(el), isDeep(el)); return { dec: p.dec, hot: p.hot, fp: p.fp, deep: isDeep(el), text: ex.text.slice(0, 300), unit: (resolveUnit(el) === el) }; };
@@ -4701,7 +4731,7 @@ SFW.runtime = (function () {
     function markEl(el) {
       if (!el || el.nodeType !== 1 || marks.has(el)) return;
       if (marks.size >= MARK_MAX) el = doc.documentElement || el;
-      if (!el || marks.has(el)) return;
+      if (!el || marks.has(el) || S.shield.hasEditor(el)) return;
       try { nSetAttr(el, "data-sfw-defer", ""); marks.add(el); } catch (e) { /* ignore */ }
     }
 
@@ -4731,7 +4761,7 @@ SFW.runtime = (function () {
         const rem = ch.nodes.length - ch.i;
         if (rem <= 0) continue;
         hit = true;
-        if (rem >= GROUP_MIN && ch.target && ch.target.nodeType === 1) { markEl(ch.target); continue; }
+        if (rem >= GROUP_MIN && ch.target && ch.target.nodeType === 1 && !S.shield.hasEditor(ch.target)) { markEl(ch.target); continue; }
         for (let k = ch.i; k < ch.nodes.length; k++) markEl(elOf(ch.nodes[k]));
       }
       // 2. touched nodes (attributes / character data changed) not resolved yet
@@ -4757,6 +4787,7 @@ SFW.runtime = (function () {
           // judged clear before and re-checked only because children came or went (those are covered as new content of
           // their own): it stays visible. App shells re-render constantly; covering them blinked whole regions.
           if (!freshUnits.has(u)) { const prev = U.get(u); if (prev && prev.dec === "clear") continue; }
+          if (S.shield.hasEditor(u)) continue;
           if (k < PENDING_MAX) { k++; try { applyPlan({ u, dec: "pending", fp: "p", cfp: "p", hot: 0, budget: true }, [{ el: u, needPos: true }]); } catch (e) { markEl(u); } }
           else aPush(rest, u);
         }
@@ -4776,6 +4807,7 @@ SFW.runtime = (function () {
       const el = elOf(n);
       if (!el) return;
       if (isHeadOrTitle(el)) { slicePageCtx = true; return; }
+      if (S.shield.isEditor(el) || isPlaybackUi(el)) return;
       const ctxSel = adapter.context || "";
       const hit = ctxSel ? closestFlat(el, ctxSel) : null;
       if (hit || el.localName === "h1" || nClosest(el, "h1")) slicePageCtx = true;
@@ -4836,7 +4868,8 @@ SFW.runtime = (function () {
             const p = cur.parentNode;
             if (p !== ec.lastParent && !isBlank(cur.data)) { noteNode(cur); ec.lastParent = p; }
           } else if (cur.nodeType === 1) {
-            if (cur.localName === "sfw-shield" || SKIP.has(cur.tagName)) skip = true;
+            if (cur.localName === "sfw-shield" || SKIP.has(cur.tagName) || S.shield.isEditor(cur) ||
+                (adapter.id === "youtube" && nMatches(cur, YOUTUBE_PLAYER_UI))) skip = true;
             else discoverShadowAndTouch(cur);
           }
           cur = rootIsText ? null : nextNode(cur, root, skip);
@@ -4855,7 +4888,7 @@ SFW.runtime = (function () {
       if (!el.hasAttributes()) return;
       if (nHasAttr(el, "alt") || nHasAttr(el, "title") || nHasAttr(el, "aria-label") || nHasAttr(el, "placeholder") || nHasAttr(el, "poster") || nHasAttr(el, "data-sfw-sr")) noteNode(el);
       else if (el.localName === "a" && nHasAttr(el, "href")) noteNode(el);
-      else if (nHasAttr(el, "style") && sliceOcr && /background-image/i.test(nGetAttr(el, "style"))) noteNode(el);
+      else if (sliceOcr && nHasAttr(el, "style") && BG_URL.test(nGetAttr(el, "style"))) noteNode(el);
     }
 
     // Inert elements: no child nodes, no attribute extract() reads, not media / a frame / a form field / a custom element,
@@ -4895,6 +4928,8 @@ SFW.runtime = (function () {
       for (let i = 0; i < records.length; i++) {
         const r = records[i];
         const t = r.target;
+        const changed = elOf(t);
+        if (changed && (S.shield.isEditor(changed) || isPlaybackUi(changed))) continue;
         if (inertSeen) inertSeen.delete(t); // anything recorded on an element ends its inert status for good
         if (r.type === "attributes") {
           const a = r.attributeName;
@@ -4953,7 +4988,7 @@ SFW.runtime = (function () {
         if (stats.trace) stats.trace.push("BATCH " + records.map((r) => r.type[0] + ":" + r.target.nodeName + ":" + (r.addedNodes ? r.addedNodes.length : 0) + (r.attributeName ? ":" + r.attributeName : "")).join(",") + " rec=" + records.length + " q=" + queue.size + " rs=" + doc.readyState);
         // a huge insertion: cover it (region marker, O(1)) and leave the classification to continuation slices, so the callback
         // itself stays tiny and the page's own next task is not queued behind the engine
-        runWork(t0, heavy ? 2 : BUDGET_MS);
+        if (workLeft() || titleDirty || pageCtxDirty || repairSet.size) runWork(t0, heavy ? 2 : BUDGET_MS);
       } catch (e) {
         stats.errors++;
         noteError(e);
@@ -5223,13 +5258,8 @@ SFW.runtime = (function () {
       return !!el && (el.tagName === "BODY" || el.tagName === "HTML");
     }
 
-    function isSearchField(e) {
-      try {
-        if (e.type === "search" || nGetAttr(e, "role") === "searchbox") return true;
-        if (SEARCH_NAMES.has(String(nGetAttr(e, "name") || "").toLowerCase())) return true;
-        if (adapter.context && nMatches(e, adapter.context)) return true;
-        return !!nClosest(e, "[role=search],form[action*=search],form[action*=results]");
-      } catch (x) { return false; }
+    function isPlaybackUi(e) {
+      return adapter.id === "youtube" && !!nClosest(e, YOUTUBE_PLAYER_UI);
     }
 
     // The site's own search box: what the user typed (and the site echoes back inside the box) is never masked. Suggestion
@@ -5431,7 +5461,7 @@ SFW.runtime = (function () {
           const tag = e.localName;
           if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel))) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
           if (e.hasAttributes()) {
-            if (!media && wantBg && nHasAttr(e, "style") && /background-image/i.test(nGetAttr(e, "style")) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
+            if (!media && wantBg && nHasAttr(e, "style") && BG_URL.test(nGetAttr(e, "style")) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
             for (let i = 0; i < ATTR_TEXT.length; i++) {
               const v = nGetAttr(e, ATTR_TEXT[i]);
               if (v) add(v);
@@ -5456,9 +5486,7 @@ SFW.runtime = (function () {
           } else if (tag === "iframe") {
             // no attributes at all: an unsandboxed, empty frame; nothing to read
           }
-          // the user's own query in a search box is not content: it still makes the page hot (context), but it must never
-          // mask the search bar itself, or a search for GTA VI leaves no way to search for something else
-          if ((tag === "input" || tag === "textarea") && e.value && e.type !== "password" && !isSearchField(e)) add(e.value);
+          if ((tag === "input" || tag === "textarea") && e.type !== "password" && e.value) add(e.value);
           if (depth < 5) {
             const sr = rootOf(e);
             if (sr && e !== rootNode) walkRoot(sr, depth + 1);
@@ -5488,7 +5516,7 @@ SFW.runtime = (function () {
           } else if (cur.nodeType === 1) {
             let skip = false;
             const tg = cur.tagName;
-            if (SKIP.has(tg)) skip = true;
+            if (SKIP.has(tg) || S.shield.isEditor(cur)) skip = true;
             else if (cur !== u) {
               if (nHasAttr(cur, "data-sfw") && !(mine && mine.has(cur))) skip = true; // nested shielded / revealed unit (not our own targets)
               else if (ownSel && nMatches(cur, ownSel)) skip = true; // nested unit: classified on its own
@@ -5574,7 +5602,7 @@ SFW.runtime = (function () {
       let n = 0;
       for (const e of els) {
         if (n++ >= limit) break;
-        if (e.value && typeof e.value === "string") out.push(e.value);
+        if (S.shield.isEditor(e)) continue;
         const t = e.textContent;
         if (t) out.push(t.length > 600 ? t.slice(0, 600) : t);
         if (adapter.attrs) for (const a of adapter.attrs) { const v = e.getAttribute && nGetAttr(e, a); if (v) out.push(v); }
@@ -5592,7 +5620,7 @@ SFW.runtime = (function () {
         const og = doc.head && nQS(doc.head, "meta[property='og:title'],meta[name='description'],meta[property='og:description']");
         if (og) ctx += nGetAttr(og, "content") + " ";
         const h1 = doc.querySelectorAll("h1");
-        ctx += contextText(Array.prototype.slice.call(h1, 0, 3), 3) + " ";
+        ctx += contextText(Array.prototype.filter.call(h1, (e) => !adapter.cards || !closestFlat(e, adapter.cards)), 3) + " ";
         if (adapter.context) {
           const els = Array.prototype.filter.call(doc.querySelectorAll(adapter.context), (e) => !(adapter.own && closestFlat(e, adapter.own)) && !(adapter.threadActive && adapter.thread && closestFlat(e, adapter.thread)));
           ctx += contextText(els, 6);
@@ -5694,7 +5722,7 @@ SFW.runtime = (function () {
     }
 
     function decide(u, generic) {
-      if (isExempt(u)) return { u, dec: "clear", fp: "live|" + S.lexicon.version, cfp: "live", hot: 0, generic, nb: false, media: false, ocr: false, strong: false, warmOnly: false, frameErr: false };
+      if (isExempt(u) || S.shield.isEditor(u)) return { u, dec: "clear", fp: "exempt", cfp: "exempt", hot: 0, generic, media: false };
       // A small card (article / li / figure ...) that holds a shielded block is covered whole, whether it was escalated to or is
       // itself the unit: its own text excludes the nested shielded block, which would otherwise release the card around it.
       if (escalated.has(u) || (adapter.generic && u.nodeType === 1 && !isOwn(u) && nMatches(u, ESCALATE_SEL))) {
@@ -5707,10 +5735,13 @@ SFW.runtime = (function () {
         escalated.delete(u);
       }
       const deep = isDeep(u);
-      const ex = extract(u, isOwn(u), deep);
+      // Player UI labels and its transient overlays are unrelated to the video title and description.
+      const player = adapter.id === "youtube" && nMatches(u, YOUTUBE_PLAYER);
+      const ex = player ? { text: "", media: true } : extract(u, isOwn(u), deep);
       const text = ex.text;
       // OCR results of this unit's media (cache hits included) become part of what the unit says
       let ocrTexts = null;
+      let visualKey = "";
       let ocrKey = "";
       if (ocrOn()) {
         if (ex.media) {
@@ -5718,15 +5749,17 @@ SFW.runtime = (function () {
           for (const rec of ui.recs) {
             const r = rec.res || cacheGet(rec.key);
             if (r && r.status === "ok" && r.text && !isBlank(r.text)) (ocrTexts || (ocrTexts = [])).push(r.text);
+            if (r && r.status === "visual") visualKey += "|" + rec.key;
           }
           ocrKey = "|o" + (ocrVer.get(u) | 0) + "." + (mediaVer.get(u) | 0);
         } else ocrKey = "|O";
       }
-      const cfp = fingerprint(ocrTexts ? text + "\u0001" + aJoin(ocrTexts, "\u0001") : (ex.sig ? text + "\u0002" + ex.sig : text));
-      let hot = pageHot;
+      const cfp = fingerprint(text + (ocrTexts ? "\u0001" + aJoin(ocrTexts, "\u0001") : "") + (ex.sig ? "\u0002" + ex.sig : "") + (visualKey ? "\u0003" + visualKey : ""));
+      const card = adapter.cards && closestFlat(u, adapter.cards);
+      let hot = card ? 0 : pageHot;
       let reply = false;
       let wait = null;
-      const th = threadOf(u);
+      const th = card ? null : threadOf(u);
       if (th) {
         if (th.ti.hot > hot) hot = th.ti.hot;
         reply = th.ti.shield && th.ti.first !== u;
@@ -5739,19 +5772,20 @@ SFW.runtime = (function () {
       const warmOnly = false;
       // local heat: a plain block next to a shielded sibling inside a small parent (the rest of a spoiler that was
       // split across sibling blocks) is evaluated as if inside a spoiler thread
-      const nb = !isOwn(u) && hasShieldedNeighbor(u);
+      const nb = !player && !card && !isOwn(u) && hasShieldedNeighbor(u);
       if (nb) { if (hot < 1) hot = 1; reply = true; }
-      const fp = cfp + "|" + hot + (reply ? "r" : "") + (nb ? "n" : "") + (warmOnly ? "w" : "") + "|" + cfg.mode + (deep ? "d" : "s") + ocrKey + "|" + S.lexicon.version;
+      const fp = cfp + "|" + hot + (reply ? "r" : "") + (nb ? "n" : "") + (warmOnly ? "w" : "") + (ex.media ? "m" : "") + "|" + cfg.mode + (deep ? "d" : "s") + ocrKey + "|" + S.lexicon.version;
       const c = U.get(u);
       if (wait) return { u, dec: "pending", wait, fp, cfp, hot };
       if (c && c.fp === fp && c.dec !== "pending" && c.dec !== "error") {
-        if (c.dec === "clear" || c.targets.every((t) => S.shield.state(t).mode !== "none")) return { u, dec: c.dec, same: true, fp, cfp, hot, generic };
+        if (c.dec === "clear" || (c.targets.length && c.targets.every((t) => S.shield.state(t).mode !== "none" && !S.shield.hasEditor(t)))) return { u, dec: c.dec, same: true, fp, cfp, hot, generic };
       }
       let dec;
       let strong = false;
       let frameErr = false;
       let nbText = false;
       if (detectionBroken) dec = "clear"; // the classifier does not work here (canary): page shield / notice already say so
+      else if (visualKey) { dec = "shield"; strong = true; }
       else if (!text.trim() && !ex.media) dec = "clear";
       else if (!isOwn(u) && isSearchUi(u)) dec = "clear"; // the search box itself (see SEARCH_UI)
       else {
@@ -5809,7 +5843,7 @@ SFW.runtime = (function () {
           nbText = !ex.media || oneWith(text, cctx, Object.assign({}, opts, { hasMedia: false, kind: "item" })) === "shield";
         }
       }
-      return { u, dec, fp, cfp, hot, generic, nb, nbText, media: ex.media, ocr: !!ocrTexts, strong: dec === "shield" && strong, warmOnly, frameErr };
+      return { u, dec, fp, cfp, hot, generic, nb, nbText, media: ex.media, ocr: !!(ocrTexts || visualKey), strong: dec === "shield" && strong, warmOnly, frameErr };
     }
 
     // Evaluate units: batched decisions first, then one layout-read pass, then the writes.
@@ -5876,8 +5910,8 @@ SFW.runtime = (function () {
       for (const p of plans) {
         if (p.same || p.dec === "clear" || (p.dec === "pending" && !p.budget && p.wait)) continue;
         const c = U.get(p.u);
-        if (c && c.targets && c.targets.length && c.targets.every((t) => t.isConnected && S.shield.state(t).mode !== "none")) continue;
-        if (p.dec === "pending") { preps.set(p.u, [{ el: p.u, needPos: true }]); continue; }
+        if (c && c.targets && c.targets.length && c.targets.every((t) => t.isConnected && S.shield.state(t).mode !== "none" && !S.shield.hasEditor(t))) continue;
+        if (p.dec === "pending" && !S.shield.hasEditor(p.u)) { preps.set(p.u, [{ el: p.u, needPos: true }]); continue; }
         try { preps.set(p.u, S.shield.prepare(p.u)); } catch (e) { preps.set(p.u, [{ el: p.u, needPos: true }]); }
       }
       for (const p of plans) {
@@ -5953,12 +5987,14 @@ SFW.runtime = (function () {
         stats.pending++;
       } else pendingSet.delete(u);
       const variant = plan.dec === "pending" ? "pending" : plan.dec === "error" ? "error" : plan.frameErr ? "frameerr" : "spoiler";
-      let targets = c && c.targets && c.targets.length && c.targets.every((t) => t.isConnected) ? c.targets.map((t) => ({ el: t, needPos: null })) : null;
+      let targets = c && c.targets && c.targets.length && c.targets.every((t) => t.isConnected && !S.shield.hasEditor(t)) ? c.targets.map((t) => ({ el: t, needPos: null })) : null;
+      if (!targets && c) for (const t of c.targets) { S.shield.release(t); heatSrc.delete(t); }
       if (!targets) targets = prep || [{ el: u, needPos: true }];
       const els = [];
       const givesHeat = variant === "spoiler" && (!plan.nb || !!plan.nbText);
       for (const t of targets) {
         const el = t.el;
+        if (S.shield.hasEditor(el)) continue;
         els.push(el);
         if (givesHeat) heatSrc.add(el); else heatSrc.delete(el);
         const s = S.shield.state(el);
@@ -6001,13 +6037,17 @@ SFW.runtime = (function () {
     }
 
     // Media quarantine release: only when the owning unit is clear and the context is cold.
-    function markMedia(u, ok, skip) {
+    function markMedia(u, ok, skip, reveal) {
       if (!adapter.media || !quarSheet) return;
       let list;
       try { list = S.shield.deepAll(u, adapter.media, 400); } catch (e) { return; }
       const self = u.matches && nMatches(u, adapter.media) ? [u] : [];
       for (const m of self.concat(list)) {
         try {
+          if (adapter.cards && !reveal) {
+            const owner = closestFlat(m, adapter.cards) || closestFlat(m, YOUTUBE_PLAYER);
+            if (owner && owner !== u) continue;
+          }
           if (ok && skip && skip(m)) continue; // tracked by the OCR gate: released only when its result is in
           if (ok) { if (nGetAttr(m, "data-sfw-m") !== "ok") nSetAttr(m, "data-sfw-m", "ok"); }
           else if (nHasAttr(m, "data-sfw-m")) nRemoveAttr(m, "data-sfw-m");
@@ -6023,7 +6063,7 @@ SFW.runtime = (function () {
         return;
       }
       if (container && adapter.highRisk) {
-        markMedia(container, true);
+        markMedia(container, true, null, true);
         // images the OCR gate holds (backgrounds, posters, images whose check failed) show once the user reveals them
         const ui = unitInfo.get(container);
         if (ui) for (const rec of ui.recs) { rec.st = "done"; hidePending(rec); liveRecs.delete(rec); ocrQueue.delete(rec); setOk(rec.m, false); }
@@ -6037,14 +6077,14 @@ SFW.runtime = (function () {
 
     // ---- media OCR gate ----------------------------------------------------------------------------------------
     // Contract (DESIGN \u00a73, \u00a75.3): host.ocr.request({url, kind, width, height, naturalWidth, naturalHeight}) resolves to
-    // {status:"ok", text} | {status:"unavailable"|"error"|"skipped"} and may take seconds.
+    // {status:"ok", text} | {status:"visual"|"unavailable"|"error"|"skipped"} and may take seconds.
     //
     // Zero-flash for media is NOT done here: it is the CSS quarantine (QUARANTINE_CSS: media is visibility:hidden until
     // it carries data-sfw-m="ok"). This gate only decides WHEN a unit's media may be released:
     //   * only units that decide "clear" in a cold context reach it (hot / flagged units are shielded, media included);
     //   * eligible media (img, video[poster], inline background-image) stay quarantined until the host settles;
     //   * the OCR text is folded into the unit's own decision (decide()): shield the whole unit or release the media;
-    //   * failures never release on their own: strict/lockdown keep a click-to-reveal "couldn't check" cover.
+    //   * a visual match covers the unit. Unavailable YouTube thumbnails fall back to their metadata.
     // Nothing here runs inside the MutationObserver callback except bookkeeping; requests, results and releases happen
     // from IntersectionObserver callbacks, timers and promise continuations.
     function ocrHost() {
@@ -6055,8 +6095,10 @@ SFW.runtime = (function () {
     // OCR gating applies on high-risk hosts (the only place media is quarantined). While the host config is still
     // loading, a host that may enable OCR (`host.ocrMaybe`) is treated as if it did: media is held, never released early.
     function ocrOn() {
-      if (!booted || !adapter || !adapter.highRisk || !quarSheet || adapter.ocr === false) return false;
-      return !!ocrHost() || (configPending && !!(host && host.ocrMaybe));
+      if (!booted || !adapter || !adapter.highRisk || !quarSheet) return false;
+      const h = ocrHost();
+      if (adapter.ocr === false) return !!(h && h.youtubeVisual);
+      return !!h || (configPending && !!(host && host.ocrMaybe));
     }
 
     function ocrSync() {
@@ -6095,7 +6137,7 @@ SFW.runtime = (function () {
 
     function isMediaEl(el) {
       if (MEDIA_TAGS.has(el.tagName)) return true;
-      return el.hasAttribute && nHasAttr(el, "style") && /background-image/i.test(nGetAttr(el, "style"));
+      return el.hasAttribute && nHasAttr(el, "style") && BG_URL.test(nGetAttr(el, "style"));
     }
 
     function urlKey(url) {
@@ -6140,7 +6182,7 @@ SFW.runtime = (function () {
     function normalizeRes(r) {
       if (r && typeof r === "object") {
         if (r.status === "ok" && typeof r.text === "string") return { status: "ok", text: r.text.length > 40000 ? r.text.slice(0, 40000) : r.text };
-        if (r.status === "unavailable" || r.status === "skipped") return { status: r.status };
+        if (r.status === "unavailable" || r.status === "skipped" || r.status === "visual") return { status: r.status };
       }
       return { status: "error" };
     }
@@ -6172,6 +6214,8 @@ SFW.runtime = (function () {
     function ensureRecs(u) {
       let ui = unitInfo.get(u);
       if (!ui) { ui = { recs: new Set(), plain: [] }; unitInfo.set(u, ui); }
+      const youtube = adapter.id === "youtube";
+      if (youtube && !nMatches(u, adapter.cards)) return ui;
       let list = [];
       try { list = S.shield.deepAll(u, OCR_SEL, 60); } catch (e) { /* ignore */ }
       if (u.matches && nMatches(u, OCR_SEL) && list.indexOf(u) < 0) list.unshift(u);
@@ -6181,8 +6225,10 @@ SFW.runtime = (function () {
         if (m.localName === "sfw-shield") continue;
         if (isAvatar(m)) continue; // profile pictures are never held, checked or covered on their own
         const d = mediaDesc(m);
-        if (!d && m.localName !== "img") { plain.push(m); continue; }
         let rec = mrec.get(m);
+        if (youtube && (m.localName !== "img" || closestFlat(m, adapter.cards) !== u ||
+            !(rec || (d && YOUTUBE_THUMBNAIL.test(d.url)) || YOUTUBE_THUMBNAIL.test(nGetAttr(m, "src") || "")))) continue;
+        if (!d && m.localName !== "img") { plain.push(m); continue; }
         if (!rec) rec = newRec(m, u, d);
         else {
           rec.units.add(u);
@@ -6329,7 +6375,8 @@ SFW.runtime = (function () {
       // skipped = the host could not read it (animated, multi-frame, undecodable): Strict keeps it held with the "couldn't check
       // image" cover like unavailable / error (it can carry text a still frame would show); only Balanced releases it.
       // Local data:/blob: images the engine never asks about (r.local) follow the older rule: released unless Lockdown.
-      const release = r.status === "ok" || (r.status === "skipped" ? (r.local ? mode !== "lockdown" : mode === "balanced") : mode === "balanced");
+      const release = r.status !== "visual" && (adapter.id === "youtube" || r.status === "ok" ||
+        (r.status === "skipped" ? (r.local ? mode !== "lockdown" : mode === "balanced") : mode === "balanced"));
       if (release) {
         unfailRec(rec);
         setOk(rec.m, !r.small);
@@ -6480,6 +6527,7 @@ SFW.runtime = (function () {
       const d = mediaDesc(m);
       if (d && d.url !== rec.url) ocrReset(rec, d, false);
       if (!rec.url) return; // no src yet (lazy image): stays held until one arrives
+      if (adapter.id === "youtube" && !YOUTUBE_THUMBNAIL.test(rec.url)) { finishSmall(rec); return; }
       const isImg = m.localName === "img";
       if (isImg) {
         if (rec.needLoad || !m.complete) return; // the load listener brings us back
@@ -6495,7 +6543,7 @@ SFW.runtime = (function () {
       if (c) { stats.ocr.cacheHits++; rec.res = c; resolveRec(rec); return; }
       if (!/^(?:https?|data|blob):/i.test(rec.url)) { rec.res = { status: "skipped", local: true }; resolveRec(rec); return; }
       rec.req = { width: Math.round(w), height: Math.round(h), naturalWidth: nw, naturalHeight: nh };
-      showPending(rec);
+      if (adapter.id !== "youtube") showPending(rec);
       rec.st = "wait";
       ocrQueue.add(rec);
       schedulePump();
@@ -6527,8 +6575,8 @@ SFW.runtime = (function () {
     }
 
     // Nearest to the viewport first (fully visible ones before anything off-screen, then nearest to the centre).
-    function nextRec() {
-      let best = null, bs = Infinity;
+    function queuedByDistance() {
+      const ranked = [];
       const vh = win.innerHeight || 800, vw = win.innerWidth || 1200;
       for (const rec of Array.from(ocrQueue)) {
         if (!rec.m.isConnected) { ocrQueue.delete(rec); liveRecs.delete(rec); continue; }
@@ -6536,9 +6584,9 @@ SFW.runtime = (function () {
         const dy = r.bottom < 0 ? -r.bottom : r.top > vh ? r.top - vh : 0;
         const dx = r.right < 0 ? -r.right : r.left > vw ? r.left - vw : 0;
         const score = (dy + dx) * 100000 + Math.abs((r.top + r.bottom) / 2 - vh / 2);
-        if (score < bs) { bs = score; best = rec; }
+        ranked.push({ rec, score });
       }
-      return best;
+      return ranked.sort((a, b) => a.score - b.score);
     }
 
     function pump() {
@@ -6548,9 +6596,9 @@ SFW.runtime = (function () {
       // A host with its own queue (Bowser's native worker) takes more at once: with only 3 in flight, each answer waits
       // a full drain round trip before the next image is even asked for, and thumbnails stay held for seconds.
       const fl = typeof h.flight === "number" && h.flight >= 1 ? Math.min(OCR_FLIGHT_MAX, h.flight | 0) : OCR_FLIGHT;
-      while (ocrFlying < fl && ocrQueue.size) {
-        const rec = nextRec();
-        if (!rec) break;
+      if (ocrFlying >= fl || !ocrQueue.size) return;
+      for (const { rec } of queuedByDistance()) {
+        if (ocrFlying >= fl) break;
         ocrQueue.delete(rec);
         startRequest(rec, h);
       }
@@ -6587,7 +6635,7 @@ SFW.runtime = (function () {
         }
         schedulePump();
       };
-      wd = T_SET(() => finish({ status: "error" }), OCR_WATCHDOG_MS);
+      wd = T_SET(() => finish({ status: "error" }), adapter.id === "youtube" ? YOUTUBE_VISUAL_TIMEOUT_MS : OCR_WATCHDOG_MS);
       let p;
       try { p = h.request(Object.assign({ url: rec.url, kind: rec.kind }, rec.req)); } catch (e) { p = Promise.reject(e); }
       Promise.resolve(p).then(finish, () => finish({ status: "error" }));
@@ -6679,7 +6727,6 @@ SFW.runtime = (function () {
       add(win, "click", onClick, cap);
       add(doc, "copy", onCopy, cap);
       add(doc, "cut", onCopy, cap);
-      add(win, "input", () => { pageCtxDirty = true; if (!rafId) scheduleRaf(); }, cap);
       add(win, "popstate", urlEvent, cap);
       add(win, "hashchange", urlEvent, cap);
       add(win, "sfw:nav", urlEvent, cap);
@@ -6855,7 +6902,7 @@ const CONFIG = /*__SFW_CONFIG__*/null;
       if (typeof hook !== "string" || typeof key !== "string") return null;
       if (!/^__sfw_[0-9a-f]{32}$/.test(hook) || !/^[0-9a-f]{32}$/.test(key)) return null;
       const MAX_PENDING = 256, MAX_DRAIN = 64, MAX_URL = 2048, MAX_TEXT = 4096, MAX_JSON = 262144, TIMEOUT_MS = 30000;
-      const STATUSES = { ok: 1, unavailable: 1, error: 1, skipped: 1 };
+      const STATUSES = { ok: 1, unavailable: 1, error: 1, skipped: 1, visual: 1 };
       // Originals are captured now, before any page script can replace them.
       const parseJson = JSON.parse.bind(JSON);
       const stringify = JSON.stringify.bind(JSON);
@@ -6948,7 +6995,7 @@ const CONFIG = /*__SFW_CONFIG__*/null;
       } catch (e) { return null; } // a frozen window or a taken name: no hook, so no OCR
       // flight: native keeps its own queue and drains up to MAX_DRAIN per round, so the runtime may keep 12 requests
       // in flight per frame instead of its default 3.
-      return ocrOn ? Object.freeze({ request: request, flight: 12 }) : null; // hook only (feed pushes) when OCR is off
+      return ocrOn ? Object.freeze({ request: request, flight: 12, youtubeVisual: true }) : null; // hook only (feed pushes) when OCR is off
     };
     let ocr = null;
     try { ocr = makeOcr(); } catch (e) { ocr = null; }

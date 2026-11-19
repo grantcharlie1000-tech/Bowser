@@ -106,6 +106,11 @@ tabs have their own, cleared when the last private tab closes. OCR text is never
 logged (the policy log carries event names only). Everything stays on the machine.
 
 **Limits (honest).**
+- Bowser checks X photos and eligible YouTube thumbnails against a local catalogue of Rockstar screenshot
+  and video thumbnail fingerprints. An X image that does not match continues through OCR when available.
+  YouTube's per-card metadata remains the fallback when its visual check is unavailable or takes longer
+  than 1.5 seconds after dispatch. The catalogue detects close copies of known images. Original player
+  captures, heavy crops and novel gameplay scenes can pass when their surrounding text is clear.
 - OCR needs a Windows OCR language. English is installed with most Windows editions; others are optional
   (Settings, Time and language, Language and region). Without the pack for the text's language, recognition of
   that text is poor or empty.

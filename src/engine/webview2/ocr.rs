@@ -126,6 +126,10 @@ fn take_parked(private: bool, key: &Key) -> Option<Vec<u8>> {
 
 /// Hands a body to the worker. On any failure the entry is settled `Unavailable` at once.
 fn submit(private: bool, key: Key, bytes: Vec<u8>, epoch: Arc<AtomicU64>, queued_at: u64) {
+    let Some(group) = ocr::group_for_url(&key.1) else {
+        cache_put(private, key, Entry::done(Status::Unavailable, ""));
+        return;
+    };
     let queued = HUB.with(|hub| {
         let mut hub = hub.borrow_mut();
         if hub.worker.is_none() && !hub.worker_failed {
@@ -135,7 +139,7 @@ fn submit(private: bool, key: Key, bytes: Vec<u8>, epoch: Arc<AtomicU64>, queued
         let ticket = hub.next_ticket;
         hub.next_ticket += 1;
         let Some(worker) = hub.worker.as_ref() else { return false };
-        worker.push(ocr::Job { ticket, bytes, epoch, queued_at });
+        worker.push(ocr::Job { ticket, bytes, group, epoch, queued_at });
         hub.tickets.insert(ticket, (usize::from(private), key.clone()));
         true
     });
@@ -551,7 +555,7 @@ impl TabOcr {
     /// An image response arrived. Decides whether to read it, and reads it.
     fn on_response(self: &Rc<Self>, args: &ICoreWebView2WebResourceResponseReceivedEventArgs) -> Result<()> {
         self.responses_seen.set(true);
-        if self.creds.borrow().is_none() || !setting_on() || ocr::engine_unavailable() {
+        if self.creds.borrow().is_none() || !setting_on() {
             return Ok(());
         }
         let Some(top) = self.top_group.get() else { return Ok(()) };
@@ -567,7 +571,11 @@ impl TabOcr {
             };
             let Some(url) = ocr::normalize_url(&raw) else { return Ok(()) };
             let Some(host_group) = ocr::group_for_url(&url) else { return Ok(()) };
-            let _ = host_group; // any listed image host: the serve check compares groups per frame
+            if (ocr::engine_unavailable() && !ocr::visual_group(host_group))
+                || (host_group == Group::YouTube && !ocr::is_youtube_thumbnail(&url))
+            {
+                return Ok(());
+            }
             let small = ocr::known_small(&url);
             let key: Key = (top, url);
             // Seen already (pending, scanned, or settled): nothing to read.
@@ -781,7 +789,11 @@ impl TabOcr {
                 now_answers.push(unavailable(item.id));
                 continue;
             };
-            if !setting_on() || ocr::engine_unavailable() || !ocr::may_serve(frame_group, ocr::group_for_url(&url)) {
+            let image_group = ocr::group_for_url(&url);
+            if !setting_on() || !ocr::may_serve(frame_group, image_group)
+                || (ocr::engine_unavailable() && !image_group.is_some_and(ocr::visual_group))
+                || (image_group == Some(Group::YouTube) && !ocr::is_youtube_thumbnail(&url))
+            {
                 now_answers.push(unavailable(item.id));
                 continue;
             }

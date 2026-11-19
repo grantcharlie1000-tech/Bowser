@@ -18,11 +18,11 @@ const RAF = (n, body) => `var __n=0;(function t(){__n++;${body};if(__n<${n})requ
 
 export const FIXTURES = [
   // ---------------------------------------------------------------- text delivered outside textContent
-  { id: "input-value-attr", scope: "must", why: "spoiler only in <input value=...> (not textContent)", body: ITEM(`<input class="sentinel" style="width:620px" value="${S}">`) + ITEM(`<input type="button" class="sentinel" value="${S}">`) },
+  { id: "input-value-attr", scope: "must", why: "spoiler in display-only input value or button label", body: ITEM(`<input readonly class="sentinel" style="width:620px" value="${S}">`) + ITEM(`<input type="button" class="sentinel" value="${S}">`) },
   { id: "input-value-property", scope: "limit", why: "input.value set by script after load (property, no attribute, no mutation record)", body: ITEM(`<input id="i" class="sentinel" style="width:620px" value="">`), script: `setTimeout(function(){document.getElementById('i').value=${JSON.stringify(S)}},200)` },
-  { id: "textarea-text", scope: "must", why: "spoiler in textarea default text (textContent)", body: ITEM(`<textarea class="sentinel" rows="3" cols="40">${S}</textarea>`) },
+  { id: "textarea-text", scope: "must", why: "spoiler in a read-only textarea's text", body: ITEM(`<textarea readonly class="sentinel" rows="3" cols="40">${S}</textarea>`) },
   { id: "textarea-value-property", scope: "limit", why: "textarea.value set by script (no DOM text)", body: ITEM(`<textarea id="t" class="sentinel" rows="3" cols="40"></textarea>`), script: `setTimeout(function(){document.getElementById('t').value=${JSON.stringify(S)}},200)` },
-  { id: "placeholder-text", scope: "must", why: "spoiler in ::placeholder (attribute on an empty input)", head: `<style>input::placeholder{color:#ff00ff;opacity:1;font:700 26px Arial}</style>`, body: ITEM(`<input class="sentinel-ph" style="width:620px" placeholder="${S}">`) },
+  { id: "placeholder-text", scope: "must", why: "spoiler in a read-only input's ::placeholder", head: `<style>input::placeholder{color:#ff00ff;opacity:1;font:700 26px Arial}</style>`, body: ITEM(`<input readonly class="sentinel-ph" style="width:620px" placeholder="${S}">`) },
   { id: "select-option", scope: "must", why: "spoiler in a <select>/<option> (rendered by the control)", body: ITEM(`<select class="sentinel" style="font:700 26px Arial;color:#ff00ff"><option>${S}</option></select>`) },
   { id: "select-listbox", scope: "must", why: "spoiler in listbox <select size=3>", body: ITEM(`<select size="3" style="font:700 22px Arial;color:#ff00ff" class="sentinel"><option>${S}</option><option>other</option></select>`) },
   { id: "svg-text", scope: "must", why: "spoiler in SVG <text>", body: ITEM(`<svg width="640" height="60"><text class="sentinel" x="4" y="40" fill="#ff00ff" style="font:700 26px Arial">${S}</text></svg>`) },

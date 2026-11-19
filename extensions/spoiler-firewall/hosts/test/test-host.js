@@ -18,6 +18,7 @@
   const ocrPending = [];
   const ocrCfg = tc.ocr || {};
   const fakeOcr = tc.ocr ? {
+    youtubeVisual: !!ocrCfg.youtubeVisual,
     request: function (req) {
       const rules = ocrCfg.rules || [];
       let rule = null;

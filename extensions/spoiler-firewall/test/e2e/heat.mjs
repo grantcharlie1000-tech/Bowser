@@ -58,6 +58,31 @@ await run("X post page whose post is a spoiler: replies with profile pictures ar
 await run("X page of one spoiler reply: the rest of the page is not covered for it", "x.com", "/fan/status/3333", 800);
 await run("X launch-week home timeline (warm feed)", "x.com", "/launch/home", 1400);
 
+{
+  const ctx = await instrumentedContext(browser, { config: { mode: "strict", ocr: { manual: true } }, detection: "real", probe: false });
+  const p = await ctx.newPage();
+  try {
+    await p.goto(`http://x.com:${srv.portA}/counters/home`);
+    await p.evaluate(() => document.body.insertAdjacentHTML("beforeend", `
+      <article data-testid="tweet" id="visual-post"><div data-testid="tweetPhoto"><img width="120" height="80" src="/static/pic.svg?visual"></div></article>
+      <article data-testid="tweet" id="clear-post"><div data-testid="tweetPhoto"><img width="120" height="80" src="/static/pic.svg?ordinary"></div></article>`));
+    await p.waitForFunction(() => window.__sfw.ocr.log.some(({ url }) => url.includes("?visual")) &&
+      window.__sfw.ocr.log.some(({ url }) => url.includes("?ordinary")));
+    await p.evaluate(() => {
+      window.__sfw.ocr.settle("?visual", { status: "visual" });
+      window.__sfw.ocr.settle("?ordinary", { status: "ok", text: "" });
+    });
+    await p.waitForFunction(() => document.querySelector("#visual-post").matches('[data-sfw="shield"]') &&
+      document.querySelector("#clear-post img").getAttribute("data-sfw-m") === "ok");
+    assert.deepEqual(await p.evaluate(() => ["#visual-post img", "#clear-post img"]
+      .map((sel) => getComputedStyle(document.querySelector(sel)).visibility)), ["hidden", "visible"]);
+    console.log("ok   X uncaptioned visual match covers only its own post");
+  } catch (e) {
+    failed++;
+    console.log(`FAIL X visual match: ${e.message}`);
+  } finally { await ctx.close(); }
+}
+
 await run("X counters ticking in place; a digit that completes the franchise name in place", "x.com", "/counters/home", 1200);
 {
   // the counter ticks were skipped, not re-classified each time

@@ -41,17 +41,21 @@ they measure robustness to *forms* of spoilers, not knowledge of story content.
    - Bowser: on by default via Windows.Media.Ocr; only languages with an installed Windows OCR
      pack; WebP/AVIF need the Windows codecs; animated images are not read (`skipped`): on high-risk hosts
      they stay covered ("Couldn't check image") in Strict and Lockdown, released only in Balanced.
-   - **No visual classifier.** A screenshot of the game with no readable text, in a thread with no
-     GTA context, is not recognised. Lockdown keeps such media covered on high-risk sites; Strict
-     releases text-free images in cold context after inspection. This is the largest residual risk.
+   - Bowser compares images on X and YouTube thumbnails against fingerprints from the official Rockstar
+     media gallery. This can recognise reposted screenshots with no readable text. New gameplay scenes,
+     heavily edited images and clips without a matching poster still depend on text or context. The
+     standalone Chrome extension uses metadata and optional OCR.
 6. **Video.** Titles, descriptions, captions, thumbnails (via OCR) and surrounding text are
-   inspected; frames and audio are not. Spoiler-shaped videos are paused, muted and covered.
+   inspected where available. The YouTube watch player uses the active video's metadata, with its
+   recommendations checked individually. Frames and audio are not scanned. Covered videos are paused and muted.
    Local audio transcription was investigated and not shipped (model size and CPU cost).
 
 ## Known rendering/exposure limits
 
+- **Editable text stays usable.** The filter skips editable controls, including their initial values and
+  placeholders. It checks posted text and display-only fields.
 - **Content the engine cannot reach:** closed declarative shadow roots in the main world (Bowser);
-  form-control values set by script; CSS-generated `content:`; canvas-drawn text; text inside
+  unobserved form-control property changes; CSS-generated `content:`; canvas-drawn text; text inside
   sandboxed frames is judged from the parent (srcdoc text, size and context) rather than read.
 - **Browser UI outside the page (Chrome):** the tab title can show the original page title for a
   moment before it is rewritten; the address bar shows URL slugs; hover-link status bubbles for

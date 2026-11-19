@@ -47,7 +47,7 @@ const CONFIG = /*__SFW_CONFIG__*/null;
       if (typeof hook !== "string" || typeof key !== "string") return null;
       if (!/^__sfw_[0-9a-f]{32}$/.test(hook) || !/^[0-9a-f]{32}$/.test(key)) return null;
       const MAX_PENDING = 256, MAX_DRAIN = 64, MAX_URL = 2048, MAX_TEXT = 4096, MAX_JSON = 262144, TIMEOUT_MS = 30000;
-      const STATUSES = { ok: 1, unavailable: 1, error: 1, skipped: 1 };
+      const STATUSES = { ok: 1, unavailable: 1, error: 1, skipped: 1, visual: 1 };
       // Originals are captured now, before any page script can replace them.
       const parseJson = JSON.parse.bind(JSON);
       const stringify = JSON.stringify.bind(JSON);
@@ -140,7 +140,7 @@ const CONFIG = /*__SFW_CONFIG__*/null;
       } catch (e) { return null; } // a frozen window or a taken name: no hook, so no OCR
       // flight: native keeps its own queue and drains up to MAX_DRAIN per round, so the runtime may keep 12 requests
       // in flight per frame instead of its default 3.
-      return ocrOn ? Object.freeze({ request: request, flight: 12 }) : null; // hook only (feed pushes) when OCR is off
+      return ocrOn ? Object.freeze({ request: request, flight: 12, youtubeVisual: true }) : null; // hook only (feed pushes) when OCR is off
     };
     let ocr = null;
     try { ocr = makeOcr(); } catch (e) { ocr = null; }

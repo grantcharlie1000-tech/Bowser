@@ -17,6 +17,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::spoiler::{OcrCredentials, json_string};
 
+mod visual;
+
 /// Largest image body taken (Content-Length, or bytes read when the length is unknown).
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// Smaller bodies cannot be a 96x64 image (a flat-colour text PNG can still be only ~1 KB).
@@ -183,6 +185,17 @@ pub fn may_serve(frame: Option<Group>, image: Option<Group>) -> bool {
     matches!((frame, image), (Some(a), Some(b)) if a == b)
 }
 
+pub fn visual_group(group: Group) -> bool {
+    matches!(group, Group::X | Group::YouTube)
+}
+
+pub fn is_youtube_thumbnail(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else { return false };
+    let Some(host) = parsed.host_str() else { return false };
+    (host == "ytimg.com" || host.ends_with(".ytimg.com"))
+        && (parsed.path().starts_with("/vi/") || parsed.path().starts_with("/vi_webp/"))
+}
+
 /// The URL a page asked about, in the form the cache uses: absolute http(s), at most 2048
 /// characters, no credentials, no fragment, no whitespace or control characters.
 pub fn normalize_url(raw: &str) -> Option<String> {
@@ -227,6 +240,7 @@ pub fn known_small(url: &str) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Status {
     Ok,
+    Visual,
     Unavailable,
     Error,
     Skipped,
@@ -236,6 +250,7 @@ impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::Visual => "visual",
             Self::Unavailable => "unavailable",
             Self::Error => "error",
             Self::Skipped => "skipped",
@@ -578,6 +593,7 @@ pub fn plan(width: u32, height: u32, max_dimension: u32) -> Option<Plan> {
 pub struct Job {
     pub ticket: u64,
     pub bytes: Vec<u8>,
+    pub group: Group,
     /// The tab's navigation epoch, and its value when the job was queued. A job whose epoch moved
     /// on is dropped unrun.
     pub epoch: Arc<AtomicU64>,
@@ -714,7 +730,7 @@ fn worker_main(shared: Arc<Shared>) {
         let outcome = if job.epoch.load(Ordering::Relaxed) != job.queued_at {
             None
         } else {
-            let (status, text) = recognizer.recognize(&job.bytes);
+            let (status, text) = recognizer.recognize_for(&job.bytes, Some(job.group));
             if status == Status::Unavailable && recognizer.engine_missing() {
                 ENGINE_UNAVAILABLE.store(true, Ordering::Relaxed);
             }
@@ -799,9 +815,7 @@ impl Recognizer {
     /// Decodes and scans one image. `Unavailable` when no engine exists or the image cannot be
     /// decoded (codec missing: WebP/AVIF without the Windows extension), `Skipped` for animated or
     /// too-small images, `Error` for an engine failure.
-    pub fn recognize(&mut self, bytes: &[u8]) -> (Status, String) {
-        self.init();
-        let Some(primary) = self.primary.clone() else { return (Status::Unavailable, String::new()) };
+    fn recognize_for(&mut self, bytes: &[u8], group: Option<Group>) -> (Status, String) {
         let Ok(decoder) = decode(bytes) else { return (Status::Unavailable, String::new()) };
         if decoder.FrameCount().unwrap_or(1) > 1 {
             return (Status::Skipped, String::new());
@@ -809,6 +823,15 @@ impl Recognizer {
         let (Ok(width), Ok(height)) = (decoder.OrientedPixelWidth(), decoder.OrientedPixelHeight()) else {
             return (Status::Error, String::new());
         };
+        if group.is_some_and(visual_group) && visual::matches(&decoder, width, height) {
+            return (Status::Visual, String::new());
+        }
+        // Thumbnail checks use the same worker and cache, with no Tesseract or Windows OCR passes.
+        if group == Some(Group::YouTube) {
+            return (Status::Ok, String::new());
+        }
+        self.init();
+        let Some(primary) = self.primary.clone() else { return (Status::Unavailable, String::new()) };
         let max_dimension = OcrEngine::MaxImageDimension().unwrap_or(10_000);
         let Some(plan) = plan(width, height, max_dimension) else { return (Status::Skipped, String::new()) };
         let try_extras = plan.tiles.len() <= 2
@@ -840,6 +863,11 @@ impl Recognizer {
             }
         }
         (Status::Ok, clip_text(&text))
+    }
+
+    #[cfg(test)]
+    fn recognize(&mut self, bytes: &[u8]) -> (Status, String) {
+        self.recognize_for(bytes, None)
     }
 }
 
@@ -1286,7 +1314,7 @@ mod tests {
         let worker = Worker { shared: shared.clone() };
         let epoch = Arc::new(AtomicU64::new(0));
         for ticket in 0..(QUEUE_CAPACITY as u64 + 5) {
-            worker.push(Job { ticket, bytes: vec![0; 10], epoch: epoch.clone(), queued_at: 0 });
+            worker.push(Job { ticket, bytes: vec![0; 10], group: Group::X, epoch: epoch.clone(), queued_at: 0 });
         }
         let dropped: Vec<u64> = worker.take_results().into_iter().map(|r| r.ticket).collect();
         assert_eq!(dropped, vec![0, 1, 2, 3, 4]);
@@ -1295,7 +1323,7 @@ mod tests {
         shared.queue.lock().unwrap().jobs.clear();
         shared.queue.lock().unwrap().bytes = 0;
         for ticket in 100..103u64 {
-            worker.push(Job { ticket, bytes: vec![0; 20 * 1024 * 1024], epoch: epoch.clone(), queued_at: 0 });
+            worker.push(Job { ticket, bytes: vec![0; 20 * 1024 * 1024], group: Group::X, epoch: epoch.clone(), queued_at: 0 });
         }
         let dropped: Vec<u64> = worker.take_results().into_iter().map(|r| r.ticket).collect();
         assert_eq!(dropped, vec![100]);

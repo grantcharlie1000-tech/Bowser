@@ -46,6 +46,19 @@ SFW.shield = (function () {
   };
 
   const VOID = new Set(["IMG", "VIDEO", "AUDIO", "CANVAS", "INPUT", "TEXTAREA", "SELECT", "IFRAME", "OBJECT", "EMBED", "SVG", "BR", "HR", "PICTURE", "SOURCE", "TRACK", "METER", "PROGRESS", "BUTTON"]);
+  const EDITOR = '[contenteditable]:not([contenteditable="false" i]),[role=textbox],textarea:not(:disabled):not([readonly]),input:not(:disabled):not([readonly]):is(:not([type]),[type=text],[type=search],[type=email],[type=url],[type=tel],[type=password],[type=number])';
+  const nMatches = un(ElP, "matches");
+  const nQuery = un(ElP, "querySelector");
+
+  function isEditor(e) {
+    if (e.isContentEditable) return true;
+    if (e.localName === "input" || e.localName === "textarea") return nMatches(e, EDITOR);
+    return e.hasAttributes() && nGet(e, "role") === "textbox";
+  }
+
+  function hasEditor(e) {
+    return isEditor(e) || !!nQuery(e, EDITOR);
+  }
 
   // own keys only: a polluted Object.prototype (Prototype.js era pages) must not leak entries into the dependency table
   function configure(opts) {
@@ -85,11 +98,18 @@ SFW.shield = (function () {
     const seen = new Set();
     const add = (e, pos) => { if (!seen.has(e)) { seen.add(e); out.push({ el: e, needPos: pos }); } };
     const resolve = (e, depth) => {
+      if (isEditor(e)) return;
+      if (hasEditor(e)) {
+        if (depth < 12) {
+          for (const child of e.children) if (child.localName !== "sfw-shield") resolve(child, depth + 1);
+        }
+        return;
+      }
       let cs;
       try { cs = win.getComputedStyle(e); } catch (x) { add(e, true); return; }
       const display = cs.display;
       const up = e.parentElement;
-      if ((VOID.has(e.tagName) || e.tagName === "svg") && up && depth < 4 && up.tagName !== "BODY" && up.tagName !== "HTML") {
+      if ((VOID.has(e.tagName) || e.tagName === "svg") && up && depth < 4 && up.tagName !== "BODY" && up.tagName !== "HTML" && !hasEditor(up)) {
         // replaced / void elements cannot host an overlay: use the parent box (never <body> / <html>: hiding the page
         // root for one element blanks the whole page, and a 0-height body leaves the cover invisible)
         resolve(e.parentElement, depth + 1);
@@ -687,7 +707,7 @@ SFW.shield = (function () {
   }
 
   return {
-    TEXT, configure, prepare, apply, reveal, reblur, release, state, setFp, repair,
+    TEXT, configure, prepare, isEditor, hasEditor, apply, reveal, reblur, release, state, setFp, repair,
     ownerOfHost, shieldedAncestor, count, all, prune,
     applyPage, revealPage, releasePage, pageState, notice, emergencyCover, emergencyNotice, deepAll,
     theme: themeOf, setTheme, themeFromColor, themeFromScheme,
