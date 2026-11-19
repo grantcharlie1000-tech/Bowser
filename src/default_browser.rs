@@ -27,6 +27,9 @@ use windows::{
 /// The `StartMenuInternet` registration name and the ProgID for Bowser's HTML handler.
 const APP_NAME: PCWSTR = w!("Bowser");
 const PROG_ID: &str = "Bowser.HTML";
+const CLIENT: &str = r"Software\Clients\StartMenuInternet\Bowser";
+const REGISTERED_APPLICATIONS: &str = r"Software\RegisteredApplications";
+const PROG_ID_COMMAND: &str = r"Software\Classes\Bowser.HTML\shell\open\command";
 
 fn to_wide_z(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -97,7 +100,6 @@ pub fn register_hkcu(exe: &Path) -> windows::core::Result<()> {
     let open_command = open_command(&exe);
     let icon = format!("{exe},0");
 
-    const CLIENT: &str = r"Software\Clients\StartMenuInternet\Bowser";
     write_key_value(CLIENT, "", "Bowser")?;
     write_key_value(&format!(r"{CLIENT}\Capabilities"), "ApplicationName", "Bowser")?;
     write_key_value(&format!(r"{CLIENT}\Capabilities"), "ApplicationIcon", &icon)?;
@@ -112,12 +114,11 @@ pub fn register_hkcu(exe: &Path) -> windows::core::Result<()> {
     write_key_value(&format!(r"{CLIENT}\Capabilities\FileAssociations"), ".html", PROG_ID)?;
     write_key_value(&format!(r"{CLIENT}\shell\open\command"), "", &open_command)?;
 
-    write_key_value("Software\\RegisteredApplications", "Bowser", &format!(r"{CLIENT}\Capabilities"))?;
-
     let prog_id_key = format!(r"Software\Classes\{PROG_ID}");
     write_key_value(&prog_id_key, "", "Bowser HTML Document")?;
     write_key_value(&format!(r"{prog_id_key}\DefaultIcon"), "", &icon)?;
-    write_key_value(&format!(r"{prog_id_key}\shell\open\command"), "", &open_command)?;
+    write_key_value(PROG_ID_COMMAND, "", &open_command)?;
+    write_key_value(REGISTERED_APPLICATIONS, "Bowser", &format!(r"{CLIENT}\Capabilities"))?;
 
     Ok(())
 }
@@ -160,11 +161,32 @@ fn open_default_apps_settings() -> bool {
     (result.0 as isize) > 32
 }
 
-/// Reads the `UserChoice` Windows has recorded for the `http` URL association, for the settings
-/// page's read-only status. `Some(true)`/`Some(false)` when it could be read, `None` otherwise (for
-/// example on a build where the key does not exist yet).
+/// Checks the HTTP choice and this copy's registration. A stale choice must leave the Settings
+/// action available so it can repair the registration.
 pub fn is_http_default() -> Option<bool> {
-    current_http_handler().map(|prog_id| prog_id.eq_ignore_ascii_case(PROG_ID))
+    let choice = current_http_handler()?;
+    Some(
+        choice.eq_ignore_ascii_case(PROG_ID)
+            && current_exe().is_some_and(|exe| registration_matches(&exe, registry_string)),
+    )
+}
+
+fn registration_matches(exe: &Path, read: impl Fn(&str, &str) -> Option<String>) -> bool {
+    let capabilities = format!(r"{CLIENT}\Capabilities");
+    let url_associations = format!(r"{capabilities}\URLAssociations");
+    let client_command = format!(r"{CLIENT}\shell\open\command");
+    let command = open_command(&exe.to_string_lossy());
+    [
+        (REGISTERED_APPLICATIONS, "Bowser", capabilities.as_str()),
+        (&url_associations, "http", PROG_ID),
+        (&url_associations, "https", PROG_ID),
+        (&client_command, "", command.as_str()),
+        (PROG_ID_COMMAND, "", command.as_str()),
+    ]
+    .into_iter()
+    .all(|(path, name, expected)| {
+        read(path, name).is_some_and(|value| value.eq_ignore_ascii_case(expected))
+    })
 }
 
 fn current_http_handler() -> Option<String> {
@@ -177,13 +199,27 @@ fn registry_string(path: &str, name: &str) -> Option<String> {
     use windows::Win32::System::Registry::{RRF_RT_REG_SZ, RegGetValueW};
     let path_wide = to_wide_z(path);
     let name_wide = to_wide_z(name);
-    let mut buffer = [0u16; 260];
-    let mut size = (buffer.len() * 2) as u32;
+    let value = if name.is_empty() { PCWSTR::null() } else { PCWSTR(name_wide.as_ptr()) };
+    let mut size = 0;
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(path_wide.as_ptr()),
+            value,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut size),
+        )
+        .ok()
+        .ok()?;
+    }
+    let mut buffer = vec![0u16; (size as usize).div_ceil(2)];
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,
             PCWSTR(path_wide.as_ptr()),
-            PCWSTR(name_wide.as_ptr()),
+            value,
             RRF_RT_REG_SZ,
             None,
             Some(buffer.as_mut_ptr().cast()),
@@ -206,6 +242,29 @@ pub fn current_exe() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_or_stale_registration_leaves_default_action_available() {
+        let exe = Path::new(r"C:\Programs\Bowser\Bowser.exe");
+        let read = |path: &str, name: &str| match name {
+            "Bowser" => Some(format!(r"{CLIENT}\Capabilities")),
+            "http" | "https" => Some(PROG_ID.to_owned()),
+            "" if path.ends_with(r"\shell\open\command") => {
+                Some(open_command(&exe.to_string_lossy()))
+            }
+            _ => None,
+        };
+        assert!(registration_matches(exe, read));
+        assert!(!registration_matches(exe, |path, name| {
+            (path != REGISTERED_APPLICATIONS).then(|| read(path, name)).flatten()
+        }));
+        assert!(!registration_matches(exe, |path, name| {
+            if path == PROG_ID_COMMAND {
+                return Some(open_command(r"C:\Programs\Bowser Stable 2\Bowser.exe"));
+            }
+            read(path, name)
+        }));
+    }
 
     #[test]
     fn prog_id_matching_is_case_insensitive() {
