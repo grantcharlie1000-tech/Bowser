@@ -190,11 +190,21 @@ pub trait EngineAdapter {
             windows::Win32::Foundation::E_NOTIMPL,
         ))
     }
-    /// Runs one reader-view script (see `crate::reader`) in a tab and hands back its raw result: the
-    /// JSON string literal the script produced. Only an http(s) page is ever scripted, checked against
-    /// the live address at the moment of the call; anything else, a missing page, a failed call
-    /// or an oversized answer reports `None`. `done` may run before this returns.
+    /// Runs a short page script and returns its raw JSON result. The page's live
+    /// address must be HTTP(S). A missing page, failed call, or oversized answer reports `None`.
+    /// `done` may run before this returns.
     fn run_reader_script(
+        &mut self,
+        tab: crate::tabs::TabId,
+        script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        const SHORT_SCRIPT_RESULT_LIMIT: usize = 64;
+        self.run_page_script(tab, script, SHORT_SCRIPT_RESULT_LIMIT, done);
+    }
+    /// Awaits a cooperative Reader scan and returns its bounded JSON string result under the
+    /// same page restrictions as `run_reader_script`.
+    fn run_reader_scan(
         &mut self,
         _tab: crate::tabs::TabId,
         _script: &str,

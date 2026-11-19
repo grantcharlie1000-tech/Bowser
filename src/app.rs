@@ -1005,6 +1005,11 @@ pub enum ReaderResult {
     Failed,
 }
 
+enum PageScript {
+    Short(String),
+    Reader(String),
+}
+
 /// Window timer for the throttled blocked-count title. Timer ids 1 to 4 are taken in win32/mod.rs.
 pub(crate) const BLOCKED_TITLE_TIMER: usize = 5;
 /// Shortest gap between blocked-count title refreshes (about four a second).
@@ -4668,12 +4673,12 @@ impl App {
     }
 
     // --- reader view ---
-    /// Runs one reader script in `tab`. `done` always runs with the app unborrowed: an engine that
-    /// answers at once (no live page) is answered after `call_engine` returns.
-    fn run_reader_script(
+    /// Runs a script in `tab`. If the engine answers immediately, call `done` after releasing
+    /// the app borrow.
+    fn run_page_script(
         app: &AppRef,
         tab: TabId,
-        script: String,
+        script: PageScript,
         done: Box<dyn FnOnce(Option<String>)>,
     ) {
         let done = Rc::new(RefCell::new(Some(done)));
@@ -4689,7 +4694,10 @@ impl App {
                 }
             }) as Box<dyn FnOnce(Option<String>)>
         };
-        let called = Self::call_engine(app, |engine| engine.run_reader_script(tab, &script, answer));
+        let called = Self::call_engine(app, |engine| match script {
+            PageScript::Short(script) => engine.run_reader_script(tab, &script, answer),
+            PageScript::Reader(script) => engine.run_reader_scan(tab, &script, answer),
+        });
         in_call.set(false);
         let text = match (called, early.borrow_mut().take()) {
             (None, _) => Some(None),
@@ -4814,10 +4822,10 @@ impl App {
         let epoch = Self::reader_state(app, tab).map_or(0, |state| state.epoch);
         let script = Self::reader_invocation(app, crate::reader::Action::Toggle(mode));
         let weak = Rc::downgrade(app);
-        Self::run_reader_script(
+        Self::run_page_script(
             app,
             tab,
-            script,
+            PageScript::Reader(script),
             Box::new(move |text| {
                 let Some(app) = weak.upgrade() else { return };
                 let outcome = text.as_deref().and_then(crate::reader::parse_result);
@@ -4835,10 +4843,10 @@ impl App {
         let epoch = Self::reader_state(app, tab).map_or(0, |state| state.epoch);
         let script = Self::reader_invocation(app, crate::reader::Action::Probe);
         let weak = Rc::downgrade(app);
-        Self::run_reader_script(
+        Self::run_page_script(
             app,
             tab,
-            script,
+            PageScript::Reader(script),
             Box::new(move |text| {
                 let Some(app) = weak.upgrade() else { return };
                 let outcome = text.as_deref().and_then(crate::reader::parse_result);
@@ -4945,10 +4953,10 @@ impl App {
         };
         let script = Self::reader_invocation(app, crate::reader::Action::Exit);
         let weak = Rc::downgrade(app);
-        Self::run_reader_script(
+        Self::run_page_script(
             app,
             tab,
-            script,
+            PageScript::Reader(script),
             Box::new(move |text| {
                 let Some(app) = weak.upgrade() else { return };
                 if let Some(outcome) = text.as_deref().and_then(crate::reader::parse_result)

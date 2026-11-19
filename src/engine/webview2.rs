@@ -178,9 +178,8 @@ fn query_picture_in_picture_eligibility(webview: &ICoreWebView2, done: Box<dyn F
     }
 }
 
-/// Evaluates Reader in the live page and waits for its cooperative scan to settle. Like other
-/// page tools it only runs on http(s), and a failed, canceled or oversized result reports `None`.
-fn run_reader_script(
+/// Evaluates Reader on a live HTTP(S) page and waits for its cooperative scan to settle.
+fn run_reader_scan(
     webview: &ICoreWebView2,
     script: &str,
     done: Box<dyn FnOnce(Option<String>)>,
@@ -4674,7 +4673,7 @@ impl EngineAdapter for WebView2Engine {
         let completed = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
         unsafe { webview.ExecuteScript(PCWSTR(wide_script.as_ptr()), &completed) }
     }
-    fn run_reader_script(
+    fn run_reader_scan(
         &mut self,
         tab: TabId,
         script: &str,
@@ -4687,7 +4686,7 @@ impl EngineAdapter for WebView2Engine {
             .get(&tab)
             .and_then(|tab| tab.webview.clone());
         match webview {
-            Some(webview) => run_reader_script(&webview, script, done),
+            Some(webview) => run_reader_scan(&webview, script, done),
             None => done(None),
         }
     }
