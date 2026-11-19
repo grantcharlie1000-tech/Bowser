@@ -182,11 +182,52 @@ struct WebAppView {
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
     remove_handlers: Vec<Box<dyn Fn()>>,
-    /// When the app was last hidden; `None` while it is visible.
-    hidden_since: Option<Instant>,
-    suspended: bool,
+    sleep: Rc<WebAppSleep>,
     /// Keeps the Spoiler Firewall registration alive as long as the view.
     _spoiler: Option<Rc<SpoilerReg>>,
+}
+
+#[derive(Default)]
+struct WebAppSleep {
+    hidden_since: Cell<Option<Instant>>,
+    visibility: Cell<u64>,
+    document: RefCell<super::document_gate::DocumentGate>,
+    pending: Cell<bool>,
+    suspended: Cell<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WebAppSuspendStamp {
+    visibility: u64,
+    document: (u64, u64, u64),
+}
+
+impl WebAppSleep {
+    fn stamp(&self) -> Option<WebAppSuspendStamp> {
+        self.hidden_since.get()?;
+        Some(WebAppSuspendStamp {
+            visibility: self.visibility.get(),
+            document: self.document.try_borrow().ok()?.proof()?,
+        })
+    }
+
+    fn set_visible(&self, visible: bool, now: Instant) {
+        let hidden = self.hidden_since.get();
+        if visible == hidden.is_some() {
+            self.visibility.set(self.visibility.get().wrapping_add(1));
+            self.hidden_since.set((!visible).then_some(now));
+        }
+    }
+
+    fn complete(&self, stamp: WebAppSuspendStamp, live: bool, success: bool) -> bool {
+        let pending = self.pending.replace(false);
+        if pending && success && live && self.stamp() == Some(stamp) {
+            self.suspended.set(true);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 struct HostState {
@@ -492,32 +533,87 @@ impl WebAppHost {
         Ok(())
     }
 
-    /// Suspends every app that has been hidden for at least `after`, is not already suspended and
-    /// is not playing audio. Returns how many were suspended.
-    pub fn suspend_hidden(&self, now: Instant, after: Duration) -> usize {
-        let mut state = self.state.borrow_mut();
-        if state.closed {
-            return 0;
-        }
-        let mut suspended = 0;
-        for app in state.apps.values_mut() {
-            let hidden_for = app.hidden_since.map(|since| now.saturating_duration_since(since));
-            // Skip the audio query for apps that cannot be due anyway.
-            let due_without_audio = web_app_suspend_due(hidden_for, app.suspended, false, after);
-            if due_without_audio
-                && web_app_suspend_due(hidden_for, app.suspended, app.playing_audio(), after)
-                && app.suspend()
-            {
-                suspended += 1;
+    /// Asks WebView2 to suspend long-hidden apps. COM can reenter, so dispatch without a host
+    /// borrow and scope the result to the live view, its hidden interval and its document.
+    pub fn suspend_hidden(&self, now: Instant, after: Duration) {
+        let candidates = {
+            let state = self.state.borrow();
+            if state.closed {
+                return;
+            }
+            state
+                .apps
+                .iter()
+                .filter_map(|(id, app)| {
+                    let sleep = &app.sleep;
+                    let hidden_for = sleep
+                        .hidden_since
+                        .get()
+                        .map(|since| now.saturating_duration_since(since));
+                    if sleep.pending.get()
+                        || !web_app_suspend_due(hidden_for, sleep.suspended.get(), false, after)
+                    {
+                        return None;
+                    }
+                    Some((
+                        id.clone(),
+                        app.lease.clone(),
+                        sleep.clone(),
+                        sleep.stamp()?,
+                        app.webview.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, lease, sleep, stamp, webview) in candidates {
+            let live = || lease.is_live() && sleep.stamp() == Some(stamp);
+            if !live() || sleep.suspended.get() || sleep.pending.replace(true) {
+                continue;
+            }
+            // Claim the view before any COM call, including the native media/download queries.
+            let current = || {
+                live()
+                    && !super::download::owner_downloading(super::download::app_owner(&id))
+                    && live()
+            };
+            if !current() || super::webview2::webview_audio_blocks_sleep(&webview) {
+                sleep.pending.set(false);
+                continue;
+            }
+            let Ok(api) = webview.cast::<ICoreWebView2_3>() else {
+                sleep.pending.set(false);
+                continue;
+            };
+            if !current() {
+                sleep.pending.set(false);
+                continue;
+            }
+            let callback_sleep = sleep.clone();
+            let callback_api = api.clone();
+            let handler = TrySuspendCompletedHandler::create(Box::new(move |status, suspended| {
+                let success = status.is_ok() && suspended;
+                let current = lease.is_live()
+                    && !super::download::owner_downloading(super::download::app_owner(&id))
+                    && lease.is_live();
+                if !callback_sleep.complete(stamp, current, success) && success && lease.is_live() {
+                    let _ = unsafe { callback_api.Resume() };
+                }
+                Ok(())
+            }));
+            if unsafe { api.TrySuspend(&handler) }.is_err() {
+                sleep.pending.set(false);
             }
         }
-        suspended
     }
 
     /// Whether any app is hidden and still awake, so an idle timer has more work to do.
     pub fn has_pending_suspend(&self) -> bool {
         let state = self.state.borrow();
-        !state.closed && state.apps.values().any(|app| app.hidden_since.is_some() && !app.suspended)
+        !state.closed
+            && state
+                .apps
+                .values()
+                .any(|app| app.sleep.hidden_since.get().is_some() && !app.sleep.suspended.get())
     }
 
     /// Retries the current document for an app after a load error.
@@ -560,7 +656,7 @@ impl WebAppHost {
         let state = self.state.borrow();
         let Some(app) = state.apps.get(app_id) else { return false; };
         // A suspended page is asleep on purpose; it loads fresh when it is next shown.
-        !app.suspended && unsafe { app.webview.Reload() }.is_ok()
+        !app.sleep.suspended.get() && !app.sleep.pending.get() && unsafe { app.webview.Reload() }.is_ok()
     }
     // --- end window and panels ---
 
@@ -640,16 +736,19 @@ impl Drop for WebAppHost {
 impl WebAppView {
     fn set_visible(&mut self, visible: bool) -> Result<()> {
         if visible {
-            // A suspended page must be resumed before it is shown.
-            self.resume();
+            // Fence off an in-flight suspension before calls that can run its completion.
+            self.sleep.set_visible(true, Instant::now());
+            if (self.sleep.suspended.replace(false) || self.sleep.pending.get())
+                && let Ok(api) = self.webview.cast::<ICoreWebView2_3>()
+            {
+                let _ = unsafe { api.Resume() };
+            }
         }
         unsafe {
             self.controller.SetIsVisible(visible)?;
         }
-        if visible {
-            self.hidden_since = None;
-        } else if self.hidden_since.is_none() {
-            self.hidden_since = Some(Instant::now());
+        if !visible {
+            self.sleep.set_visible(false, Instant::now());
         }
         if let Ok(api) = self.webview.cast::<ICoreWebView2_19>() {
             let level = if visible {
@@ -660,35 +759,6 @@ impl WebAppView {
             let _ = unsafe { api.SetMemoryUsageTargetLevel(level) };
         }
         Ok(())
-    }
-
-    /// Asks WebView2 to suspend the page. Returns whether the request was accepted; engines
-    /// without the suspend API leave the app awake.
-    fn suspend(&mut self) -> bool {
-        let Ok(webview3) = self.webview.cast::<ICoreWebView2_3>() else { return false; };
-        let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
-        if unsafe { webview3.TrySuspend(&handler) }.is_ok() {
-            self.suspended = true;
-        }
-        self.suspended
-    }
-
-    fn resume(&mut self) {
-        if !self.suspended {
-            return;
-        }
-        if let Ok(webview3) = self.webview.cast::<ICoreWebView2_3>() {
-            let _ = unsafe { webview3.Resume() };
-        }
-        self.suspended = false;
-    }
-
-    /// A failed query counts as silent.
-    fn playing_audio(&self) -> bool {
-        self.webview.cast::<ICoreWebView2_8>().is_ok_and(|webview| {
-            let mut playing = BOOL::default();
-            unsafe { webview.IsDocumentPlayingAudio(&mut playing) }.is_ok() && playing.as_bool()
-        })
     }
 
     fn close(mut self) {
@@ -761,13 +831,24 @@ unsafe fn configure_web_app_controller(
     let script_tabs = ScriptTabBudget::default();
     let navigation_state_started = events.navigation_state.clone();
     let navigation_origin = origin.clone();
+    let sleep = Rc::new(WebAppSleep::default());
+    let starting_sleep = sleep.clone();
     unsafe {
         webview.add_NavigationStarting(&NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
             if let Some(args) = args {
                 let mut uri = PWSTR::null();
                 let target = if args.Uri(&mut uri).is_ok() { Url::parse(&CoTaskMemPWSTR::from(uri).to_string()).ok() } else { None };
                 match target.as_ref().map(|target| navigation_policy(&navigation_origin, target)) {
-                    Some(NavigationPolicy::Allow) => if let Some(callback) = navigation_state_started.as_ref() { callback(&app_id_owned, AppNavigationState::Loading); },
+                    Some(NavigationPolicy::Allow) => {
+                        let mut id = 0;
+                        if args.NavigationId(&mut id).is_ok() {
+                            starting_sleep.document.borrow_mut().started(id);
+                        } else {
+                            starting_sleep.document.borrow_mut().unreadable_event();
+                        }
+                        starting_sleep.suspended.set(false);
+                        if let Some(callback) = navigation_state_started.as_ref() { callback(&app_id_owned, AppNavigationState::Loading); }
+                    }
                     Some(NavigationPolicy::OpenInTab) => {
                         let mut user = BOOL::default();
                         let user_initiated = args.IsUserInitiated(&mut user).is_ok() && user.as_bool();
@@ -791,11 +872,18 @@ unsafe fn configure_web_app_controller(
         let failed = events.failed.clone();
         let completed_id = app_id.to_owned();
         let completed_webview = webview.clone();
+        let completed_sleep = sleep.clone();
         token = 0;
         webview.add_NavigationCompleted(&NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
             if let Some(args) = args {
                 let mut success = BOOL::default();
                 let result=args.IsSuccess(&mut success);
+                let mut id = 0;
+                if result.is_ok() && args.NavigationId(&mut id).is_ok() {
+                    completed_sleep.document.borrow_mut().completed(id, success.as_bool());
+                } else {
+                    completed_sleep.document.borrow_mut().unreadable_event();
+                }
                 if let Some(trace)=&navigation_trace {
                     trace.result("webapp_navigation_status_result",&result);
                     if result.is_ok() {trace.record(if success.as_bool(){"webapp_navigation_success"}else{"webapp_navigation_failed"});}
@@ -916,7 +1004,7 @@ unsafe fn configure_web_app_controller(
         let result=webview.Navigate(PCWSTR::from_raw(initial_url.as_ptr()));
         if let Some(trace)=&trace {trace.result("webapp_initial_navigate_result",&result);}
         result?;
-        Ok(WebAppView { controller, webview, trace, lease, remove_handlers: std::mem::take(&mut removers.0), hidden_since: None, suspended: false, _spoiler: spoiler_reg })
+        Ok(WebAppView { controller, webview, trace, lease, remove_handlers: std::mem::take(&mut removers.0), sleep, _spoiler: spoiler_reg })
     }
 }
 
@@ -1058,6 +1146,43 @@ fn same_registrable_domain(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_app_suspend_records_only_success_for_the_current_live_hidden_document() {
+        let sleep = WebAppSleep::default();
+        let hidden = Instant::now();
+        sleep.set_visible(false, hidden);
+        sleep.document.borrow_mut().started(1);
+        sleep.document.borrow_mut().completed(1, true);
+        let stamp = sleep.stamp().unwrap();
+
+        sleep.pending.set(true);
+        assert!(!sleep.complete(stamp, true, false));
+        assert!(!sleep.pending.get());
+        assert!(!sleep.suspended.get());
+
+        sleep.pending.set(true);
+        sleep.set_visible(true, hidden);
+        sleep.set_visible(false, hidden);
+        assert!(!sleep.complete(stamp, true, true));
+        assert!(!sleep.suspended.get());
+
+        let stamp = sleep.stamp().unwrap();
+        sleep.pending.set(true);
+        sleep.document.borrow_mut().started(2);
+        sleep.document.borrow_mut().completed(2, true);
+        assert!(!sleep.complete(stamp, true, true));
+        assert!(!sleep.suspended.get());
+
+        let stamp = sleep.stamp().unwrap();
+        sleep.pending.set(true);
+        assert!(!sleep.complete(stamp, false, true));
+        assert!(!sleep.suspended.get());
+        sleep.pending.set(true);
+        assert!(sleep.complete(stamp, true, true));
+        assert!(sleep.suspended.get());
+        assert!(!sleep.pending.get());
+    }
 
     #[test]
     fn suspend_is_due_only_for_hidden_silent_awake_apps_past_the_delay() {

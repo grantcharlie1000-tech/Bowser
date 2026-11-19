@@ -3004,15 +3004,36 @@ fn raster_round_border(
     let bounds = rect
         .intersect(dirty)
         .intersect(Rect::new(0, 0, width, height));
+    if bounds.is_empty() {
+        return;
+    }
+    // Beyond this inset both the inner and outer coverage are 1. The corner rows
+    // also need their rounded ends evaluated with the original distance function.
+    let edge = (thickness + 1.0).ceil() as i32;
+    let corner = radius
+        .max(0.0)
+        .min(rect.width().min(rect.height()) as f32 / 2.0)
+        .ceil() as i32;
     for y in bounds.top..bounds.bottom {
-        for x in bounds.left..bounds.right {
-            let d = rounded_distance(x as f32 + 0.5, y as f32 + 0.5, rect, radius);
-            let outer = (0.5 - d).clamp(0.0, 1.0);
-            let inner = (0.5 - (d + thickness)).clamp(0.0, 1.0);
-            let cov = ((outer - inner).max(0.0) * 255.0 + 0.5) as u8;
-            if cov > 0 {
-                let i = y as usize * stride + x as usize * 4;
-                blend_pixel(&mut pixels[i..i + 4], color, cov);
+        let near_end = |inset| y < rect.top.saturating_add(inset) || y >= rect.bottom.saturating_sub(inset);
+        let (left_end, right_start) = if near_end(edge) {
+            (bounds.right, bounds.right)
+        } else {
+            let inset = if near_end(corner) { edge.max(corner) } else { edge };
+            let left_end = rect.left.saturating_add(inset).max(bounds.left).min(bounds.right);
+            let right_start = rect.right.saturating_sub(inset).max(left_end);
+            (left_end, right_start)
+        };
+        for span in [bounds.left..left_end, right_start..bounds.right] {
+            for x in span {
+                let d = rounded_distance(x as f32 + 0.5, y as f32 + 0.5, rect, radius);
+                let outer = (0.5 - d).clamp(0.0, 1.0);
+                let inner = (0.5 - (d + thickness)).clamp(0.0, 1.0);
+                let cov = ((outer - inner).max(0.0) * 255.0 + 0.5) as u8;
+                if cov > 0 {
+                    let i = y as usize * stride + x as usize * 4;
+                    blend_pixel(&mut pixels[i..i + 4], color, cov);
+                }
             }
         }
     }
@@ -3819,6 +3840,52 @@ mod tests {
         );
         assert_eq!(p[59], p[339]);
         assert!(p[47] < p[59]);
+    }
+
+    #[test]
+    fn border_spans_match_full_rectangle_rasterization() {
+        const WIDTH: i32 = 127;
+        const HEIGHT: i32 = 85;
+        const STRIDE: usize = WIDTH as usize * 4 + 8;
+        let surface = Rect::new(0, 0, WIDTH, HEIGHT);
+        for rect in [
+            Rect::new(2, 3, 120, 81),
+            Rect::new(-7, 3, 64, 89),
+            Rect::new(30, 15, 35, 17),
+            Rect::new(61, 3, 125, 81),
+        ] {
+            for dirty in [surface, Rect::new(15, 11, 107, 69), Rect::new(25, 24, 31, 71)] {
+                for (radius, thickness) in [
+                    (0.0, 1.0),
+                    (1.5, 0.25),
+                    (8.0, 1.0),
+                    (12.0, 1.25),
+                    (16.0, 2.0),
+                    (20.5, 6.0),
+                    (90.0, 1.5),
+                    (3.0, 30.0),
+                ] {
+                    let color = Rgba::hex(0x799BCE, 137);
+                    let mut actual = vec![19; STRIDE * HEIGHT as usize];
+                    let mut expected = actual.clone();
+                    let bounds = rect.intersect(dirty).intersect(surface);
+                    for y in bounds.top..bounds.bottom {
+                        for x in bounds.left..bounds.right {
+                            let d = rounded_distance(x as f32 + 0.5, y as f32 + 0.5, rect, radius);
+                            let outer = (0.5 - d).clamp(0.0, 1.0);
+                            let inner = (0.5 - (d + thickness)).clamp(0.0, 1.0);
+                            let coverage = ((outer - inner).max(0.0) * 255.0 + 0.5) as u8;
+                            if coverage > 0 {
+                                let i = y as usize * STRIDE + x as usize * 4;
+                                blend_pixel(&mut expected[i..i + 4], color, coverage);
+                            }
+                        }
+                    }
+                    raster_round_border(&mut actual, WIDTH, HEIGHT, STRIDE, rect, radius, thickness, color, dirty);
+                    assert!(actual == expected, "{rect:?} {dirty:?} radius {radius}, thickness {thickness}");
+                }
+            }
+        }
     }
 
     #[test]

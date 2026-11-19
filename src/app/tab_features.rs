@@ -51,9 +51,9 @@ pub(super) fn close_target_for(
 }
 
 /// Reads a freshly arrived title: the count it announces and whether that makes the tab unread.
-pub(super) fn note_title(tab: &mut AppTab, title: &str, detect: bool, active: bool) {
+pub(super) fn note_title(tab: &mut AppTab, title: &str, detect: bool, active: bool) -> bool {
     let notify = if detect { tab_options::title_notification(title).unwrap_or(0) } else { 0 };
-    tab.extra.title_arrived(notify, !active);
+    tab.extra.title_arrived(notify, !active)
 }
 
 /// One tab as the strip draws it beyond the model's own fields.
@@ -488,9 +488,10 @@ impl App {
         let now_secs = unix_now();
         let state = app.borrow();
         let options = &state.settings.tabs;
+        let tabs = first_tabs_by_id(&state.tabs);
         ids.iter()
             .filter_map(|id| {
-                let tab = state.tabs.iter().find(|tab| tab.id == *id)?;
+                let tab = tabs.get(id)?;
                 let idle_secs = now_secs.saturating_sub(tab.extra.last_used);
                 Some(TabStripExtra {
                     id: *id,
@@ -715,7 +716,13 @@ impl App {
                     let (Some(app), Some(bytes)) = (weak.upgrade(), bytes) else {
                         return;
                     };
-                    Self::store_thumbnail(&app, id, bytes);
+                    let current = {
+                        let state = app.borrow();
+                        state.settings.tab_preview_images && state.tab_state.thumb_at.get(&id) == Some(&now)
+                    };
+                    if current {
+                        Self::store_thumbnail(&app, id, bytes);
+                    }
                 }),
             );
             Ok(())

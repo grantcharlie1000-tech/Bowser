@@ -2,6 +2,7 @@
 //! This never trusts an application's requested address. Ambiguous/coalesced host requests stay
 //! ineligible rather than guessing which request a native event belongs to.
 use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 #[derive(Default)]
 pub(super) struct DocumentGate {
@@ -13,9 +14,11 @@ pub(super) struct DocumentGate {
     confirmed: bool,
     closed: bool,
     saturated: bool,
+    thumbnail_cancelled: Option<Arc<AtomicBool>>,
 }
 impl DocumentGate {
     fn advance(&mut self) -> Option<u64> {
+        self.cancel_thumbnails();
         self.confirmed = false;
         self.epoch = match self.epoch.checked_add(1) { Some(value) => value, None => { self.saturated = true; return None; } };
         Some(self.epoch)
@@ -50,12 +53,35 @@ impl DocumentGate {
             && self.latest.is_some_and(|(_, epoch)| epoch == self.epoch)
     }
     pub(super) fn source_changed(&mut self) {
+        self.cancel_thumbnails();
         match self.source_revision.checked_add(1) { Some(value) => self.source_revision = value, None => self.saturated = true }
     }
     pub(super) fn proof(&self) -> Option<(u64, u64, u64)> {
         if self.eligible() { self.latest.map(|(id, epoch)| (id, epoch, self.source_revision)) } else { None }
     }
-    pub(super) fn close(&mut self) { self.closed = true; self.confirmed = false; self.pending.clear(); }
+    /// Captures can start at DOM readiness. The token is cancelled when this page
+    /// changes, even if the next address is the same or its capture starts later.
+    pub(super) fn thumbnail_token(&mut self) -> Arc<AtomicBool> {
+        self.thumbnail_cancelled
+            .get_or_insert_with(|| Arc::new(AtomicBool::new(self.closed)))
+            .clone()
+    }
+    fn cancel_thumbnails(&mut self) {
+        if let Some(cancelled) = self.thumbnail_cancelled.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+    }
+    pub(super) fn close(&mut self) {
+        self.cancel_thumbnails();
+        self.closed = true;
+        self.confirmed = false;
+        self.pending.clear();
+    }
+}
+impl Drop for DocumentGate {
+    fn drop(&mut self) {
+        self.cancel_thumbnails();
+    }
 }
 
 #[cfg(test)]
@@ -71,4 +97,30 @@ mod tests {
     #[test] fn proof_token_changes_even_when_a_new_document_is_also_eligible() { let mut g=DocumentGate::default();g.started(1);g.completed(1,true);let before=g.proof().unwrap();g.request();g.started(2);g.completed(2,true);assert!(g.eligible());assert_ne!(g.proof(),Some(before));g.close();assert!(g.proof().is_none()); }
     #[test] fn closed_controller_ignores_late_native_events() { let mut g=DocumentGate::default();g.request();g.started(1);g.close();g.completed(1,true);g.started(2);g.completed(2,true);assert!(!g.eligible()); }
     #[test] fn coalesced_or_excessive_request_mapping_fails_closed() { let mut g=DocumentGate::default();g.request();g.request();g.started(2);g.completed(2,true);assert!(!g.eligible());for _ in 0..65 {g.request();}g.started(3);g.completed(3,true);assert!(!g.eligible()); }
+    #[test]
+    fn thumbnail_work_is_cancelled_by_navigation_source_changes_and_close() {
+        let mut gate = DocumentGate::default();
+        gate.started(1);
+        let loaded = gate.thumbnail_token();
+        gate.completed(1, true);
+        assert!(!loaded.load(Ordering::Relaxed));
+        gate.source_changed();
+        assert!(loaded.load(Ordering::Relaxed));
+        let same_document = gate.thumbnail_token();
+        gate.request();
+        assert!(same_document.load(Ordering::Relaxed));
+        gate.started(2);
+        let reloaded = gate.thumbnail_token();
+        gate.close();
+        assert!(reloaded.load(Ordering::Relaxed));
+        assert!(gate.thumbnail_token().load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn dropping_a_document_cancels_queued_thumbnails() {
+        let mut gate = DocumentGate::default();
+        let cancelled = gate.thumbnail_token();
+        drop(gate);
+        assert!(cancelled.load(Ordering::Relaxed));
+    }
 }

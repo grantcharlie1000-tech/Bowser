@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     rc::Rc,
@@ -38,6 +38,8 @@ use windows::{
 use zeroize::{Zeroize, Zeroizing};
 
 pub(super) mod ocr;
+mod owner_reply;
+mod player_response;
 
 use super::{
     BlockedChangedCallback, BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents,
@@ -176,20 +178,44 @@ fn query_picture_in_picture_eligibility(webview: &ICoreWebView2, done: Box<dyn F
     }
 }
 
-/// Longest answer taken back from a reader script. A valid result is under 50 characters, so a
-/// longer one is not from this script and is dropped without being read.
-const READER_RESULT_LIMIT: usize = 64;
-
-/// Runs a reader script in a page, only while the live address is http(s). `done` gets the raw
-/// `ExecuteScript` result, or `None` when the page is not scriptable, the call failed, or the answer
-/// is oversized. It never runs for `bowser-ui:` or any other scheme: the address is read from the
-/// WebView at call time, so a navigation racing the request cannot redirect it.
+/// Evaluates Reader in the live page and waits for its cooperative scan to settle. Like other
+/// page tools it only runs on http(s), and a failed, canceled or oversized result reports `None`.
 fn run_reader_script(
     webview: &ICoreWebView2,
     script: &str,
     done: Box<dyn FnOnce(Option<String>)>,
 ) {
-    run_capped_script(webview, script, READER_RESULT_LIMIT, done);
+    if current_web_url(webview).is_none() {
+        done(None);
+        return;
+    }
+    let expression = format!(
+        "(async () => {{ try {{ \
+         const protocol = window.location.protocol; \
+         if (protocol !== 'http:' && protocol !== 'https:') return null; \
+         const answer = await ({script}); \
+         return typeof answer === 'string' && answer.length <= {limit} ? answer : null; \
+         }} catch {{ return null; }} }})()",
+        limit = crate::reader::MAX_RESULT_LEN,
+    );
+    let params = HSTRING::from(format!(
+        r#"{{"expression":{},"awaitPromise":true,"returnByValue":true}}"#,
+        json_string_literal(&expression)
+    ));
+    let slot = Rc::new(RefCell::new(Some(done)));
+    let completion = slot.clone();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |status, value| {
+        let answer = status.is_ok().then(|| crate::reader::cdp_result(&value)).flatten();
+        if let Some(done) = completion.borrow_mut().take() {
+            done(answer.map(str::to_owned));
+        }
+        Ok(())
+    }));
+    if unsafe { webview.CallDevToolsProtocolMethod(w!("Runtime.evaluate"), PCWSTR(params.as_ptr()), &handler) }.is_err()
+        && let Some(done) = slot.borrow_mut().take()
+    {
+        done(None);
+    }
 }
 
 /// The same for a page-translation script, whose answer is a batch of text.
@@ -703,21 +729,18 @@ fn sync_top_host(webview: &ICoreWebView2, block: &TabBlockState) {
 // --- tab options ---
 /// Reads a captured page image back out of the memory stream it was written to.
 fn read_capture_stream(stream: &IStream) -> Option<Vec<u8>> {
-    let mut result = Vec::new();
-    unsafe { stream.Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None) }.ok()?;
-    loop {
-        let mut chunk = [0u8; 16384];
-        let mut read = 0u32;
-        unsafe { stream.Read(chunk.as_mut_ptr().cast(), chunk.len() as u32, Some(&mut read)).ok().ok()? };
-        if read == 0 {
-            break;
-        }
-        if result.len().saturating_add(read as usize) > crate::thumbnail::MAX_CAPTURE_BYTES {
-            return None;
-        }
-        result.extend_from_slice(&chunk[..read as usize]);
+    use windows::Win32::System::Com::{STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET};
+    let mut stat = STATSTG::default();
+    unsafe { stream.Stat(&mut stat, STATFLAG_NONAME) }.ok()?;
+    let len = usize::try_from(stat.cbSize).ok()?;
+    if len == 0 || len > crate::thumbnail::MAX_CAPTURE_BYTES {
+        return None;
     }
-    (!result.is_empty()).then_some(result)
+    unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.ok()?;
+    let mut result = vec![0; len];
+    let mut read = 0;
+    unsafe { stream.Read(result.as_mut_ptr().cast(), len as u32, Some(&mut read)) }.ok().ok()?;
+    (read as usize == len).then_some(result)
 }
 
 /// The working set of the page process behind each tab: a renderer process whose frames include the
@@ -834,6 +857,7 @@ struct TabBlockState {
     doc_filter: RefCell<Option<(String, crate::blocker::Level, bool, u32)>>,
     /// `Fetch.requestPaused` is subscribed, so `Fetch.enable` will not pause requests nobody answers.
     fetch_listener: Cell<bool>,
+    player_responses: Rc<player_response::Responses>,
     /// `Network.enable` has been accepted, so later refreshes only update `setBlockedURLs`.
     network_enabled: Cell<bool>,
     /// The last cosmetic script sent to this tab installed a style, so a page with no cosmetic
@@ -1156,8 +1180,10 @@ fn fetch_continue(webview: &ICoreWebView2, request_id: &str) {
     call_devtools(webview, "Fetch.continueRequest", &params);
 }
 
-/// Largest response body the player-ads rewrite will hold; anything bigger passes through.
+/// Largest response body the player-ads rewrite will hold. Anything bigger passes through.
 const MAX_REWRITE_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Fetch events can also carry request data. Limit copies of their metadata independently.
+const MAX_FETCH_EVENT_UNITS: usize = 1024 * 1024;
 
 /// A `Fetch.requestPaused` event at the Response stage: the request's URL, its HTTP status
 /// (`None` when the response failed) and the response headers.
@@ -1176,44 +1202,55 @@ enum PausedStage {
     Response(Option<PausedResponse>),
 }
 
-fn paused_stage(event: &str) -> PausedStage {
+fn paused_event(event: &str) -> (Option<String>, PausedStage) {
     use crate::blocker::json;
     let Some(members) = json::whole_object(event) else {
-        return if event.contains("\"responseStatusCode\"")
+        let stage = if event.contains("\"responseStatusCode\"")
             || event.contains("\"responseErrorReason\"")
         {
             PausedStage::Response(None)
         } else {
             PausedStage::Request
         };
+        let id = event
+            .trim_start()
+            .strip_prefix('{')
+            .map(str::trim_start)
+            .filter(|first| first.starts_with("\"requestId\":\""))
+            .and_then(|first| json_string_field(first, "requestId"));
+        return (id, stage);
     };
+    let id = json::field(&members, "requestId")
+        .and_then(json::string_value)
+        .filter(|id| !id.is_empty());
     let status = json::field(&members, "responseStatusCode");
     if status.is_none() && json::field(&members, "responseErrorReason").is_none() {
-        return PausedStage::Request;
+        return (id, PausedStage::Request);
     }
     let url = json::field(&members, "request")
         .and_then(json::whole_object)
         .and_then(|request| json::field(&request, "url").and_then(json::string_value));
-    let headers = json::field(&members, "responseHeaders")
-        .and_then(json::array_elements)
-        .map(|entries| {
+    let headers = match json::field(&members, "responseHeaders") {
+        Some(entries) => json::array_elements(entries).and_then(|entries| {
             entries
                 .into_iter()
-                .filter_map(|entry| {
+                .map(|entry| {
                     let entry = json::whole_object(entry)?;
                     Some((
                         json::string_value(json::field(&entry, "name")?)?,
                         json::string_value(json::field(&entry, "value")?)?,
                     ))
                 })
-                .collect()
-        })
-        .unwrap_or_default();
-    PausedStage::Response(url.map(|url| PausedResponse {
+                .collect::<Option<Vec<_>>>()
+        }),
+        None => Some(Vec::new()),
+    };
+    let response = url.zip(headers).map(|(url, headers)| PausedResponse {
         url,
         status: status.and_then(|status| status.parse().ok()),
         headers,
-    }))
+    });
+    (id, PausedStage::Response(response))
 }
 
 /// True for a JSON or HTML response that is UTF-8 (stated, or the default for JSON and for
@@ -1236,17 +1273,30 @@ fn utf8_text_response(headers: &[(String, String)]) -> bool {
         })
 }
 
+fn advertised_rewrite_size_allowed(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .all(|(_, value)| {
+            value.trim().parse::<usize>().is_ok_and(|len| len <= MAX_REWRITE_BODY_BYTES)
+        })
+}
+
 /// The text of a `Fetch.getResponseBody` result, or `None` when it is not UTF-8 or is too big.
-fn response_body_text(result: &str) -> Option<String> {
+fn response_body_text(result: &str, limit: usize) -> Option<std::borrow::Cow<'_, str>> {
     use crate::blocker::json;
     let members = json::whole_object(result)?;
-    let body = json::string_value(json::field(&members, "body")?)?;
-    let text = if json::field(&members, "base64Encoded") == Some("true") {
-        String::from_utf8(json::base64_decode(&body)?).ok()?
-    } else {
-        body
-    };
-    (text.len() <= MAX_REWRITE_BODY_BYTES).then_some(text)
+    let body = json::field(&members, "body")?;
+    match json::field(&members, "base64Encoded") {
+        Some("true") => {
+            let encoded = json::string_value_limited(body, limit.div_ceil(3).checked_mul(4)?)?;
+            String::from_utf8(json::base64_decode_limited(&encoded, limit)?)
+                .ok()
+                .map(std::borrow::Cow::Owned)
+        }
+        Some("false") => json::string_value_limited(body, limit),
+        _ => None,
+    }
 }
 
 /// `Fetch.fulfillRequest` parameters for a rewritten body. DevTools hands the body over already
@@ -1283,36 +1333,6 @@ fn fulfill_params(
     json
 }
 
-/// Calls `method` for a paused request and continues the request unchanged if the call fails,
-/// so a paused request is never left waiting.
-fn call_devtools_or_continue(
-    webview: &ICoreWebView2,
-    method: &str,
-    params: &str,
-    request_id: &str,
-) {
-    let target = webview.clone();
-    let id = request_id.to_owned();
-    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, _| {
-        if error.is_err() {
-            fetch_continue(&target, &id);
-        }
-        Ok(())
-    }));
-    let method = HSTRING::from(method);
-    let params = HSTRING::from(params);
-    let queued = unsafe {
-        webview.CallDevToolsProtocolMethod(
-            PCWSTR(method.as_ptr()),
-            PCWSTR(params.as_ptr()),
-            &handler,
-        )
-    };
-    if queued.is_err() {
-        fetch_continue(webview, request_id);
-    }
-}
-
 /// Answers a request paused at the Response stage. Only the YouTube player-response patterns
 /// pause there. A response the blocker strips is fulfilled with the same status and headers and
 /// the stripped body. Every other one, and any failure along the way, continues unchanged.
@@ -1325,7 +1345,11 @@ fn answer_paused_response(
     private: bool,
 ) {
     let rewrite = paused
-        .filter(|paused| paused.status == Some(200) && utf8_text_response(&paused.headers))
+        .filter(|paused| {
+            paused.status == Some(200)
+                && utf8_text_response(&paused.headers)
+                && advertised_rewrite_size_allowed(&paused.headers)
+        })
         .and_then(|paused| {
             let top_host = block.top_host.borrow();
             let payload = blocker
@@ -1337,38 +1361,15 @@ fn answer_paused_response(
         fetch_continue(webview, request_id);
         return;
     };
-    let target = webview.clone();
-    let id = request_id.to_owned();
-    let handler =
-        CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
-            let stripped = error
-                .ok()
-                .and_then(|()| response_body_text(&result))
-                .and_then(|text| crate::blocker::youtube::strip_player_ads(&text, payload));
-            match stripped {
-                Some(body) => call_devtools_or_continue(
-                    &target,
-                    "Fetch.fulfillRequest",
-                    &fulfill_params(&id, 200, &paused.headers, body.as_bytes()),
-                    &id,
-                ),
-                None => fetch_continue(&target, &id),
-            }
-            Ok(())
-        }));
-    let params = format!("{{\"requestId\":{}}}", json_string_literal(request_id));
-    let method = HSTRING::from("Fetch.getResponseBody");
-    let params = HSTRING::from(params);
-    let queued = unsafe {
-        webview.CallDevToolsProtocolMethod(
-            PCWSTR(method.as_ptr()),
-            PCWSTR(params.as_ptr()),
-            &handler,
-        )
-    };
-    if queued.is_err() {
-        fetch_continue(webview, request_id);
-    }
+    block.player_responses.start(webview, request_id, paused.headers, payload);
+}
+
+fn release_unreadable_fetch_pause(webview: &ICoreWebView2, block: &TabBlockState) {
+    // A malformed event may contain no usable request id. Detaching Fetch releases all paused
+    // requests, and invalidating the signature lets the next normal refresh re-arm the patterns.
+    block.player_responses.cancel_all();
+    block.doc_filter.borrow_mut().take();
+    call_devtools(webview, "Fetch.disable", "{}");
 }
 
 /// Subscribes to `Fetch.requestPaused` once. Enabling Fetch before this would pause matching
@@ -1378,6 +1379,7 @@ fn install_fetch_listener(
     block: &Rc<TabBlockState>,
     blocker: super::BlockerHandle,
     private: bool,
+    lifetime: Rc<Cell<bool>>,
 ) {
     let receiver = match unsafe { webview.GetDevToolsProtocolEventReceiver(w!("Fetch.requestPaused")) } {
         Ok(receiver) => receiver,
@@ -1388,21 +1390,33 @@ fn install_fetch_listener(
     let subscribed = unsafe {
         receiver.add_DevToolsProtocolEventReceived(
             &DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |sender, args| {
-                let (Some(sender), Some(args)) = (sender, args) else {
+                let Some(sender) = sender else {
                     return Ok(());
                 };
                 let mut raw = PWSTR::null();
-                if args.ParameterObjectAsJson(&mut raw).is_err() {
+                let received = args.is_some_and(|args| args.ParameterObjectAsJson(&mut raw).is_ok());
+                let raw = CoTaskMemPWSTR::from(raw);
+                let wide = raw.as_ref();
+                // SAFETY: `raw` owns the null-terminated value for this scope.
+                let units = if received {
+                    player_response::bounded_wide(wide.as_pcwstr(), MAX_FETCH_EVENT_UNITS)
+                } else {
+                    None
+                };
+                let Some(units) = units else {
+                    release_unreadable_fetch_pause(&sender, &listener);
                     return Ok(());
-                }
-                let json = CoTaskMemPWSTR::from(raw).to_string();
-                let Some(request_id) = json_string_field(&json, "requestId") else {
+                };
+                let json = String::from_utf16_lossy(units);
+                let (request_id, stage) = paused_event(&json);
+                let Some(request_id) = request_id else {
+                    release_unreadable_fetch_pause(&sender, &listener);
                     return Ok(());
                 };
                 // The Response stage is only ever the YouTube player response: rewrite or
                 // continue it. A Request-stage pause is not how hosts are blocked, so it is
                 // continued rather than left hanging.
-                if let PausedStage::Response(paused) = paused_stage(&json) {
+                if let PausedStage::Response(paused) = stage && lifetime.get() {
                     answer_paused_response(
                         &sender,
                         &request_id,
@@ -1509,6 +1523,11 @@ fn refresh_blocked_urls(
         blocker_detail(block, "blocker_pattern_preparation_finished", 0);
         return;
     }
+    let response_policy_changed = block
+        .doc_filter
+        .borrow()
+        .as_ref()
+        .is_some_and(|(_, previous_level, _, _)| *previous_level != level);
     let patterns = if private {
         state.blocked_url_patterns_private(top_host)
     } else {
@@ -1528,6 +1547,9 @@ fn refresh_blocked_urls(
     // 403 below answers what only the in-process matcher can decide (`request_filters`).
     enable_network_then_block(webview, block, patterns);
     if block.fetch_listener.get() {
+        if page_host.is_none() && (responses.is_empty() || response_policy_changed) {
+            block.player_responses.cancel_all();
+        }
         call_devtools(webview, "Fetch.enable", &fetch_enable_params(responses));
     }
 }
@@ -1624,6 +1646,7 @@ struct WebView2Tab {
     #[cfg(feature = "experimental-engine-context-menu")]
     context_menu_registration: Option<owned_context_menu::Registration>,
     document_gate: Rc<RefCell<super::document_gate::DocumentGate>>,
+    player_responses: Rc<player_response::Responses>,
     focus_trace: Option<crate::performance::FocusTrace>,
     environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
@@ -1840,6 +1863,7 @@ struct EngineCore {
     pane_bounds: std::collections::HashMap<TabId, RECT>,
     // --- end split view ---
     target: MemoryUsageTarget,
+    window_visible: bool,
     tabs: HashMap<TabId, WebView2Tab>,
     known_tabs: HashSet<TabId>,
     creating: HashSet<TabId>,
@@ -1857,10 +1881,11 @@ struct EngineCore {
     /// Each body is kept with the address it was queued for, so it is sent only to that
     /// navigation (see `take_pending_post`).
     pending_post: HashMap<TabId, (Url, String)>,
-    hidden_since: HashMap<TabId, Instant>,
+    hidden_since: BTreeMap<TabId, Instant>,
     suspended: HashSet<TabId>,
-    /// One automatic media/sleep probe in flight per controller.
-    suspend_checks: HashMap<TabId, Rc<Cell<bool>>>,
+    suspend_checks: HashMap<TabId, Rc<SuspendAttempt>>,
+    last_suspend_check: TabId,
+    suspend_completions: HashMap<TabId, SuspendDocument>,
     closed: bool,
     /// Whether the environment was created with browser extensions enabled.
     browser_extensions: bool,
@@ -2069,6 +2094,60 @@ impl Drop for WebView2Engine {
     }
 }
 
+// Each dispatch starts at most two probes. Only unexpired attempts occupy admission slots:
+// otherwise two hung renderers could starve every other tab. The per-tab guard survives the
+// slot deadline and stays in place until the native callback returns or the controller closes.
+const SUSPEND_BUDGET: usize = 2;
+const SUSPEND_SLOT_AGE: Duration = Duration::from_secs(15);
+const SUSPEND_RETRY_MIN: Duration = Duration::from_secs(15);
+const SUSPEND_RETRY_MAX: Duration = Duration::from_secs(120);
+const SUSPEND_NEXT_BATCH: Duration = Duration::from_secs(1);
+
+#[derive(Clone)]
+struct SuspendDocument {
+    hidden_since: Instant,
+    gate: Rc<RefCell<super::document_gate::DocumentGate>>,
+    proof: (u64, u64, u64),
+}
+
+struct SuspendAttempt {
+    document: SuspendDocument,
+    started: Instant,
+    completed_at: Cell<Option<Instant>>,
+    retry_delay: Duration,
+}
+
+impl SuspendAttempt {
+    fn new(document: SuspendDocument, previous: Option<&Self>, started: Instant) -> Self {
+        let retry_delay = previous
+            .and_then(|previous| previous.retry_for(&document))
+            .map_or(SUSPEND_RETRY_MIN, |(_, delay)| {
+                (delay * 2).min(SUSPEND_RETRY_MAX)
+            });
+        Self {
+            document,
+            started,
+            completed_at: Cell::new(None),
+            retry_delay,
+        }
+    }
+
+    fn retry_for(&self, document: &SuspendDocument) -> Option<(Instant, Duration)> {
+        if self.document.hidden_since == document.hidden_since
+            && Rc::ptr_eq(&self.document.gate, &document.gate)
+            // A fragment/history mutation invalidates an in-flight verdict. It leaves the
+            // same document in place, so it does not erase that document's backoff.
+            && (self.document.proof.0, self.document.proof.1) == (document.proof.0, document.proof.1)
+        {
+            self.completed_at
+                .get()
+                .map(|at| (at + self.retry_delay, self.retry_delay))
+        } else {
+            None
+        }
+    }
+}
+
 impl EngineCore {
     fn begin_controller_lifetime(&mut self, tab: TabId) -> (u64, Rc<Cell<bool>>) {
         self.controller_serial = self.controller_serial.wrapping_add(1);
@@ -2094,10 +2173,88 @@ impl EngineCore {
         gate: &Rc<RefCell<super::document_gate::DocumentGate>>,
         proof: (u64, u64, u64),
     ) -> bool {
-        !self.closed && self.active_tab != Some(id) && !self.visible_tabs.contains(&id)
+        !self.closed && !self.browser_lost.get() && self.active_tab != Some(id) && !self.visible_tabs.contains(&id)
             && self.hidden_since.get(&id) == Some(&hidden)
+            && self.controller_lifetimes.get(&id).is_some_and(|lifetime| lifetime.get())
             && self.tabs.get(&id).is_some_and(|tab| Rc::ptr_eq(&tab.document_gate, gate))
             && gate.try_borrow().is_ok_and(|gate| gate.proof() == Some(proof))
+    }
+
+    fn suspend_document(&self, id: TabId) -> Option<SuspendDocument> {
+        if self.closed
+            || self.browser_lost.get()
+            || self.active_tab == Some(id)
+            || self.visible_tabs.contains(&id)
+            || !self
+                .controller_lifetimes
+                .get(&id)
+                .is_some_and(|lifetime| lifetime.get())
+        {
+            return None;
+        }
+        let tab = self.tabs.get(&id)?;
+        tab.webview.as_ref()?;
+        let gate = tab.document_gate.clone();
+        let proof = gate.try_borrow().ok()?.proof()?;
+        Some(SuspendDocument {
+            hidden_since: *self.hidden_since.get(&id)?,
+            gate,
+            proof,
+        })
+    }
+
+    fn suspend_due(&self, id: TabId, after: Duration) -> Option<(Instant, SuspendDocument)> {
+        let document = self.suspend_document(id)?;
+        let mut due = document.hidden_since + after;
+        if let Some(attempt) = self.suspend_checks.get(&id) {
+            attempt.completed_at.get()?;
+            if let Some((retry_at, _)) = attempt.retry_for(&document) {
+                if self.suspended.contains(&id) {
+                    return None;
+                }
+                due = due.max(retry_at);
+            }
+        }
+        Some((due, document))
+    }
+
+    fn suspend_slot_wait(&self, now: Instant) -> Option<Instant> {
+        let deadlines = self.suspend_checks.values().filter_map(|attempt| {
+            let deadline = attempt.started + SUSPEND_SLOT_AGE;
+            (attempt.completed_at.get().is_none() && deadline > now).then_some(deadline)
+        });
+        let mut active = 0;
+        let earliest = deadlines.inspect(|_| active += 1).min();
+        if active >= SUSPEND_BUDGET {
+            earliest
+        } else {
+            None
+        }
+    }
+
+    fn hidden_suspend_order(&self) -> impl Iterator<Item = TabId> + '_ {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        self.hidden_since
+            .range((Excluded(self.last_suspend_check), Unbounded))
+            .chain(
+                self.hidden_since
+                    .range((Unbounded, Included(self.last_suspend_check))),
+            )
+            .map(|(&id, _)| id)
+    }
+
+    fn next_suspend_candidate(
+        &self,
+        now: Instant,
+        after: Duration,
+    ) -> Option<(TabId, SuspendDocument)> {
+        if self.suspend_slot_wait(now).is_some() {
+            return None;
+        }
+        self.hidden_suspend_order().find_map(|id| {
+            let (due, document) = self.suspend_due(id, after)?;
+            (due <= now).then_some((id, document))
+        })
     }
 
     /// Applies the same visibility and sleep bookkeeping to single tabs and split panes. This
@@ -2112,10 +2269,12 @@ impl EngineCore {
                     self.known_tabs.insert(*tab);
                     self.hidden_since.remove(tab);
                     self.suspended.remove(tab);
+                    self.suspend_completions.remove(tab);
                 }
                 SwitchStep::Hide(tab) => {
                     self.hidden_since.insert(*tab, Instant::now());
                     self.suspended.remove(tab);
+                    self.suspend_completions.remove(tab);
                 }
             }
         }
@@ -2130,8 +2289,8 @@ impl EngineCore {
                         .unwrap_or(self.bounds);
                     if let Some(tab) = self.tabs.get_mut(&tab_id) {
                         EngineAdapter::resize(tab, bounds)?;
-                        EngineAdapter::set_visible(tab, true)?;
                         let _ = EngineAdapter::set_memory_usage_target(tab, self.target);
+                        EngineAdapter::set_visible(tab, self.window_visible)?;
                     }
                 }
                 SwitchStep::Hide(tab_id) => {
@@ -2442,7 +2601,7 @@ impl WebView2Engine {
                                 || state.active_tab == Some(tab_id)
                                 || state.pending.contains_key(&tab_id)),
                         state.pane_bounds.get(&tab_id).copied().unwrap_or(state.bounds), // --- split view ---
-                        state.visible_tabs.contains(&tab_id),
+                        state.window_visible && state.visible_tabs.contains(&tab_id),
                     )
                 };
                 if !still_open {
@@ -2521,6 +2680,8 @@ impl WebView2Engine {
                                 .or_insert_with(Instant::now);
                         }
                         state.suspended.remove(&tab_id);
+                        state.suspend_checks.remove(&tab_id);
+                        state.suspend_completions.remove(&tab_id);
                         (
                             state.pending.remove(&tab_id),
                             if visible {
@@ -3880,6 +4041,7 @@ impl WebView2Engine {
                         visible_tabs: HashSet::new(),
                         pane_bounds: std::collections::HashMap::new(),
                         target: MemoryUsageTarget::Normal,
+                        window_visible: true,
                         tabs: HashMap::new(),
                         known_tabs: HashSet::new(),
                         creating: HashSet::new(),
@@ -3893,9 +4055,11 @@ impl WebView2Engine {
                         waiting_controllers: VecDeque::new(),
                         pending: HashMap::new(),
                         pending_post: HashMap::new(),
-                        hidden_since: HashMap::new(),
+                        hidden_since: BTreeMap::new(),
                         suspended: HashSet::new(),
                         suspend_checks: HashMap::new(),
+                        last_suspend_check: TabId(0),
+                        suspend_completions: HashMap::new(),
                         closed: false,
                         browser_extensions,
                         extensions_refused: extensions_refused.clone(),
@@ -4712,29 +4876,16 @@ impl EngineAdapter for WebView2Engine {
     }
     fn set_visible(&mut self, visible: bool) -> Result<()> {
         let mut state = self.core.borrow_mut();
-        let onscreen: Vec<TabId> = if !state.visible_tabs.is_empty() {
-            state.visible_tabs.iter().copied().collect()
-        } else if let Some(active) = state.active_tab {
-            vec![active]
-        } else {
-            Vec::new()
-        };
-        let target = state.target;
-        for tab_id in onscreen {
-            if let Some(tab) = state.tabs.get_mut(&tab_id) {
-                EngineAdapter::set_visible(tab, visible)?;
-                if !visible {
-                    let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
-                } else {
-                    let _ = EngineAdapter::set_memory_usage_target(tab, target);
-                }
-            }
-            if visible {
-                state.hidden_since.remove(&tab_id);
-                state.suspended.remove(&tab_id);
+        state.window_visible = visible;
+        let onscreen: Vec<_> = state.visible_tabs.iter().copied().collect();
+        let mut result = Ok(());
+        for id in onscreen {
+            if let Some(tab) = state.tabs.get_mut(&id) {
+                let applied = EngineAdapter::set_visible(tab, visible);
+                result = result.and(applied);
             }
         }
-        Ok(())
+        result
     }
     fn select_tab(&mut self, tab_id: TabId) -> Result<()> {
         #[cfg(feature = "experimental-engine-context-menu")]
@@ -4801,6 +4952,8 @@ impl EngineAdapter for WebView2Engine {
             state.pending_post.remove(&tab_id);
             state.hidden_since.remove(&tab_id);
             state.suspended.remove(&tab_id);
+            state.suspend_checks.remove(&tab_id);
+            state.suspend_completions.remove(&tab_id);
             state.tabs.remove(&tab_id)
         };
         // Controller teardown can raise events, so it runs without the core borrow.
@@ -4854,16 +5007,33 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     // --- tab options --- the tab hover card's thumbnail and memory line.
-    fn capture_tab_thumbnail(&mut self, tab_id: TabId, max_w: u32, max_h: u32, done: Box<dyn FnOnce(Option<Vec<u8>>)>) {
-        let (webview, on_screen) = {
+    fn capture_tab_thumbnail(
+        &mut self,
+        tab_id: TabId,
+        max_w: u32,
+        max_h: u32,
+        done: Box<dyn FnOnce(Option<Vec<u8>>)>,
+    ) {
+        use crate::thumbnail::{downscale_jpeg, worker};
+        use std::sync::atomic::Ordering;
+
+        // Only a visible, non-private tab can supply preview bytes.
+        let capture = {
             let state = self.core.borrow();
-            (
-                state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone()),
-                state.active_tab == Some(tab_id) || state.visible_tabs.contains(&tab_id),
-            )
+            state.tabs.get(&tab_id).filter(|tab| {
+                !state.closed
+                    && state.window_visible
+                    && !tab.private
+                    && (state.active_tab == Some(tab_id) || state.visible_tabs.contains(&tab_id))
+            }).and_then(|tab| {
+                let webview = tab.webview.clone()?;
+                let permit = worker::reserve_capture()?;
+                let cancelled = tab.document_gate.borrow_mut().thumbnail_token();
+                let lifetime = state.controller_lifetimes.get(&tab_id).cloned()?;
+                Some((webview, permit, cancelled, lifetime))
+            })
         };
-        // A hidden controller paints nothing, so only a tab on screen is captured.
-        let (Some(webview), true) = (webview, on_screen) else {
+        let Some((webview, permit, cancelled, lifetime)) = capture else {
             done(None);
             return;
         };
@@ -4871,16 +5041,49 @@ impl EngineAdapter for WebView2Engine {
             done(None);
             return;
         };
-        let keep = stream.clone();
-        let done = std::cell::RefCell::new(Some(done));
-        let handler = webview2_com::CapturePreviewCompletedHandler::create(Box::new(move |status| {
-            let bytes = if status.is_ok() { read_capture_stream(&keep) } else { None };
+
+        let done = Rc::new(RefCell::new(Some(done)));
+        let owner_done = done.clone();
+        let owner_cancelled = cancelled.clone();
+        let is_current = lifetime.clone();
+        let Some(reply) = owner_reply::prepare(Duration::from_secs(10), move |result: Option<Vec<u8>>| {
+            if let Some(done) = owner_done.borrow_mut().take() {
+                done(result.filter(|_| is_current.get() && !owner_cancelled.load(Ordering::Relaxed)));
+            }
+        }) else {
             if let Some(done) = done.borrow_mut().take() {
-                done(bytes.and_then(|bytes| crate::thumbnail::downscale_jpeg(&bytes, max_w, max_h)));
+                done(None);
+            }
+            return;
+        };
+
+        let keep = stream.clone();
+        let pending = Rc::new(RefCell::new(Some((permit, reply))));
+        let completed = pending.clone();
+        let handler = webview2_com::CapturePreviewCompletedHandler::create(Box::new(move |status| {
+            if let Some((permit, reply)) = completed.borrow_mut().take()
+                && status.is_ok()
+                && lifetime.get()
+                && !cancelled.load(Ordering::Relaxed)
+                && !reply.is_cancelled()
+                && let Some(bytes) = read_capture_stream(&keep)
+            {
+                worker::submit(permit, move || {
+                    if !reply.is_cancelled()
+                        && !cancelled.load(Ordering::Relaxed)
+                        && let Some(result) = downscale_jpeg(&bytes, max_w, max_h)
+                    {
+                        reply.send(result);
+                    }
+                });
             }
             Ok(())
         }));
-        let _ = unsafe { webview.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, &stream, &handler) };
+        if unsafe {
+            webview.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, &stream, &handler)
+        }.is_err() {
+            pending.borrow_mut().take();
+        }
     }
     fn tab_memory_usage(&mut self, done: Box<dyn FnOnce(Vec<(TabId, u64)>)>) {
         let (environment, webviews) = {
@@ -4974,79 +5177,48 @@ impl EngineAdapter for WebView2Engine {
     }
 
     fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
-        let candidates = {
-            let mut state = self.core.borrow_mut();
-            state.suspend_checks.retain(|_, pending| pending.get());
-            let now = Instant::now();
-            state.hidden_since.iter().filter_map(|(id, hidden)| {
-                if now.duration_since(*hidden) < Duration::from_millis(hidden_for_ms)
-                    || state.suspended.contains(id) || state.suspend_checks.contains_key(id)
-                    || state.active_tab == Some(*id) || state.visible_tabs.contains(id)
-                {
-                    return None;
-                }
-                let tab = state.tabs.get(id)?;
-                let proof = tab.document_gate.borrow().proof()?;
-                Some((*id, *hidden, tab.document_gate.clone(), proof, tab.webview.clone()?))
-            }).collect::<Vec<_>>()
-        };
-        for (id, hidden, gate, proof, webview) in candidates {
-            // Native audio includes Web Audio and muted output, which the DOM media query
-            // cannot see. Unknown native state is not permission to stop playback.
-            if webview_audio_blocks_sleep(&webview) {
-                continue;
-            }
-            // Completion may be dispatched while a visibility COM call holds EngineCore.
-            // This flag permits cleanup without re-borrowing it from a callback.
-            let pending = Rc::new(Cell::new(true));
-            self.core.borrow_mut().suspend_checks.insert(id, pending.clone());
-            let weak = Rc::downgrade(&self.core);
-            let current: Rc<dyn Fn() -> bool> = Rc::new(move || {
-                let Some(core) = weak.upgrade() else { return false; };
-                let Ok(state) = core.try_borrow() else { return false; };
-                state.automatic_suspend_current(id, hidden, &gate, proof)
-            });
-            let weak = Rc::downgrade(&self.core);
-            self.check_sleep_blocked(id, Box::new(move |blocked| {
-                let Some(core) = weak.upgrade() else { return; };
-                // Both page execution and the native audio query may dispatch tab switches.
-                if !automatic_suspend_allowed(blocked, || current(), || webview_audio_blocks_sleep(&webview)) {
-                    pending.set(false);
-                    return;
-                }
-                let Ok(api) = webview.cast::<ICoreWebView2_3>() else {
-                    pending.set(false);
-                    return;
-                };
-                // QueryInterface above is itself a COM call and may dispatch callbacks.
-                if !current() {
-                    pending.set(false);
-                    return;
-                }
-                let completion_core = Rc::downgrade(&core);
-                let completion_api = api.clone();
-                let completion_pending = pending.clone();
-                let handler = TrySuspendCompletedHandler::create(Box::new(move |status, suspended| {
-                    completion_pending.set(false);
-                    if let Some(core) = completion_core.upgrade() {
-                        finish_automatic_suspend(
-                            status.is_ok() && suspended,
-                            || current(),
-                            || core.try_borrow_mut().is_ok_and(|mut state| {
-                                state.suspended.insert(id);
-                                true
-                            }),
-                            || { let _ = unsafe { completion_api.Resume() }; },
-                        );
-                    }
-                    Ok(())
-                }));
-                if unsafe { api.TrySuspend(&handler) }.is_err() {
-                    pending.set(false);
-                }
-            }));
+        let after = Duration::from_millis(hidden_for_ms);
+        for _ in 0..SUSPEND_BUDGET {
+            let candidate = self
+                .core
+                .borrow()
+                .next_suspend_candidate(Instant::now(), after);
+            let Some((id, document)) = candidate else {
+                break;
+            };
+            self.core.borrow_mut().last_suspend_check = id;
+            self.start_suspend_attempt(id, document, None);
         }
         Ok(())
+    }
+
+    fn next_hidden_suspend(&self, after: Duration) -> Option<Instant> {
+        let state = self.core.try_borrow().ok()?;
+        let now = Instant::now();
+        let next = state
+            .hidden_since
+            .keys()
+            .filter_map(|&id| state.suspend_due(id, after).map(|(due, _)| due))
+            .min()?;
+        let slot_available = state.suspend_slot_wait(now).unwrap_or(now);
+        Some(next.max(slot_available).max(now + SUSPEND_NEXT_BATCH))
+    }
+
+    fn take_suspended_tabs(&mut self) -> Vec<TabId> {
+        let mut state = self.core.borrow_mut();
+        std::mem::take(&mut state.suspend_completions)
+            .into_iter()
+            .filter_map(|(id, document)| {
+                state
+                    .automatic_suspend_current(
+                        id,
+                        document.hidden_since,
+                        &document.gate,
+                        document.proof,
+                    )
+                    .then_some(id)
+            })
+            .collect()
     }
     fn refresh_spoiler_scripts(&mut self) {
         // Registration calls do not re-enter this engine, but hold no borrow across them anyway.
@@ -5088,27 +5260,33 @@ impl EngineAdapter for WebView2Engine {
         }
         set
     }
-    fn suspend_tab(&mut self, tab_id: TabId) -> Result<()> {
-        let mut state = self.core.borrow_mut();
-        if state.active_tab == Some(tab_id) {
-            return Ok(());
+    fn suspend_tab(&mut self, id: TabId, done: Box<dyn FnOnce(bool)>) {
+        let (document, pending) = {
+            let state = self.core.borrow();
+            (
+                state.suspend_document(id),
+                state
+                    .suspend_checks
+                    .get(&id)
+                    .is_some_and(|attempt| attempt.completed_at.get().is_none()),
+            )
+        };
+        if let Some(document) = document.filter(|_| !pending) {
+            self.start_suspend_attempt(id, document, Some(done));
+        } else {
+            done(false);
         }
-        if let Some(tab) = state.tabs.get_mut(&tab_id) {
-            tab.suspend();
-            state.suspended.insert(tab_id);
-        }
-        Ok(())
     }
     fn set_memory_usage_target(&mut self, target: MemoryUsageTarget) -> Result<MemoryTargetApply> {
         let mut state = self.core.borrow_mut();
         state.target = target;
-        if let Some(active) = state.active_tab
-            && let Some(tab) = state.tabs.get_mut(&active)
-        {
-            EngineAdapter::set_memory_usage_target(tab, target)
-        } else {
-            Ok(MemoryTargetApply::Deferred)
-        }
+        let visible: Vec<_> = state.visible_tabs.iter().copied().collect();
+        apply_pane_memory_targets(visible, |id| {
+            state
+                .tabs
+                .get_mut(&id)
+                .map(|tab| EngineAdapter::set_memory_usage_target(tab, target))
+        })
     }
     fn close(&mut self) -> Result<()> {
         drop(self.browser_exit_registration.take());
@@ -5136,6 +5314,7 @@ impl EngineAdapter for WebView2Engine {
             state.hidden_since.clear();
             state.suspended.clear();
             state.suspend_checks.clear();
+            state.suspend_completions.clear();
             state.tabs.drain().collect()
         };
         for (id, mut tab) in tabs {
@@ -5200,11 +5379,154 @@ fn sleep_probe_blocks(script_ran: bool, result: &str) -> bool {
     !(script_ran && result.trim() == "false")
 }
 
-/// Asks a tab to suspend again. Engines without the suspend API ignore the call.
-fn try_suspend(webview: &ICoreWebView2) {
-    if let Ok(webview3) = webview.cast::<ICoreWebView2_3>() {
-        let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
-        let _ = unsafe { webview3.TrySuspend(&handler) };
+fn apply_pane_memory_targets(
+    panes: impl IntoIterator<Item = TabId>,
+    mut apply: impl FnMut(TabId) -> Option<Result<MemoryTargetApply>>,
+) -> Result<MemoryTargetApply> {
+    let mut result = Ok(MemoryTargetApply::Deferred);
+    for pane in panes {
+        if let Some(applied) = apply(pane) {
+            result = match (result, applied) {
+                (Err(error), _) | (_, Err(error)) => Err(error),
+                (Ok(MemoryTargetApply::Unsupported), _)
+                | (_, Ok(MemoryTargetApply::Unsupported)) => Ok(MemoryTargetApply::Unsupported),
+                (_, Ok(MemoryTargetApply::Applied)) => Ok(MemoryTargetApply::Applied),
+                (result, Ok(MemoryTargetApply::Deferred)) => result,
+            };
+        }
+    }
+    result
+}
+
+impl WebView2Engine {
+    fn start_suspend_attempt(
+        &mut self,
+        id: TabId,
+        document: SuspendDocument,
+        done: Option<Box<dyn FnOnce(bool)>>,
+    ) {
+        let automatic = done.is_none();
+        let done = Rc::new(RefCell::new(done));
+        let (webview, attempt, notify) = {
+            let mut state = self.core.borrow_mut();
+            let webview = state
+                .tabs
+                .get(&id)
+                .and_then(|tab| tab.webview.clone())
+                .expect("validated suspension candidate");
+            let attempt = Rc::new(SuspendAttempt::new(
+                document,
+                state.suspend_checks.get(&id).map(Rc::as_ref),
+                Instant::now(),
+            ));
+            state.suspend_checks.insert(id, attempt.clone());
+            state.suspended.remove(&id);
+            state.suspend_completions.remove(&id);
+            (
+                webview,
+                attempt,
+                state.events.background_maintenance.clone(),
+            )
+        };
+        let current = {
+            let weak = Rc::downgrade(&self.core);
+            let attempt = attempt.clone();
+            Rc::new(move || {
+                weak.upgrade().is_some_and(|core| {
+                    core.try_borrow().is_ok_and(|state| {
+                        let document = &attempt.document;
+                        state.automatic_suspend_current(
+                            id,
+                            document.hidden_since,
+                            &document.gate,
+                            document.proof,
+                        )
+                    })
+                })
+            })
+        };
+        let current = Rc::new(move || {
+            current()
+                && !super::download::owner_downloading(super::download::tab_owner(id.0))
+                && current()
+        });
+        let finish = {
+            let attempt = attempt.clone();
+            Rc::new(move |suspended| {
+                if attempt.completed_at.get().is_some() {
+                    return;
+                }
+                attempt.completed_at.set(Some(Instant::now()));
+                let done = done.borrow_mut().take();
+                if let Some(done) = done {
+                    done(suspended);
+                }
+                if let Some(notify) = notify.as_ref() {
+                    notify();
+                }
+            })
+        };
+        // Native audio includes Web Audio and muted playback; unknown state fails closed.
+        if !automatic_suspend_allowed(false, || current(), || webview_audio_blocks_sleep(&webview))
+        {
+            finish(false);
+            return;
+        }
+        let weak = Rc::downgrade(&self.core);
+        self.check_sleep_blocked(
+            id,
+            Box::new(move |blocked| {
+                if !automatic_suspend_allowed(
+                    blocked,
+                    || current(),
+                    || webview_audio_blocks_sleep(&webview),
+                ) {
+                    finish(false);
+                    return;
+                }
+                let Ok(api) = webview.cast::<ICoreWebView2_3>() else {
+                    finish(false);
+                    return;
+                };
+                // QueryInterface may dispatch messages. Recheck the document after it returns.
+                if !current() {
+                    finish(false);
+                    return;
+                }
+                let callback_api = api.clone();
+                let callback_finish = finish.clone();
+                let handler =
+                    TrySuspendCompletedHandler::create(Box::new(move |status, suspended| {
+                        let recorded = Cell::new(false);
+                        finish_automatic_suspend(
+                            status.is_ok() && suspended,
+                            || current(),
+                            || {
+                                weak.upgrade().is_some_and(|core| {
+                                    core.try_borrow_mut().is_ok_and(|mut state| {
+                                        state.suspended.insert(id);
+                                        if automatic {
+                                            state
+                                                .suspend_completions
+                                                .insert(id, attempt.document.clone());
+                                        }
+                                        recorded.set(true);
+                                        true
+                                    })
+                                })
+                            },
+                            || {
+                                let _ = unsafe { callback_api.Resume() };
+                            },
+                        );
+                        callback_finish(recorded.get());
+                        Ok(())
+                    }));
+                if unsafe { api.TrySuspend(&handler) }.is_err() {
+                    finish(false);
+                }
+            }),
+        );
     }
 }
 
@@ -5233,7 +5555,7 @@ fn finish_automatic_suspend(
 
 /// Suspension is destructive to page scheduling, so unsupported/failed audio queries fail
 /// closed. Keep the UI's best-effort "playing" query separate from this permission check.
-fn webview_audio_blocks_sleep(webview: &ICoreWebView2) -> bool {
+pub(super) fn webview_audio_blocks_sleep(webview: &ICoreWebView2) -> bool {
     let Ok(audio) = webview.cast::<ICoreWebView2_8>() else { return true; };
     let mut playing = BOOL::default();
     unsafe { audio.IsDocumentPlayingAudio(&mut playing) }.is_err() || playing.as_bool()
@@ -5407,11 +5729,6 @@ impl EngineAdapter for WebView2Tab {
         }
         Ok(())
     }
-    fn suspend(&mut self) {
-        if let Some(webview) = self.webview.as_ref() {
-            try_suspend(webview);
-        }
-    }
     fn set_memory_usage_target(&mut self, target: MemoryUsageTarget) -> Result<MemoryTargetApply> {
         if self.memory_target_api.is_none() {
             let webview = self
@@ -5439,6 +5756,7 @@ impl EngineAdapter for WebView2Tab {
     }
     fn close(&mut self) -> Result<()> {
         self.document_gate.borrow_mut().close();
+        self.player_responses.stop(self.webview.as_ref());
         #[cfg(feature = "experimental-engine-context-menu")]
         let menu_removed = self.context_menu_registration.take().map(|mut registration|registration.close()).transpose();
         if let Some(controller) = self.controller.take() {
@@ -5835,6 +6153,7 @@ unsafe fn configure_controller(
                             // sync_top_host), not here: a navigation can still be superseded.
                             let mut navigation_id = 0;
                             if args.NavigationId(&mut navigation_id).is_ok() {
+                                nav_block_tab.player_responses.start_navigation(Some(navigation_id));
                                 diagnostic_start_id.set(navigation_id);
                                 if let Some(callback) = diagnostic_start.as_ref() {
                                     callback("diagnostic_navigation_started", tab_id, navigation_id, None, "");
@@ -5842,6 +6161,8 @@ unsafe fn configure_controller(
                                 if let Some(callback) = navigation_started.as_ref() {
                                     callback(tab_id, navigation_id);
                                 }
+                            } else {
+                                nav_block_tab.player_responses.start_navigation(None);
                             }
                             if let Some(log) = navigation_start_log.as_ref() {
                                 log("navigation_started");
@@ -6005,7 +6326,7 @@ unsafe fn configure_controller(
                                 (sender.as_ref(), completed_address_changed.as_ref())
                             {
                                 if let Some(url) = current_web_url(sender) {
-                                    callback(tab_id, url);
+                                    callback(tab_id, url, super::AddressChange::Completion);
                                 }
                             }
                         } else {
@@ -6036,23 +6357,49 @@ unsafe fn configure_controller(
         let source_blocker = blocker.clone();
         let source_document = document_gate.clone();
         webview.add_SourceChanged(
-            &SourceChangedEventHandler::create(Box::new(move |sender, _args| {
+            &SourceChangedEventHandler::create(Box::new(move |sender, args| {
                 source_document.borrow_mut().source_changed();
-                if let Some(sender) = sender.as_ref() {
-                    sync_top_host(sender, &source_block_tab);
+                let Some(sender) = sender else { return Ok(()); };
+                let mut new_document = BOOL::default();
+                let same_document = args.is_some_and(|args| {
+                    args.IsNewDocument(&mut new_document).is_ok() && !new_document.as_bool()
+                });
+                // Same-document navigations stay in the original origin. They do not change the
+                // first-party block list, but every change still invalidates old source proofs.
+                if !same_document {
+                    sync_top_host(&sender, &source_block_tab);
                     if let Some(blocker) = source_blocker.as_ref() {
-                        refresh_blocked_urls(sender, &source_block_tab, blocker, private, None);
+                        refresh_blocked_urls(&sender, &source_block_tab, blocker, private, None);
                     }
                 }
-                if let (Some(sender), Some(callback)) = (sender, address_changed.as_ref()) {
-                    if let Some(url) = current_web_url(&sender) {
-                        callback(tab_id, url);
-                    }
+                if let Some(callback) = address_changed.as_ref()
+                    && let Some(url) = current_web_url(&sender)
+                {
+                    let kind = if same_document {
+                        super::AddressChange::SameDocument
+                    } else {
+                        super::AddressChange::Document
+                    };
+                    callback(tab_id, url, kind);
                 }
                 Ok(())
             })),
             &mut token,
         )?;
+        if let Some(history_changed) = events.history_changed.clone() {
+            webview.add_HistoryChanged(
+                &webview2_com::HistoryChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(sender) = sender {
+                        let (mut back, mut forward) = (BOOL::default(), BOOL::default());
+                        if sender.CanGoBack(&mut back).is_ok() && sender.CanGoForward(&mut forward).is_ok() {
+                            history_changed(tab_id, back.as_bool(), forward.as_bool());
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
 
         let diagnostic_title = events.diagnostic_navigation.clone();
         let diagnostic_title_id = diagnostic_navigation_id;
@@ -6666,7 +7013,7 @@ unsafe fn configure_controller(
             let blocked_callback = events.blocked_changed.clone();
             let policy_log = events.policy_event.clone();
             // Listeners exist before Fetch.enable and Network.enable, which refresh sends.
-            install_fetch_listener(&webview, &block_tab, blocker.clone(), private);
+            install_fetch_listener(&webview, &block_tab, blocker.clone(), private, lifetime.clone());
             install_loading_failed_listener(
                 &webview,
                 &block_tab,
@@ -6834,8 +7181,10 @@ unsafe fn configure_controller(
         }
 
         let failed_document = document_gate.clone();
+        let failed_responses = block_tab.player_responses.clone();
         webview.add_ProcessFailed(&ProcessFailedEventHandler::create(Box::new(move |_, _| {
             failed_document.borrow_mut().unreadable_event();
+            failed_responses.cancel_all();
             Ok(())
         })), &mut token)?;
 
@@ -6864,6 +7213,7 @@ unsafe fn configure_controller(
             #[cfg(feature = "experimental-engine-context-menu")]
             context_menu_registration,
             document_gate,
+            player_responses: block_tab.player_responses.clone(),
             focus_trace,
             environment: Some(environment.clone()),
             controller: Some(controller),
@@ -8083,10 +8433,10 @@ mod tests {
     #[test]
     fn a_response_stage_pause_is_never_mistaken_for_a_blocked_request() {
         let request = r#"{"requestId":"interception-job-1.0","request":{"url":"https://doubleclick.net/x","headers":{"responseStatusCode":"1"}},"resourceType":"Fetch"}"#;
-        assert_eq!(paused_stage(request), PausedStage::Request);
+        assert_eq!(paused_event(request), (Some("interception-job-1.0".into()), PausedStage::Request));
         let response = r#"{"requestId":"interception-job-2.0","request":{"url":"https://www.youtube.com/youtubei/v1/player?prettyPrint=false","method":"POST","headers":{}},"frameId":"F","resourceType":"Fetch","responseStatusCode":200,"responseHeaders":[{"name":"content-type","value":"application/json; charset=UTF-8"},{"name":"content-encoding","value":"br"},{"name":"set-cookie","value":"YSC=a; Path=/"}],"networkId":"N"}"#;
         assert_eq!(
-            paused_stage(response),
+            paused_event(response).1,
             PausedStage::Response(Some(PausedResponse {
                 url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false".to_owned(),
                 status: Some(200),
@@ -8102,14 +8452,21 @@ mod tests {
         );
         let failed = r#"{"requestId":"r","request":{"url":"https://www.youtube.com/watch?v=x"},"resourceType":"Document","responseErrorReason":"ConnectionReset"}"#;
         assert!(matches!(
-            paused_stage(failed),
+            paused_event(failed).1,
             PausedStage::Response(Some(PausedResponse { status: None, .. }))
         ));
         // Unreadable, but plainly a response: continued, not failed.
         assert_eq!(
-            paused_stage(r#"{"requestId":"r","responseStatusCode":200,"#),
-            PausedStage::Response(None)
+            paused_event(r#"{"requestId":"r","responseStatusCode":200,"#),
+            (Some("r".into()), PausedStage::Response(None))
         );
+    }
+
+    #[test]
+    fn fetch_events_read_only_the_root_id_and_preserve_unreadable_headers() {
+        let event = r#"{"responseStatusCode":200,"request":{"url":"https://www.youtube.com/watch?v=x","headers":{"requestId":"nested"}},"responseHeaders":[{"name":"content-type","value":"text/html"},{"name":"set-cookie"}],"requestId" : "root"}"#;
+        assert_eq!(paused_event(event), (Some("root".into()), PausedStage::Response(None)));
+        assert_eq!(paused_event(r#"{"request":{"requestId":"nested"}}"#).0, None);
     }
 
     #[test]
@@ -8136,20 +8493,38 @@ mod tests {
 
     #[test]
     fn a_response_body_is_read_whether_or_not_devtools_base64_encoded_it() {
+        fn read_body(result: &str) -> Option<std::borrow::Cow<'_, str>> {
+            response_body_text(result, MAX_REWRITE_BODY_BYTES)
+        }
         assert_eq!(
-            response_body_text(r#"{"body":"{\"adSlots\":[]}","base64Encoded":false}"#).as_deref(),
+            read_body(r#"{"body":"{\"adSlots\":[]}","base64Encoded":false}"#).as_deref(),
             Some(r#"{"adSlots":[]}"#)
         );
         assert_eq!(
-            response_body_text(r#"{"body":"eyJhZFNsb3RzIjpbXX0=","base64Encoded":true}"#)
+            read_body(r#"{"body":"eyJhZFNsb3RzIjpbXX0=","base64Encoded":true}"#)
                 .as_deref(),
             Some(r#"{"adSlots":[]}"#)
         );
         assert_eq!(
-            response_body_text(r#"{"body":"/w==","base64Encoded":true}"#),
+            read_body(r#"{"body":"/w==","base64Encoded":true}"#),
             None
         );
-        assert_eq!(response_body_text(r#"{"base64Encoded":false}"#), None);
+        assert_eq!(read_body(r#"{"base64Encoded":false}"#), None);
+    }
+
+    #[test]
+    fn oversized_or_malformed_player_responses_pass_through() {
+        let header = |value: String| [("Content-Length".to_owned(), value)];
+        assert!(advertised_rewrite_size_allowed(&header(MAX_REWRITE_BODY_BYTES.to_string())));
+        assert!(!advertised_rewrite_size_allowed(&header((MAX_REWRITE_BODY_BYTES + 1).to_string())));
+        assert!(!advertised_rewrite_size_allowed(&header("invalid".to_owned())));
+        let plain = r#"{"body":"a\u00e9","base64Encoded":false}"#;
+        let encoded = r#"{"body":"YcOp","base64Encoded":true}"#;
+        for body in [plain, encoded] {
+            assert_eq!(response_body_text(body, 2), None);
+            assert_eq!(response_body_text(body, 3).as_deref(), Some("aé"));
+        }
+        assert_eq!(response_body_text(r#"{"body":"{}","base64Encoded":"false"}"#, 10), None);
     }
 
     #[test]
@@ -8174,7 +8549,7 @@ mod tests {
         let source = include_str!("webview2.rs");
         let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
         for needle in [
-            "if let PausedStage::Response(paused) = paused_stage(&json)",
+            "if let PausedStage::Response(paused) = stage",
             ".player_ads_rewrite(&paused.url, &top_host, private)",
             "fetch_enable_params(responses)",
             "Network.loadingFailed",
@@ -8191,7 +8566,7 @@ mod tests {
         assert!(!production.contains("fetch_fail"));
         assert!(!production.contains("fetch_armed"));
         assert!(!production.contains("document_blocked"));
-        let response_branch = production.find("paused_stage(&json)").unwrap();
+        let response_branch = production.find("paused_event(&json)").unwrap();
         let listener_continue = production.find("fetch_continue(&sender, &request_id)").unwrap();
         assert!(response_branch < listener_continue);
     }
@@ -9152,6 +9527,7 @@ mod tests {
             #[cfg(feature = "experimental-engine-context-menu")]
             context_menu_registration: None,
             document_gate: Rc::new(RefCell::new(super::super::document_gate::DocumentGate::default())),
+            player_responses: Rc::default(),
             focus_trace: None, environment: None, controller: None, webview: None, allowed_file: None,
             memory_target_api: None, visible: Rc::new(Cell::new(true)), applied_bounds: None,
             spatial_id: Rc::new(RefCell::new(None)),
@@ -9192,6 +9568,7 @@ mod tests {
             visible_tabs: HashSet::from([TabId(1)]),
             pane_bounds: HashMap::new(),
             target: MemoryUsageTarget::Normal,
+            window_visible: true,
             tabs: HashMap::new(),
             known_tabs: HashSet::from([TabId(1), TabId(2)]),
             creating: HashSet::new(),
@@ -9205,9 +9582,11 @@ mod tests {
             waiting_controllers: VecDeque::new(),
             pending: HashMap::new(),
             pending_post: HashMap::new(),
-            hidden_since: HashMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
+            hidden_since: BTreeMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
             suspended: HashSet::new(),
             suspend_checks: HashMap::new(),
+            last_suspend_check: TabId(0),
+            suspend_completions: HashMap::new(),
             closed: false,
             browser_extensions: false,
             extensions_refused: None,
@@ -9223,6 +9602,136 @@ mod tests {
             extension_page: None,
         }));
         WebView2Engine { core, browser_exit_registration: None }
+    }
+
+    #[test]
+    fn automatic_suspension_backoff_starts_at_completion_and_tracks_the_document() {
+        let now = Instant::now();
+        let gate = Rc::new(RefCell::new(
+            super::super::document_gate::DocumentGate::default(),
+        ));
+        let document = SuspendDocument {
+            hidden_since: now,
+            gate: gate.clone(),
+            proof: (1, 1, 0),
+        };
+        let mut attempt = SuspendAttempt::new(document.clone(), None, now);
+        let completed = now + Duration::from_secs(2);
+        for seconds in [15, 30, 60, 120, 120] {
+            attempt.completed_at.set(Some(completed));
+            assert_eq!(
+                attempt.retry_for(&document),
+                Some((
+                    completed + Duration::from_secs(seconds),
+                    Duration::from_secs(seconds)
+                ))
+            );
+            attempt = SuspendAttempt::new(document.clone(), Some(&attempt), completed);
+        }
+        attempt.completed_at.set(Some(completed));
+        let same_document = SuspendDocument {
+            proof: (1, 1, 1),
+            ..document.clone()
+        };
+        assert_eq!(
+            attempt.retry_for(&same_document),
+            attempt.retry_for(&document)
+        );
+        let new_document = SuspendDocument {
+            proof: (2, 2, 0),
+            ..document.clone()
+        };
+        assert_eq!(attempt.retry_for(&new_document), None);
+        assert_eq!(
+            SuspendAttempt::new(new_document, Some(&attempt), completed).retry_delay,
+            SUSPEND_RETRY_MIN
+        );
+        let shown_then_hidden = SuspendDocument {
+            hidden_since: completed,
+            ..document
+        };
+        assert_eq!(attempt.retry_for(&shown_then_hidden), None);
+    }
+
+    #[test]
+    fn automatic_suspension_rotates_and_a_slow_tab_cannot_occupy_the_budget_forever() {
+        let engine = engine_without_controllers();
+        let now = Instant::now();
+        let mut state = engine.core.borrow_mut();
+        state.hidden_since = (2..=6).map(|i| (TabId(i), now)).collect();
+        assert_eq!(
+            state
+                .hidden_suspend_order()
+                .take(SUSPEND_BUDGET)
+                .collect::<Vec<_>>(),
+            [TabId(2), TabId(3)]
+        );
+        state.last_suspend_check = TabId(3);
+        assert_eq!(
+            state
+                .hidden_suspend_order()
+                .take(SUSPEND_BUDGET)
+                .collect::<Vec<_>>(),
+            [TabId(4), TabId(5)]
+        );
+        state.last_suspend_check = TabId(5);
+        assert_eq!(
+            state
+                .hidden_suspend_order()
+                .take(SUSPEND_BUDGET)
+                .collect::<Vec<_>>(),
+            [TabId(6), TabId(2)]
+        );
+        let gate = Rc::new(RefCell::new(
+            super::super::document_gate::DocumentGate::default(),
+        ));
+        for id in [TabId(2), TabId(3)] {
+            state.suspend_checks.insert(
+                id,
+                Rc::new(SuspendAttempt {
+                    document: SuspendDocument {
+                        hidden_since: now,
+                        gate: gate.clone(),
+                        proof: (1, 1, 0),
+                    },
+                    started: now,
+                    completed_at: Cell::new(None),
+                    retry_delay: SUSPEND_RETRY_MIN,
+                }),
+            );
+        }
+        let deadline = now + SUSPEND_SLOT_AGE;
+        assert_eq!(state.suspend_slot_wait(now), Some(deadline));
+        assert_eq!(state.suspend_slot_wait(deadline), None);
+        assert!(
+            state
+                .suspend_checks
+                .values()
+                .all(|attempt| attempt.completed_at.get().is_none()),
+            "per-tab guards remain active"
+        );
+    }
+
+    #[test]
+    fn both_visible_split_panes_get_the_target_even_if_one_fails() {
+        let engine = engine_without_controllers();
+        let mut state = engine.core.borrow_mut();
+        state.visible_tabs.insert(TabId(2));
+        let mut called = HashSet::new();
+        let result = apply_pane_memory_targets(state.visible_tabs.iter().copied(), |id| {
+            called.insert(id);
+            Some(if id == TabId(1) {
+                Err(Error::from(windows::Win32::Foundation::E_FAIL))
+            } else {
+                Ok(MemoryTargetApply::Applied)
+            })
+        });
+        assert!(result.is_err());
+        assert_eq!(called, HashSet::from([TabId(1), TabId(2)]));
+        assert_eq!(
+            apply_pane_memory_targets([], |_| unreachable!()).unwrap(),
+            MemoryTargetApply::Deferred
+        );
     }
 
     #[test]
@@ -9280,6 +9789,7 @@ mod tests {
         let mut state = engine.core.borrow_mut();
         let id = TabId(2);
         let hidden = state.hidden_since[&id];
+        let (_, lifetime) = state.begin_controller_lifetime(id);
         let gate = Rc::new(RefCell::new(super::super::document_gate::DocumentGate::default()));
         gate.borrow_mut().started(1);
         gate.borrow_mut().completed(1, true);
@@ -9288,6 +9798,7 @@ mod tests {
             #[cfg(feature = "experimental-engine-context-menu")]
             context_menu_registration: None,
             document_gate: gate.clone(), focus_trace: None,
+            player_responses: Rc::default(),
             environment: None, controller: None, webview: None, allowed_file: None,
             memory_target_api: None, visible: Rc::new(Cell::new(false)),
             applied_bounds: None, spatial_id: Rc::new(RefCell::new(None)),
@@ -9318,6 +9829,9 @@ mod tests {
         state.closed = true;
         assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "engine closed");
         state.closed = false;
+        lifetime.set(false);
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "retiring tab");
+        lifetime.set(true);
         state.tabs.remove(&id);
         assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "tab closed");
     }
@@ -9332,7 +9846,7 @@ mod tests {
             state.pane_bounds.insert(TabId(1), RECT::default());
             state.pane_bounds.insert(TabId(2), RECT::default());
             state.hidden_since =
-                HashMap::from([(TabId(3), already_hidden), (TabId(4), already_hidden)]);
+                BTreeMap::from([(TabId(3), already_hidden), (TabId(4), already_hidden)]);
             state.suspended = HashSet::from([TabId(1), TabId(2), TabId(3), TabId(4)]);
         }
 
@@ -9417,7 +9931,7 @@ mod tests {
             let mut state = engine.core.borrow_mut();
             state.visible_tabs.insert(TabId(2));
             state.hidden_since =
-                HashMap::from([(TabId(3), Instant::now()), (TabId(4), Instant::now())]);
+                BTreeMap::from([(TabId(3), Instant::now()), (TabId(4), Instant::now())]);
             state.suspended = HashSet::from([TabId(3), TabId(4)]);
             // Controllers are still being created, so the engine must remember the new view
             // and its bounds without making a WebView2 call in this test.

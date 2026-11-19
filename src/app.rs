@@ -18,11 +18,18 @@ use crate::{
 
 thread_local! {
     static INTERACTION_BORROW_DROPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static TAB_CHANGE_POSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static TAB_CHANGE_FLAGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static TAB_CHANGES: RefCell<HashMap<isize, TabChanges>> = RefCell::new(HashMap::new());
     /// The form fields of a search with an engine that POSTs its query, for the one navigation to
     /// that address that follows (see `App::open_destination`).
     static POST_BODY: std::cell::RefCell<Option<(url::Url, String)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct TabChanges {
+    pub structural: bool,
+    pub persisted: bool,
+    pub metadata: bool,
+    pub toolbar: bool,
 }
 
 use windows::{
@@ -247,12 +254,6 @@ fn controller_close_plan(
         actions.push(ControllerVisibilityAction::Show(next));
     }
     actions
-}
-
-/// Whether a tab hidden for `hidden_for` is due to be suspended. `suspend_after` comes from the
-/// background policy: 30 s normally, shorter while efficiency mode is active.
-fn hidden_tab_suspend_eligible(hidden_for: Duration, suspend_after: Duration) -> bool {
-    hidden_for >= suspend_after
 }
 
 /// How long after a page finishes loading the reader probe runs, so it stays off the first paint.
@@ -489,78 +490,6 @@ impl NavigationProgress {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IdleMemoryDecision {
-    pub target: MemoryUsageTarget,
-    pub timer: IdleTimerAction,
-}
-
-/// While another application is in the foreground, a loaded page is idle and needs no polling.
-pub fn background_memory_decision(minimized: bool, page_loaded: bool) -> IdleMemoryDecision {
-    let target = if minimized || page_loaded {
-        MemoryUsageTarget::Low
-    } else {
-        MemoryUsageTarget::Normal
-    };
-    IdleMemoryDecision {
-        target,
-        timer: IdleTimerAction::Kill,
-    }
-}
-
-/// How often a Low foreground page checks for new input (restore latency bound).
-pub const IDLE_RESTORE_POLL_MS: u32 = 200;
-
-pub fn idle_memory_decision(
-    minimized: bool,
-    page_loaded: bool,
-    idle_ms: u32,
-    current_target: MemoryUsageTarget,
-) -> IdleMemoryDecision {
-    if minimized {
-        return IdleMemoryDecision {
-            target: MemoryUsageTarget::Low,
-            timer: IdleTimerAction::Kill,
-        };
-    }
-    if !page_loaded {
-        return IdleMemoryDecision {
-            target: MemoryUsageTarget::Normal,
-            timer: IdleTimerAction::Kill,
-        };
-    }
-    if idle_ms == 0 && current_target == MemoryUsageTarget::Normal {
-        return IdleMemoryDecision {
-            target: MemoryUsageTarget::Normal,
-            timer: IdleTimerAction::Arm(3_000),
-        };
-    }
-    if current_target == MemoryUsageTarget::Low {
-        if idle_ms <= 1_000 {
-            return IdleMemoryDecision {
-                target: MemoryUsageTarget::Normal,
-                timer: IdleTimerAction::Arm(3_000),
-            };
-        }
-        // Keep a cheap poll while Low so the next keystroke or wheel tick restores Normal.
-        return IdleMemoryDecision {
-            target: MemoryUsageTarget::Low,
-            timer: IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS),
-        };
-    }
-    let target = if idle_ms >= 3_000 {
-        MemoryUsageTarget::Low
-    } else {
-        MemoryUsageTarget::Normal
-    };
-    let timer = if target == MemoryUsageTarget::Low {
-        IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS)
-    } else {
-        IdleTimerAction::Arm(1_000)
-    };
-    IdleMemoryDecision { target, timer }
-}
-
 fn valid_viewport_bounds(bounds: windows::Win32::Foundation::RECT) -> bool {
     bounds.right > bounds.left && bounds.bottom > bounds.top
 }
@@ -609,6 +538,8 @@ enum EngineNotice {
     Responsive(TabId, u64),
     CreationFailed(i32),
     OperationFailed(i32),
+    BackgroundMaintenance,
+    WindowMemoryChanged,
 }
 
 #[derive(Default)]
@@ -861,11 +792,16 @@ pub struct ClosedTab {
 struct AppTab {
     id: TabId,
     url: Option<url::Url>,
+    /// The model may contain a requested or restored URL before the engine reports it.
+    address_reported: bool,
     title: String,
     loading: bool,
     progress: NavigationProgress,
+    // Lets history observe a reload even when start and completion share one chrome message.
+    completed_documents: u64,
     favicon: Option<Vec<u8>>,
     favicon_key: Option<crate::tabs::FaviconKey>,
+    favicon_host: Option<String>,
     can_back: bool,
     can_forward: bool,
     page_usable: bool,
@@ -923,11 +859,14 @@ impl AppTab {
             id,
             private: false,
             url: None,
+            address_reported: false,
             title: String::new(),
             loading: false,
             progress: NavigationProgress::default(),
+            completed_documents: 0,
             favicon: None,
             favicon_key: None,
+            favicon_host: None,
             can_back: false,
             can_forward: false,
             page_usable: false,
@@ -951,8 +890,87 @@ impl AppTab {
             extra: crate::tab_state::TabExtra::fresh(), // --- tab options ---
         }
     }
+
+    fn set_pending_address(&mut self, url: &url::Url) {
+        if self.url.as_ref() != Some(url) {
+            self.url = Some(url.clone());
+            self.address_reported = false;
+        }
+    }
+
+    fn commit_address(&mut self, url: &url::Url, kind: engine::AddressChange) -> AddressUpdate {
+        let differs = self.url.as_ref() != Some(url);
+        let changed = differs || !self.address_reported;
+        let mut update = AddressUpdate {
+            changed,
+            apply_zoom: kind == engine::AddressChange::Document
+                || (kind == engine::AddressChange::Completion && changed),
+            ..Default::default()
+        };
+        if differs {
+            if self.url.is_some() {
+                update.left_reader = self.reader.active != crate::reader::Active::Off;
+                self.reader.reset();
+                update.left_translate = self.translate.active;
+                self.translate.reset();
+            }
+            self.url = Some(url.clone());
+        }
+        self.address_reported = true;
+        update
+    }
+
+    fn update_title(&mut self, title: &str, detect_notifications: bool, active: bool) -> bool {
+        let marks_changed = tab_features::note_title(self, title, detect_notifications, active);
+        if self.title == title {
+            return marks_changed;
+        }
+        title.clone_into(&mut self.title);
+        true
+    }
+
+    fn update_favicon(&mut self, bytes: Vec<u8>) -> bool {
+        if self.favicon.as_ref() == Some(&bytes) {
+            return false;
+        }
+        self.favicon_key = Some(crate::favicon::key_for(&bytes));
+        self.favicon = Some(bytes);
+        true
+    }
+
+    fn update_favicon_host(&mut self) -> bool {
+        let host = self.url.as_ref()
+            .filter(|url| matches!(url.scheme(), "http" | "https"))
+            .and_then(url::Url::host_str);
+        if self.favicon_host.as_deref() == host {
+            return false;
+        }
+        self.favicon_host = host.map(str::to_owned);
+        true
+    }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AddressUpdate {
+    changed: bool,
+    apply_zoom: bool,
+    left_reader: bool,
+    left_translate: bool,
+}
+
+pub(crate) struct ChromeTab {
+    pub id: TabId,
+    pub pinned: bool,
+    pub muted: bool,
+    pub private: bool,
+    pub loading: bool,
+    pub title: String,
+    pub custom_title: Option<String>,
+    pub url: Option<url::Url>,
+    pub completed_documents: u64,
+    pub favicon_key: Option<crate::tabs::FaviconKey>,
+    pub favicon: Option<Vec<u8>>,
+}
 mod page_translate;
 mod page_actions; // page tools: capture, selection, applying the settings (thread T7)
 pub use page_actions::{CaptureResult, Selected, capture_busy};
@@ -1437,7 +1455,7 @@ impl App {
         if switched {
             Self::save_workspaces(app, WorkspaceChange::SwitchWorkspace);
             Self::notify_rail_changed(app);
-            Self::schedule_tab_idle_timer(app);
+            Self::schedule_background_maintenance(app);
         }
         switched
     }
@@ -1737,10 +1755,30 @@ impl App {
     }
 
     fn post_tab_changed_kind(hwnd: HWND, id: TabId, structural: bool, persisted: bool) -> bool {
-        let flags = u32::from(structural) | (u32::from(persisted) << 1);
-        let should_post = TAB_CHANGE_POSTED.with(|posted| {
-            TAB_CHANGE_FLAGS.with(|pending| pending.set(pending.get() | flags));
-            !posted.replace(true)
+        Self::post_tab_change_flags(hwnd, id, TabChanges { structural, persisted, metadata: true, toolbar: true })
+    }
+
+    fn post_tab_address_changed(hwnd: HWND, id: TabId, persisted: bool, active: bool) {
+        Self::post_tab_change_flags(hwnd, id, TabChanges { persisted, toolbar: active, ..Default::default() });
+    }
+
+    fn post_tab_change_flags(hwnd: HWND, id: TabId, flags: TabChanges) -> bool {
+        let should_post = TAB_CHANGES.with(|pending| {
+            use std::collections::hash_map::Entry;
+            match pending.borrow_mut().entry(hwnd.0 as isize) {
+                Entry::Occupied(mut entry) => {
+                    let change = entry.get_mut();
+                    change.structural |= flags.structural;
+                    change.persisted |= flags.persisted;
+                    change.metadata |= flags.metadata;
+                    change.toolbar |= flags.toolbar;
+                    false
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(flags);
+                    true
+                }
+            }
         });
         if should_post {
             win32::post(
@@ -1753,10 +1791,8 @@ impl App {
         should_post
     }
 
-    pub fn take_tab_change_flags() -> (bool, bool) {
-        TAB_CHANGE_POSTED.with(|posted| posted.set(false));
-        let flags = TAB_CHANGE_FLAGS.with(|pending| pending.replace(0));
-        (flags & 1 != 0, flags & 2 != 0)
+    pub(crate) fn take_tab_change_flags(hwnd: HWND) -> TabChanges {
+        TAB_CHANGES.with(|pending| pending.borrow_mut().remove(&(hwnd.0 as isize)).unwrap_or_default())
     }
 
     pub fn new_tab(app: &AppRef) -> TabId {
@@ -1820,7 +1856,6 @@ impl App {
             // --- end tab options ---
             state.navigation_progress.reset();
             state.page_loaded = false;
-            state.desired_memory_target = MemoryUsageTarget::Normal;
             (id, state.hwnd, old, old_has_controller, in_split)
         };
         if private {
@@ -1835,15 +1870,11 @@ impl App {
             // registers nothing. Select it afterwards: otherwise the next search is
             // E_POINTER (the engine has never heard of the tab) and the page stays blank.
             Self::apply_visible_panes(app);
-            Self::with_engine(app, |engine| {
-                engine.select_tab(id)?;
-                let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
-                Ok(())
-            });
+            Self::with_engine(app, |engine| engine.select_tab(id));
             Self::post_tab_changed(hwnd, id);
             Self::save_workspaces(app, WorkspaceChange::TabOpen);
             Self::sync_window_title(app);
-            Self::schedule_tab_idle_timer(app);
+            Self::schedule_background_maintenance(app);
             Self::on_tab_shown(app, old, id); // --- tab options ---
             return id;
         }
@@ -1861,15 +1892,11 @@ impl App {
                 }
             }
         }
-        Self::with_engine(app, |engine| {
-            engine.select_tab(id)?;
-            let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
-            Ok(())
-        });
+        Self::with_engine(app, |engine| engine.select_tab(id));
         Self::post_tab_changed(hwnd, id);
         Self::save_workspaces(app, WorkspaceChange::TabOpen);
         Self::sync_window_title(app);
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
         Self::on_tab_shown(app, old, id); // --- tab options ---
         id
     }
@@ -1983,7 +2010,6 @@ impl App {
                         .unwrap();
                     state.navigation_progress = progress;
                     state.page_loaded = page_usable;
-                    state.desired_memory_target = MemoryUsageTarget::Normal;
                 }
                 (true, state.hwnd, active, was_active, false)
             }
@@ -2015,7 +2041,6 @@ impl App {
             let closed = engine.close_tab(id);
             if was_active {
                 let _ = engine.select_tab(active);
-                let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
             }
             closed
         });
@@ -2037,7 +2062,7 @@ impl App {
         Self::release_unused_site_rules(app);
         Self::save_workspaces(app, WorkspaceChange::TabClose);
         Self::sync_window_title(app);
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
         Self::on_tab_closed(app, active, was_active); // --- tab options ---
         changed
     }
@@ -2104,7 +2129,6 @@ impl App {
                 .iter()
                 .find(|tab| tab.id == previous)
                 .is_some_and(|tab| tab.controller_created);
-            state.desired_memory_target = MemoryUsageTarget::Normal;
             (state.hwnd, previous, old_has_controller, new_has_controller, crossed)
         };
         if crossed {
@@ -2134,11 +2158,7 @@ impl App {
                 }
             }
         }
-        Self::with_engine(app, |engine| {
-            engine.select_tab(id)?;
-            let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
-            Ok(())
-        });
+        Self::with_engine(app, |engine| engine.select_tab(id));
         // --- split view ---
         // The engine has hidden the parked panes; reconcile the single page's viewport and
         // account for a selected tab without a page controller.
@@ -2152,7 +2172,7 @@ impl App {
         Self::post_tab_changed(hwnd, id);
         Self::save_workspaces(app, WorkspaceChange::TabSelect);
         Self::sync_window_title(app);
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
         true
     }
 
@@ -2238,7 +2258,7 @@ impl App {
         Self::on_tab_shown(app, active, active); // --- tab options ---
         Self::post_tab_changed(hwnd, active);
         Self::sync_window_title(app);
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
         true
     }
 
@@ -2816,12 +2836,13 @@ impl App {
     /// Inputs for every tab of every workspace, in model order, from the same state the strip
     /// reads. Only for questions that span workspaces, such as which sites still have a tab open.
     fn all_group_inputs(&self) -> Vec<tab_groups::TabGroupInput> {
+        let mirrors = first_tabs_by_id(&self.tabs);
         let mut inputs: Vec<_> = self
             .tab_model
             .iter()
             .map(|tab| {
-                let committed = self
-                    .mirror(tab.id)
+                let committed = mirrors
+                    .get(&tab.id)
                     .and_then(|mirror| mirror.url.as_ref())
                     .filter(|url| !tab_groups::is_search_results(url))
                     .and_then(tab_groups::DomainKey::from_url);
@@ -2842,7 +2863,7 @@ impl App {
         // A private tab is never in a group: group names, colours and site rules are stored per
         // site, and a private tab's site must not reach them.
         for input in &mut inputs {
-            if self.mirror(input.id).is_some_and(|tab| tab.private) {
+            if mirrors.get(&input.id).is_some_and(|tab| tab.private) {
                 input.domain = None;
                 input.manual = false;
             }
@@ -2963,15 +2984,18 @@ impl App {
     }
 
     /// Effective marker of every tab that shows one, for the strip painter.
-    pub fn tab_markers(app: &AppRef) -> HashMap<TabId, Marker> {
+    pub(crate) fn tab_markers(
+        app: &AppRef,
+        inputs: &[tab_groups::TabGroupInput],
+        preferences: &tab_groups::GroupPreferences,
+    ) -> HashMap<TabId, Marker> {
         let state = app.borrow();
         // The strip refreshes on every title and loading change; with no markers set there is
         // nothing to resolve, so skip projecting the groups.
         if state.group_markers.is_empty() && state.tab_markers.is_empty() {
             return HashMap::new();
         }
-        let inputs = state.group_inputs();
-        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        let keys = tab_groups::group_keys(inputs, preferences);
         inputs
             .iter()
             .zip(&keys)
@@ -3199,7 +3223,7 @@ impl App {
                 if state.diagnostic_interaction {let _=state.log.record_detail_count("interaction_internal_show_refused",u64::from(id.0),reason);}
                 return;
             }
-            tab.url = Some(url.clone());
+            tab.set_pending_address(&url);
             tab.title = page.title().to_owned();
             tab.favicon = Some(page.favicon().to_vec());
             tab.favicon_key = Some(crate::favicon::key_for(page.favicon()));
@@ -3241,7 +3265,7 @@ impl App {
             if !tab.url.as_ref().and_then(crate::internal_page::parse).is_some_and(|old| old.same_page(page)) || tab.url.as_ref() == Some(&url) {
                 return;
             }
-            tab.url = Some(url.clone());
+            tab.set_pending_address(&url);
             let retitled = tab.title != page.title();
             if retitled {
                 tab.title = page.title().to_owned();
@@ -3273,7 +3297,7 @@ impl App {
                 crate::settings::MAX_SLEEP_AFTER_SECS,
             );
         }
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
     }
 
     /// A tab leaving an internal page for a web address loses the page's title and favicon.
@@ -3396,7 +3420,7 @@ impl App {
         Self::post_tab_changed(hwnd, focused_tab);
         Self::save_workspaces(app, WorkspaceChange::TabSelect);
         Self::sync_window_title(app);
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
         true
     }
 
@@ -3575,7 +3599,7 @@ impl App {
         Self::apply_visible_panes(app);
         Self::post_tab_changed(hwnd, shown);
         Self::sync_window_title(app);
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
         true
     }
     // --- end split view ---
@@ -3913,7 +3937,7 @@ impl App {
     }
 
     /// Suspends one inactive tab after the same unsaved-input/media check used by automatic
-    /// sleeping. The callback rechecks eligibility because it may complete after a tab switch.
+    /// suspension. The result may arrive after a tab switch or a new document.
     pub fn hibernate_tab(app: &AppRef, id: TabId) -> bool {
         if !Self::tab_hibernate_eligible(app, id) {
             return false;
@@ -3921,70 +3945,66 @@ impl App {
         let started = Instant::now();
         let epoch = {
             let mut state = app.borrow_mut();
-            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else { return false };
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return false;
+            };
             tab.sleep_check_started = Some(started);
             tab.reader.epoch
         };
-        let verdict = Rc::new(std::cell::Cell::new(None));
-        let answered_inline = Rc::new(std::cell::Cell::new(true));
+        let result = Rc::new(std::cell::Cell::new(None));
+        let in_call = Rc::new(std::cell::Cell::new(true));
         let weak = Rc::downgrade(app);
-        let done: Box<dyn FnOnce(bool)> = {
-            let verdict = verdict.clone();
-            let answered_inline = answered_inline.clone();
-            Box::new(move |blocked| {
-                if answered_inline.get() {
-                    verdict.set(Some(blocked));
+        let finish = {
+            let result = result.clone();
+            let in_call = in_call.clone();
+            Box::new(move |suspended| {
+                if in_call.get() {
+                    result.set(Some(suspended));
                 } else if let Some(app) = weak.upgrade() {
-                    Self::finish_hibernate_check(&app, id, epoch, started, blocked);
+                    Self::finish_hibernate(&app, id, epoch, started, suspended);
                 }
             })
         };
-        let asked = Self::with_engine(app, |engine| {
-            engine.check_sleep_blocked(id, done);
-            Ok(())
-        });
-        answered_inline.set(false);
-        match (asked, verdict.take()) {
-            (Some(Ok(())), Some(blocked)) => Self::finish_hibernate_check(app, id, epoch, started, blocked),
-            (Some(Ok(())), None) => {}
-            _ => return false,
+        let asked = Self::call_engine(app, |engine| engine.suspend_tab(id, finish));
+        in_call.set(false);
+        if asked.is_none() {
+            if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+                tab.sleep_check_started = None;
+                tab.extra.allow_pinned_sleep = false;
+            }
+            return false;
+        }
+        if let Some(suspended) = result.take() {
+            Self::finish_hibernate(app, id, epoch, started, suspended);
         }
         true
     }
 
-    fn finish_hibernate_check(app: &AppRef, id: TabId, epoch: u32, started: Instant, blocked: bool) {
-        if !Self::sleep_check_current(&app.borrow(), id, epoch, started) { return; }
+    fn finish_hibernate(app: &AppRef, id: TabId, epoch: u32, started: Instant, suspended: bool) {
+        if !Self::sleep_check_current(&app.borrow(), id, epoch, started) {
+            return;
+        }
         let eligible = Self::tab_hibernate_eligible(app, id);
-        let playing_audio = eligible && Self::tab_playing_audio(app, id);
-        // The COM audio query can dispatch callbacks; validate again before clearing state.
-        if !Self::sleep_check_current(&app.borrow(), id, epoch, started) { return; }
-        let eligible = eligible && Self::tab_hibernate_eligible(app, id);
-        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
-            tab.extra.allow_pinned_sleep = false;
-            tab.sleep_check_started = None;
-        }
-        if !eligible || blocked || playing_audio {
-            if eligible && (blocked || playing_audio) {
-                win32::show_error_message("This tab has unsaved input or audio and was left open.");
-            }
-            return;
-        }
-        if let Some(Err(error)) = Self::with_engine(app, |engine| engine.suspend_tab(id)) {
-            win32::show_error_message(&format!("Tab hibernation failed: {error}"));
-            return;
-        }
         let hwnd = {
             let mut state = app.borrow_mut();
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
                 return;
             };
             tab.sleep_check_started = None;
-            tab.suspended = true;
-            tab.extra.hibernated = true; // --- tab options --- "dim icon when hibernated"
-            tab.hidden_since.get_or_insert_with(Instant::now);
+            tab.extra.allow_pinned_sleep = false;
+            if eligible && suspended {
+                tab.suspended = true;
+                tab.extra.hibernated = true;
+            }
             state.hwnd
         };
-        Self::post_tab_changed(hwnd, id);
+        if eligible && suspended {
+            Self::post_tab_changed(hwnd, id);
+        } else if eligible {
+            win32::show_error_message(
+                "The tab could not be hibernated. It may have unsaved input, media or a download.",
+            );
+        }
     }
 
     /// Connection state of the active tab's page, for the address pill and Site information.
@@ -4735,15 +4755,13 @@ impl App {
         let (hwnd, result, changed) = {
             let mut state = app.borrow_mut();
             let hwnd = state.hwnd;
+            let Some(index) = state.tabs.iter().position(|entry| entry.id == tab && entry.reader.epoch == epoch) else {
+                return ReaderResult::Unavailable;
+            };
             if let Some(outcome) = outcome.filter(|outcome| outcome.code != Code::Failed) {
                 state.reader_prefs = outcome.prefs;
             }
-            let Some(entry) = state.tabs.iter_mut().find(|candidate| candidate.id == tab) else {
-                return ReaderResult::Unavailable;
-            };
-            if entry.reader.epoch != epoch {
-                return ReaderResult::Unavailable;
-            }
+            let entry = &mut state.tabs[index];
             let before = (entry.reader.pill(), entry.translate.page_lang);
             entry.reader.busy = false;
             let result = match outcome {
@@ -4998,10 +5016,15 @@ impl App {
         else {
             return;
         };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-            tab.can_back = back;
-            tab.can_forward = forward;
-        }
+        self.update_tab_history(id, back, forward);
+    }
+
+    fn update_tab_history(&mut self, id: TabId, back: bool, forward: bool) -> bool {
+        self.tabs.iter_mut().find(|tab| tab.id == id).is_some_and(|tab| {
+            let changed = (tab.can_back, tab.can_forward) != (back, forward);
+            (tab.can_back, tab.can_forward) = (back, forward);
+            changed
+        })
     }
 
     pub fn tab_can_go_back(app: &AppRef, id: TabId) -> bool {
@@ -5022,6 +5045,36 @@ impl App {
 
     pub fn tab_ids(app: &AppRef) -> Vec<TabId> {
         app.borrow().workspaces.active().tabs().to_vec()
+    }
+
+    /// Reads chrome metadata in workspace order from a single app snapshot. The painter only
+    /// receives favicon bytes for keys it cannot already use.
+    pub(crate) fn chrome_tabs(
+        app: &AppRef,
+        wants_favicon: impl Fn(TabId, crate::tabs::FaviconKey) -> bool,
+    ) -> Vec<ChromeTab> {
+        let state = app.borrow();
+        let mirrors = first_tabs_by_id(&state.tabs);
+        let pinned: HashMap<_, _> = state.tab_model.iter().map(|tab| (tab.id, tab.pinned)).collect();
+        state.workspaces.active().tabs().iter().map(|&id| {
+            let tab = mirrors.get(&id).copied();
+            let favicon_key = tab.and_then(|tab| tab.favicon_key);
+            ChromeTab {
+                id,
+                pinned: pinned.get(&id).copied().unwrap_or(false),
+                // This is the user's mute; the window's automatic audio rule is separate.
+                muted: tab.is_some_and(|tab| tab.muted),
+                private: tab.is_some_and(|tab| tab.private),
+                loading: tab.is_some_and(|tab| tab.loading),
+                title: tab.map_or_else(String::new, |tab| tab.title.clone()),
+                custom_title: tab.and_then(|tab| tab.extra.custom_title.clone()),
+                url: tab.and_then(|tab| tab.url.clone()),
+                completed_documents: tab.map_or(0, |tab| tab.completed_documents),
+                favicon_key,
+                favicon: favicon_key.filter(|key| wants_favicon(id, *key))
+                    .and_then(|_| tab.and_then(|tab| tab.favicon.clone())),
+            }
+        }).collect()
     }
 
     /// Every open tab of this window, in all workspaces.
@@ -5047,6 +5100,15 @@ impl App {
             .iter()
             .find(|tab| tab.id == id)
             .and_then(|tab| tab.favicon.clone())
+    }
+
+    pub(crate) fn tab_favicons(app: &AppRef, ids: &[TabId]) -> HashMap<TabId, Vec<u8>> {
+        if ids.is_empty() {
+            return HashMap::new();
+        }
+        let state = app.borrow();
+        let mirrors = first_tabs_by_id(&state.tabs);
+        ids.iter().filter_map(|id| Some((*id, mirrors.get(id)?.favicon.clone()?))).collect()
     }
 
     /// Whether the tab's page is asleep to save memory: discarded or suspended. Shown on the hover card.
@@ -5637,7 +5699,7 @@ impl App {
                     state.tab_model.set_pinned(id, true);
                 }
                 if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
-                    tab.url = Some(url.clone());
+                    tab.set_pending_address(&url);
                     tab.title.clone_from(&saved.title);
                     tab.discarded = true;
                     // A restored settings or history tab shows its icon before it is first selected.
@@ -6074,6 +6136,11 @@ impl App {
                     let _ = app.borrow().log.record_detail_count("engine_creation_failed", 0, code as u32 as u64);
                     Self::invalidate_browser(app, ContentFailure::Initialization);
                 }
+                EngineNotice::BackgroundMaintenance => {
+                    Self::record_suspended_tabs(app);
+                    Self::schedule_background_maintenance(app);
+                }
+                EngineNotice::WindowMemoryChanged => Self::sync_window_memory(app),
                 EngineNotice::OperationFailed(code) => {
                     // Policy/engine diagnostics do not identify a failed document. A tab-local
                     // creation/navigation failure uses ControllerFailed with its owner and lease.
@@ -6728,7 +6795,7 @@ impl App {
                 let App { tabs, tab_model, .. } = &mut *state;
                 if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == active_tab) {
                     Self::leave_internal_page(tab, tab_model);
-                    tab.url = Some(url.clone());
+                    tab.set_pending_address(&url);
                     tab.controller_created = tab_needs_controller(Some(&url));
                     tab.page_usable = false;
                     tab.hidden_since = None;
@@ -6754,7 +6821,7 @@ impl App {
             state.pending_request_body = POST_BODY.with(|slot| slot.borrow_mut().take())
                 .filter(|(target, _)| target == &url).map(|(target, body)| (active, target, body));
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == active) {
-                tab.url = Some(url.clone());
+                tab.set_pending_address(&url);
                 tab.loading = true;
                 if tab.failure.is_some() { tab.recovery_started = Some(Instant::now()); }
                 tab.failure = None;
@@ -6973,87 +7040,79 @@ impl App {
                     let available=app.try_borrow_mut().is_ok();available
                 }))
             },
-            address_changed: Some(Rc::new(move |tab_id, url| {
+            address_changed: Some(Rc::new(move |tab_id, url, kind| {
                 if let Some(app) = events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
-                    let mut left_reader = false;
-                    let mut left_translate = false;
-                    let (edit, log, active, found) = {
+                    let (update, hwnd, edit, log, active, minimal_url) = {
                         let mut state = app.borrow_mut();
                         let active = state.tab_model.active() == tab_id;
-                        let found =
-                            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                                // A different address (also a same-document one) ends reader view.
-                                if tab.url.as_ref().is_some_and(|old| *old != url) {
-                                    left_reader = tab.reader.active != crate::reader::Active::Off;
-                                    tab.reader.reset();
-                                    // A translated page that changes address in place (a single-page app)
-                                    // keeps its translated text; ask it to put the original back.
-                                    left_translate = tab.translate.active;
-                                    tab.translate.reset();
-                                }
-                                tab.url = Some(url.clone());
-                                true
-                            } else {
-                                false
-                            };
-                        if found {
-                            state.sync_tab_history(tab_id);
+                        let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else { return; };
+                        let update = tab.commit_address(&url, kind);
+                        if !update.changed && !update.apply_zoom {
+                            return;
                         }
-                        if found {
+                        if update.changed {
                             state.tab_model.set_url(tab_id, Some(url.as_str()));
+                            if kind != engine::AddressChange::SameDocument {
+                                state.sync_tab_history(tab_id);
+                            }
                         }
-                        (state.edit, state.log.clone(), active, found)
+                        (update, state.hwnd, state.edit, state.log.clone(), active, state.settings.minimal_url)
                     };
-                    if !found {
-                        return;
-                    }
-                    if left_reader {
+                    if update.left_reader {
                         Self::reader_run_exit(&app, tab_id);
                     }
-                    if left_translate {
+                    if update.left_translate {
                         Self::translate_run_restore(&app, tab_id);
                     }
-                    if active {
-                        let main = app.borrow().hwnd;
-                        let event = if win32::sync_address_input(main, edit, tab_id, &url, Self::settings(&app).minimal_url) {
+                    if update.changed && active {
+                        let event = if win32::sync_address_input(hwnd, edit, tab_id, &url, minimal_url) {
                             "address_updated"
                         } else {
                             "address_update_failed"
                         };
                         let _ = log.record(event);
                     }
-                    // Navigation commit: the page shows at its site's stored zoom from here on.
-                    Self::apply_stored_zoom(&app, tab_id, &url);
-                    Self::post_tab_changed(app.borrow().hwnd, tab_id);
+                    if update.apply_zoom {
+                        Self::apply_stored_zoom(&app, tab_id, &url);
+                    }
+                    if update.changed {
+                        Self::post_tab_address_changed(hwnd, tab_id, true, active);
+                    }
                 }
             })),
+            history_changed: {
+                let history_events_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id, back, forward| {
+                    if let Some(app) = history_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
+                        let mut state = app.borrow_mut();
+                        let active = state.tab_model.active() == tab_id;
+                        let changed = state.update_tab_history(tab_id, back, forward);
+                        if active && changed {
+                            Self::post_tab_address_changed(state.hwnd, tab_id, false, active);
+                        }
+                    }
+                }))
+            },
             title_changed: Some(Rc::new(move |tab_id, title| {
                 if let Some(app) = title_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                     if title.starts_with("BOWSER_PERF_READY_") && let Ok(s)=app.try_borrow(){let _=s.log.record_navigation("perf_title_changed",u64::from(tab_id.0),0,None,&title);}
                     let mut state = app.borrow_mut();
-                    // Spoiler protection: an empty, URL-equal or URL-shaped title shows the host only.
-                    let title = {
-                        let url = state.tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| tab.url.as_ref().map(|url| url.to_string()));
-                        crate::spoiler::protected_title(crate::spoiler::current().enabled, &title, url.as_deref())
-                    };
                     // --- tab options --- a count in the title ("(3) Inbox") is a notification.
                     let detect = state.settings.tabs.title_notifications;
                     let shown = state.tab_model.active() == tab_id;
-                    // --- end tab options ---
-                    let found =
-                        if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                            tab.title.clone_from(&title);
-                            tab_features::note_title(tab, &title, detect, shown); // --- tab options ---
-                            true
+                    if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                        let title = if crate::spoiler::current().enabled {
+                            crate::spoiler::protected_title(true, &title, tab.url.as_ref().map(url::Url::as_str))
                         } else {
-                            false
+                            title
                         };
-                    if found {
+                        if !tab.update_title(&title, detect, shown) {
+                            return;
+                        }
                         state.tab_model.set_title(tab_id, &title);
-                        let active = state.tab_model.active() == tab_id;
                         let hwnd = state.hwnd;
                         drop(state);
-                        if active {
+                        if shown {
                             Self::sync_window_title(&app);
                         }
                         Self::post_tab_changed_kind(hwnd, tab_id, false, true);
@@ -7064,6 +7123,9 @@ impl App {
                 let loaded_events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
                     if let Some(app) = loaded_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
+                        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                            tab.completed_documents = tab.completed_documents.wrapping_add(1);
+                        }
                         App::tab_page_loaded(&app, tab_id);
                         App::sample_page_accent(&app, tab_id); // --- theme options ---
                         // One read-only probe decides whether the toolbar offers reader view.
@@ -7139,6 +7201,10 @@ impl App {
                     }
                 }))
             },
+            background_maintenance: {
+                let queue = app.borrow().engine_notices.clone();
+                Some(Rc::new(move || Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::BackgroundMaintenance)))
+            },
             focus_changed: {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -7177,9 +7243,8 @@ impl App {
                             active
                         };
                         if active {
-                            let action = App::page_usable(&app);
-                            let action = App::combine_idle_and_suspend_timers(&app, action);
-                            win32::schedule_idle_timer(app.borrow().hwnd, action);
+                            let _ = app.borrow().log.record("page_usable");
+                            App::tab_page_loaded(&app, tab_id);
                             App::schedule_thumbnail(&app); // --- tab options ---
                         } else {
                             Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
@@ -7202,6 +7267,7 @@ impl App {
                             tab.page_usable = false;
                             tab.loading = true;
                             tab.load = LoadState::Loading;
+                            tab.suspended = false;
                             tab.permission_blocked = false;
                             // Any navigation, including a reload, ends reader view.
                             left_reader = tab.reader.active != crate::reader::Active::Off;
@@ -7227,9 +7293,7 @@ impl App {
                                 windows::Win32::Foundation::WPARAM(navigation_id as usize),
                                 windows::Win32::Foundation::LPARAM(0),
                             );
-                            let action = App::navigation_started(&app);
-                            let action = App::combine_idle_and_suspend_timers(&app, action);
-                            win32::schedule_idle_timer(app.borrow().hwnd, action);
+                            App::navigation_started(&app);
                         }
                         if found {
                             Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
@@ -7272,22 +7336,21 @@ impl App {
             })),
             favicon_changed: Some(Rc::new(move |tab_id, bytes| {
                 if let Some(app) = favicon_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
-                    let found = if let Some(tab) = app
+                    let (changed, host_changed) = app
                         .borrow_mut()
                         .tabs
                         .iter_mut()
                         .find(|tab| tab.id == tab_id)
-                    {
-                        tab.favicon_key = Some(crate::favicon::key_for(&bytes));
-                        tab.favicon = Some(bytes);
-                        true
-                    } else {
-                        false
-                    };
-                    if found {
+                        .map(|tab| (tab.update_favicon(bytes), tab.update_favicon_host()))
+                        .unwrap_or_default();
+                    if changed {
                         Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
-                        Self::remember_tab_favicon(&app, tab_id); // --- tab options --- restored sleeping tabs
                         Self::note_favicon_colour(&app, tab_id); // --- theme options ---
+                    }
+                    // Different sites may use the same icon. Cache it for each site without
+                    // invalidating the strip when its pixels are the same.
+                    if changed || host_changed {
+                        Self::remember_tab_favicon(&app, tab_id);
                     }
                 }
             })),
@@ -7579,7 +7642,7 @@ impl App {
 
     fn complete_engine_creation(app: &AppRef, generation: u64, mut engine: Box<dyn EngineAdapter>) {
         let browser_process_observer = engine.browser_process_observer();
-        let (bounds, target, active_tab, tab_ids) = {
+        let (bounds, target, minimized, active_tab, tab_ids) = {
             let mut state = app.borrow_mut();
             if state.closing || state.engine_generation != generation || state.engine.is_some() {
                 let post_quit = state.closing && state.loop_shutdown_pending;
@@ -7597,6 +7660,7 @@ impl App {
             (
                 state.last_valid_viewport_bounds,
                 state.desired_memory_target,
+                state.minimized,
                 state.tab_model.active(),
                 state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
             )
@@ -7628,6 +7692,7 @@ impl App {
         if engine.select_tab(active_tab).is_err() {
             let _ = app.borrow().log.record("engine_ready_select_tab_failed");
         }
+        if minimized { let _ = engine.set_visible(false); }
         let apply = engine.set_memory_usage_target(target);
         Self::record_memory_target_result(app, target, &apply);
         let mut state = app.borrow_mut();
@@ -7701,7 +7766,7 @@ impl App {
             let App { tabs, tab_model, .. } = &mut *state;
             if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == tab_id) {
                 Self::leave_internal_page(tab, tab_model);
-                tab.url = Some(url.clone());
+                tab.set_pending_address(url);
                 if let Some(failure) = tab.failure {
                     tab.recovery_started = (failure != ContentFailure::RendererExited || !engine_available).then(Instant::now);
                 }
@@ -7751,7 +7816,7 @@ impl App {
             let _ = app.borrow().log.record_detail_count("engine_navigation_failed", u64::from(tab_id.0), error.code().0 as u32 as u64);
             Self::fail_content_tab(app, tab_id, ContentFailure::Initialization);
         }
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
     }
 
     /// `url` is internal. A settings address shows the page in `tab_id` when that tab has no
@@ -7881,40 +7946,45 @@ impl App {
                 let _ = log.record(event);
             }
         }
-        if transition.target == Some(MemoryUsageTarget::Normal) {
-            let _ = Self::with_engine(app, |e| e.set_visible(true));
-        }
-        if transition.resize_bounds {
-            if let Some(bounds) = resize_bounds {
-                Self::resize_current(app, bounds);
-            }
-        }
-        if transition.target == Some(MemoryUsageTarget::Low) {
-            let _ = Self::with_engine(app, |e| e.set_visible(false));
-        }
-        // EcoQoS follows the minimised state; it is set only while nobody can see the window.
-        Self::sync_eco_qos(app);
-        if let Some(target) = transition.target {
-            Self::set_memory_target_current(app, target);
-            if target == MemoryUsageTarget::Normal {
-                Self::schedule_tab_idle_timer(app);
-            } else {
-                win32::schedule_idle_timer(app.borrow().hwnd, IdleTimerAction::Kill);
-            }
+        if transition.target.is_some() {
+            Self::sync_window_memory(app);
+        } else if transition.resize_bounds && let Some(bounds) = resize_bounds {
+            Self::resize_current(app, bounds);
         }
         transition
     }
 
-    pub fn page_usable(app: &AppRef) -> IdleTimerAction {
-        let active = app.borrow().tab_model.active();
-        Self::tab_page_loaded(app, active);
-        let decision = {
+    fn sync_window_memory(app: &AppRef) {
+        let (target, bounds) = {
             let state = app.borrow();
-            let _ = state.log.record("page_usable");
-            idle_memory_decision(state.minimized, true, 0, state.desired_memory_target)
+            if state.engine_in_use {
+                Self::enqueue_engine_notice(
+                    &state.engine_notices,
+                    state.hwnd,
+                    state.engine_generation,
+                    EngineNotice::WindowMemoryChanged,
+                );
+                return;
+            }
+            (state.desired_memory_target, state.last_valid_viewport_bounds)
         };
-        Self::apply_idle_decision(app, decision);
-        decision.timer
+        if target == MemoryUsageTarget::Low {
+            let _ = Self::with_engine(app, |engine| engine.set_visible(false));
+        } else if let Some(bounds) = bounds {
+            Self::resize_current(app, bounds);
+        }
+        // A COM call above can dispatch another WM_SIZE with a newer target. Its coalesced
+        // engine notice will reconcile both panes when the engine has been returned to App.
+        if app.borrow().desired_memory_target != target {
+            return;
+        }
+        // EcoQoS follows the minimised state; nobody can see the window in that state.
+        Self::sync_eco_qos(app);
+        Self::set_memory_target_current(app, target);
+        if target == MemoryUsageTarget::Normal && app.borrow().desired_memory_target == target {
+            let _ = Self::with_engine(app, |engine| engine.set_visible(true));
+        }
+        Self::schedule_background_maintenance(app);
     }
 
     fn tab_page_loaded(app: &AppRef, tab_id: TabId) {
@@ -7937,35 +8007,24 @@ impl App {
         };
         // The address pill's connection icon depends on the load outcome, so repaint it.
         Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
-        if active {
-            let decision = {
-                let state = app.borrow();
-                idle_memory_decision(state.minimized, true, 0, state.desired_memory_target)
-            };
-            Self::apply_idle_decision(app, decision);
-            let action = Self::combine_idle_and_suspend_timers(app, decision.timer);
-            win32::schedule_idle_timer(app.borrow().hwnd, action);
-        } else {
-            Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+        if !active {
+            // A newly completed hidden document can now run the safety probe. Defer scheduling
+            // because the native completion can arrive with the engine detached from App.
+            let state = app.borrow();
+            if state.tabs.iter().any(|tab| tab.id == tab_id && tab.hidden_since.is_some()) {
+                Self::enqueue_engine_notice(&state.engine_notices, state.hwnd, state.engine_generation, EngineNotice::BackgroundMaintenance);
+            }
         }
     }
 
-    pub fn navigation_started(app: &AppRef) -> IdleTimerAction {
-        {
-            let mut state = app.borrow_mut();
-            state.page_loaded = false;
-            let active = state.tab_model.active();
-            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == active) {
-                tab.page_usable = false;
-                tab.loading = true;
-            }
+    fn navigation_started(app: &AppRef) {
+        let mut state = app.borrow_mut();
+        state.page_loaded = false;
+        let active = state.tab_model.active();
+        if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == active) {
+            tab.page_usable = false;
+            tab.loading = true;
         }
-        let decision = {
-            let state = app.borrow();
-            idle_memory_decision(state.minimized, false, 0, state.desired_memory_target)
-        };
-        Self::apply_idle_decision(app, decision);
-        decision.timer
     }
 
     pub fn navigation_progress_message(app: &AppRef, navigation_id: u64, stage: isize) -> bool {
@@ -8010,56 +8069,55 @@ impl App {
         app.borrow_mut().navigation_progress.reset()
     }
 
-    /// `foreground` is false while another application is active. System-wide input then says
-    /// nothing about this window, so the page trims at once and input polling stops until the
-    /// window is activated again.
-    pub fn idle_timer_fired(app: &AppRef, idle_ms: u32, foreground: bool) -> IdleTimerAction {
-        let now = Instant::now();
+    /// Only background work runs on this one-shot timer. Visible pages get their target on
+    /// visibility changes, including both panes when a minimized window is restored.
+    pub(crate) fn background_maintenance_fired(app: &AppRef) -> IdleTimerAction {
+        {
+            let state = app.borrow();
+            if state.closing {
+                return IdleTimerAction::Kill;
+            }
+            if state.engine_in_use {
+                Self::enqueue_engine_notice(
+                    &state.engine_notices,
+                    state.hwnd,
+                    state.engine_generation,
+                    EngineNotice::BackgroundMaintenance,
+                );
+                return IdleTimerAction::Kill;
+            }
+        }
         let suspend_after = Self::background_policy(app).suspend_after;
         let _ = Self::with_engine(app, |engine| {
             engine.suspend_hidden_tabs(suspend_after.as_millis() as u64)
         });
-        let newly_suspended = {
-            let mut state = app.borrow_mut();
-            let active = state.tab_model.active();
-            let mut count = 0usize;
-            for tab in &mut state.tabs {
-                if tab.id != active
-                    && tab.controller_created
-                    && !tab.suspended
-                    && tab.hidden_since.is_some_and(|hidden| {
-                        hidden_tab_suspend_eligible(
-                            now.saturating_duration_since(hidden),
-                            suspend_after,
-                        )
-                    })
-                {
-                    tab.suspended = true;
-                    count += 1;
-                }
-            }
-            count
-        };
-        for _ in 0..newly_suspended {
-            let _ = app.borrow().log.record("hidden_tab_suspended");
-        }
+        Self::record_suspended_tabs(app);
         let forced = app.borrow().benchmark_memory_pressure;
         Self::discard_one_hidden_tab_if(app, || forced || system_memory_pressure());
-        let decision = {
-            let state = app.borrow();
-            if foreground {
-                idle_memory_decision(
-                    state.minimized,
-                    state.page_loaded,
-                    idle_ms,
-                    state.desired_memory_target,
-                )
-            } else {
-                background_memory_decision(state.minimized, state.page_loaded)
-            }
+        Self::background_maintenance_timer(app, || forced || system_memory_pressure())
+    }
+
+    fn record_suspended_tabs(app: &AppRef) {
+        let Some(completed) = Self::call_engine(app, |engine| engine.take_suspended_tabs()) else {
+            return;
         };
-        Self::apply_idle_decision(app, decision);
-        Self::combine_idle_and_suspend_timers(app, decision.timer)
+        if completed.is_empty() {
+            return;
+        }
+        let mut state = app.borrow_mut();
+        let log = state.log.clone();
+        let active = state.tab_model.active();
+        for id in completed {
+            if id != active
+                && let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id)
+                && tab.hidden_since.is_some()
+                && !tab.discarded
+                && !tab.suspended
+            {
+                tab.suspended = true;
+                let _ = log.record("hidden_tab_suspended");
+            }
+        }
     }
 
     fn policy_of(state: &App) -> efficiency::BackgroundPolicy {
@@ -8105,7 +8163,7 @@ impl App {
         }
         Self::sync_eco_qos(app);
         // Shorter (or longer) delays mean the next wake-up moves.
-        Self::schedule_tab_idle_timer(app);
+        Self::schedule_background_maintenance(app);
     }
 
     /// Whether efficiency mode is in force right now (for the Settings panel).
@@ -8335,35 +8393,34 @@ impl App {
         });
     }
 
-    fn combine_idle_and_suspend_timers(app: &AppRef, idle: IdleTimerAction) -> IdleTimerAction {
-        let forced = app.borrow().benchmark_memory_pressure;
-        Self::combine_with_discard_tick(app, idle, || forced || system_memory_pressure())
-    }
-
-    /// Minimised and background windows stop the idle timer, which would leave a discard pending
-    /// while other applications are using the memory. While a discard is possible the timer keeps
-    /// ticking at the discard cadence.
-    fn combine_with_discard_tick(
+    fn background_maintenance_timer(
         app: &AppRef,
-        idle: IdleTimerAction,
         under_pressure: impl FnOnce() -> bool,
     ) -> IdleTimerAction {
-        let timer = Self::idle_and_suspend_timer(app, idle);
-        // Tab sleep: wake at the moment the earliest hidden tab turns sleep-eligible.
+        let timer = {
+            let state = app.borrow();
+            let suspend_after = Self::policy_of(&state).suspend_after;
+            state
+                .engine
+                .as_ref()
+                .and_then(|engine| engine.next_hidden_suspend(suspend_after))
+                .map(|deadline| {
+                    let wait = deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis();
+                    IdleTimerAction::Arm(wait.clamp(1, u32::MAX as u128) as u32)
+                })
+                .unwrap_or(IdleTimerAction::Kill)
+        };
         let timer = match Self::sleep_wait_ms(app) {
             Some(wait) => Self::merge_timer(timer, wait),
             None => timer,
         };
-        if app.borrow().minimized {
-            if !Self::has_minimized_discard_candidate(app) || !under_pressure() {
-                return timer;
-            }
-            return Self::merge_timer(timer, DISCARD_TICK_MS);
+        if Self::next_discard_tab(app, under_pressure).is_some() {
+            Self::merge_timer(timer, DISCARD_TICK_MS)
+        } else {
+            timer
         }
-        if Self::next_discard_tab(app, under_pressure).is_none() {
-            return timer;
-        }
-        Self::merge_timer(timer, DISCARD_TICK_MS)
     }
 
     fn merge_timer(timer: IdleTimerAction, wait: u32) -> IdleTimerAction {
@@ -8373,10 +8430,9 @@ impl App {
         }
     }
 
-    /// Milliseconds until the earliest hidden, unpinned web tab reaches the sleep delay, or
+    /// Milliseconds until an already suspended, unpinned web tab reaches the sleep delay, or
     /// [`SLEEP_RECHECK_MS`] if one is already past it (kept awake by media or unsaved input).
-    /// `None` when tab sleep is off or no tab could ever sleep. This is the only timer tab sleep
-    /// adds; there is no polling of its own.
+    /// Pending suspensions are scheduled by the engine and wake this timer on completion.
     fn sleep_wait_ms(app: &AppRef) -> Option<u32> {
         let after = Self::background_policy(app).sleep_after?;
         let state = app.borrow();
@@ -8388,6 +8444,7 @@ impl App {
             .filter(|tab| {
                 tab.id != active
                     && tab.controller_created
+                    && tab.suspended
                     && !tab.discarded
                     && tab
                         .url
@@ -8409,72 +8466,6 @@ impl App {
                 }
             })
             .min()
-    }
-
-    /// A minimised window needs periodic checks before its hidden tabs reach the suspension age.
-    /// This lightweight check avoids sampling system memory when no live hidden controller could
-    /// ever be discarded.
-    fn has_minimized_discard_candidate(app: &AppRef) -> bool {
-        let candidates: Vec<TabId> = {
-            let state = app.borrow();
-            let active = state.tab_model.active();
-            state
-                .tabs
-                .iter()
-                .filter(|tab| {
-                    tab.id != active
-                        && tab.controller_created
-                        && !tab.discarded
-                        && tab.hidden_since.is_some()
-                        && !state
-                            .tab_model
-                            .get(tab.id)
-                            .is_some_and(|model| model.pinned)
-                })
-                .map(|tab| tab.id)
-                .collect()
-        };
-        candidates.into_iter().any(|id| {
-            Self::discard_candidate(app, id).is_some_and(|candidate| {
-                tab_discard_eligible(
-                    DiscardCandidate {
-                        suspended: true,
-                        ..candidate
-                    },
-                    || Self::tab_playing_audio(app, id),
-                )
-            })
-        })
-    }
-
-    fn idle_and_suspend_timer(app: &AppRef, idle: IdleTimerAction) -> IdleTimerAction {
-        let suspend_after = Self::background_policy(app).suspend_after;
-        let state = app.borrow();
-        if state.minimized {
-            return IdleTimerAction::Kill;
-        }
-        let now = Instant::now();
-        let suspend_in = state
-            .tabs
-            .iter()
-            .filter(|tab| {
-                tab.id != state.tab_model.active() && tab.controller_created && !tab.suspended
-            })
-            .filter_map(|tab| tab.hidden_since)
-            .map(|hidden| {
-                let elapsed = now.saturating_duration_since(hidden);
-                if hidden_tab_suspend_eligible(elapsed, suspend_after) {
-                    1
-                } else {
-                    (suspend_after - elapsed).as_millis().max(1) as u32
-                }
-            })
-            .min();
-        match (idle, suspend_in) {
-            (IdleTimerAction::Kill, Some(wait)) => IdleTimerAction::Arm(wait),
-            (IdleTimerAction::Arm(idle), Some(wait)) => IdleTimerAction::Arm(idle.min(wait)),
-            (idle, None) => idle,
-        }
     }
 
     /// Under memory pressure, closes the controller of the longest-hidden suspended tab. At most
@@ -8672,42 +8663,25 @@ impl App {
         Self::navigate_tab(app, id, &url);
     }
 
-    fn schedule_tab_idle_timer(app: &AppRef) {
-        let (hwnd, idle) = {
+    fn schedule_background_maintenance(app: &AppRef) {
+        let (hwnd, forced) = {
             let state = app.borrow();
-            (
-                state.hwnd,
-                if state.minimized {
-                    IdleTimerAction::Kill
-                } else if state.page_loaded {
-                    IdleTimerAction::Arm(3_000)
-                } else {
-                    IdleTimerAction::Kill
-                },
-            )
-        };
-        let action = Self::combine_idle_and_suspend_timers(app, idle);
-        win32::schedule_idle_timer(hwnd, action);
-    }
-
-    fn apply_idle_decision(app: &AppRef, decision: IdleMemoryDecision) {
-        let changed = {
-            let mut state = app.borrow_mut();
-            if state.desired_memory_target == decision.target {
-                false
-            } else {
-                state.desired_memory_target = decision.target;
-                true
+            if state.closing {
+                return;
             }
+            if state.engine_in_use {
+                Self::enqueue_engine_notice(
+                    &state.engine_notices,
+                    state.hwnd,
+                    state.engine_generation,
+                    EngineNotice::BackgroundMaintenance,
+                );
+                return;
+            }
+            (state.hwnd, state.benchmark_memory_pressure)
         };
-        if changed {
-            let event = match decision.target {
-                MemoryUsageTarget::Low => "idle_trim_low",
-                MemoryUsageTarget::Normal => "idle_trim_normal",
-            };
-            let _ = app.borrow().log.record(event);
-            Self::set_memory_target_current(app, decision.target);
-        }
+        let action = Self::background_maintenance_timer(app, || forced || system_memory_pressure());
+        win32::schedule_background_maintenance(hwnd, action);
     }
 
     fn set_memory_target_current(app: &AppRef, target: MemoryUsageTarget) {
@@ -8969,7 +8943,7 @@ mod tests {
     mod workspace_restore; // workspaces across a restart, refused moves and creates
     mod window_flow; // main window moves and resizes
     mod engine_recovery;
-    mod idle_restore; // Low -> Normal on renewed input
+    mod idle_restore; // Visible memory priority and event-driven restoration
 
     thread_local! {
         /// What `App::split_rects_now` answers in a test (the test app has no laid-out window).
@@ -9266,21 +9240,6 @@ mod tests {
     }
 
     #[test]
-    fn hidden_controller_suspension_starts_at_thirty_seconds() {
-        let normal = efficiency::NORMAL_SUSPEND_AFTER;
-        assert!(!hidden_tab_suspend_eligible(Duration::from_secs(29), normal));
-        assert!(hidden_tab_suspend_eligible(Duration::from_secs(30), normal));
-        assert!(hidden_tab_suspend_eligible(Duration::from_secs(31), normal));
-    }
-
-    #[test]
-    fn efficient_suspension_starts_at_ten_seconds() {
-        let efficient = efficiency::EFFICIENT_SUSPEND_AFTER;
-        assert!(!hidden_tab_suspend_eligible(Duration::from_secs(9), efficient));
-        assert!(hidden_tab_suspend_eligible(Duration::from_secs(10), efficient));
-    }
-
-    #[test]
     fn tracking_prevention_request_follows_the_setting_but_not_benchmarks() {
         use crate::settings::TrackingLevel::{Balanced, Strict};
         assert_eq!(
@@ -9430,7 +9389,7 @@ mod tests {
         }));
         app.borrow_mut().benchmark_memory_pressure = true;
 
-        App::idle_timer_fired(&app, 0, true);
+        App::background_maintenance_fired(&app);
         assert_eq!(closed_tabs(&calls), [format!("close:{}", older.0)]);
         {
             let state = app.borrow();
@@ -9442,12 +9401,12 @@ mod tests {
             );
         }
 
-        App::idle_timer_fired(&app, 0, true);
+        App::background_maintenance_fired(&app);
         assert_eq!(
             closed_tabs(&calls),
             [format!("close:{}", older.0), format!("close:{}", newer.0)]
         );
-        App::idle_timer_fired(&app, 0, true);
+        App::background_maintenance_fired(&app);
         assert_eq!(
             closed_tabs(&calls).len(),
             2,
@@ -9559,30 +9518,6 @@ mod tests {
     }
 
     #[test]
-    fn efficiency_moves_the_suspend_timer_from_thirty_to_ten_seconds() {
-        let (app, hidden, _active, _calls) = sleeping_app(300);
-        {
-            let mut state = app.borrow_mut();
-            let tab = state.tabs.iter_mut().find(|tab| tab.id == hidden).unwrap();
-            tab.hidden_since = Some(Instant::now());
-            tab.suspended = false;
-        }
-        let IdleTimerAction::Arm(normal) =
-            App::idle_and_suspend_timer(&app, IdleTimerAction::Kill)
-        else {
-            panic!("a hidden tab that is not suspended arms the timer");
-        };
-        assert!((29_000..=30_000).contains(&normal), "{normal}");
-        app.borrow_mut().efficiency.active = true;
-        let IdleTimerAction::Arm(efficient) =
-            App::idle_and_suspend_timer(&app, IdleTimerAction::Kill)
-        else {
-            panic!("a hidden tab that is not suspended arms the timer");
-        };
-        assert!((9_000..=10_000).contains(&efficient), "{efficient}");
-    }
-
-    #[test]
     fn sleep_timer_wakes_for_the_earliest_hidden_tab_only_when_enabled() {
         let (app, hidden, _active, _calls) = sleeping_app(500);
         let wait = App::sleep_wait_ms(&app).unwrap();
@@ -9688,7 +9623,7 @@ mod tests {
             tab.reader.epoch
         };
         App::finish_sleep_check(&app, hidden, epoch, old, false);
-        App::finish_hibernate_check(&app, hidden, epoch, old, false);
+        App::finish_hibernate(&app, hidden, epoch, old, false);
         assert_eq!(app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().sleep_check_started, Some(current));
         assert!(closed_tabs(&calls).is_empty());
         assert!(!app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().extra.hibernated);
@@ -9710,7 +9645,7 @@ mod tests {
                 tab.reader.epoch
             };
             App::finish_sleep_check(&app, hidden, epoch, started, false);
-            App::finish_hibernate_check(&app, hidden, epoch, started, true);
+            App::finish_hibernate(&app, hidden, epoch, started, true);
             assert_eq!(app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().sleep_check_started, Some(started));
             assert!(closed_tabs(&calls).is_empty());
         }
@@ -10107,7 +10042,7 @@ mod tests {
         }));
         app.borrow_mut().benchmark_memory_pressure = true;
 
-        App::idle_timer_fired(&app, 0, true);
+        App::background_maintenance_fired(&app);
 
         assert_eq!(closed_tabs(&calls), [format!("close:{}", eligible.0)]);
     }
@@ -10138,18 +10073,12 @@ mod tests {
     }
 
     #[test]
-    fn minimised_window_keeps_the_discard_tick_only_under_pressure_with_an_eligible_tab() {
+    fn minimised_window_keeps_the_discard_tick_only_under_pressure_with_a_suspended_tab() {
         let app = app_with_pending(rect(800, 600));
         let calls = Rc::new(RefCell::new(Vec::new()));
         let hidden = App::active_tab_id(&app);
         let _active = App::new_tab(&app);
         hidden_web_tab(&app, hidden, "https://hidden.example.test/", Instant::now());
-        app.borrow_mut()
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.id == hidden)
-            .unwrap()
-            .suspended = false;
         app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
             calls: calls.clone(),
             playing: Vec::new(),
@@ -10157,25 +10086,12 @@ mod tests {
         app.borrow_mut().minimized = true;
 
         assert_eq!(
-            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || true),
+            App::background_maintenance_timer(&app, || true),
             IdleTimerAction::Arm(DISCARD_TICK_MS)
         );
         assert!(
             closed_tabs(&calls).is_empty(),
             "arming never discards by itself"
-        );
-    }
-
-    #[test]
-    fn a_shorter_visible_arm_is_kept_under_pressure() {
-        let app = app_with_pending(rect(800, 600));
-        let hidden = App::active_tab_id(&app);
-        let _active = App::new_tab(&app);
-        hidden_web_tab(&app, hidden, "https://hidden.example.test/", Instant::now());
-
-        assert_eq!(
-            App::combine_with_discard_tick(&app, IdleTimerAction::Arm(3_000), || true),
-            IdleTimerAction::Arm(3_000)
         );
     }
 
@@ -10193,7 +10109,7 @@ mod tests {
         app.borrow_mut().minimized = true;
 
         assert_eq!(
-            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || false),
+            App::background_maintenance_timer(&app, || false),
             IdleTimerAction::Kill
         );
     }
@@ -10217,7 +10133,7 @@ mod tests {
         app.borrow_mut().minimized = true;
 
         assert_eq!(
-            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || true),
+            App::background_maintenance_timer(&app, || true),
             IdleTimerAction::Kill
         );
         assert!(closed_tabs(&calls).is_empty());
@@ -10229,7 +10145,7 @@ mod tests {
         app.borrow_mut().minimized = true;
 
         assert_eq!(
-            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || panic!(
+            App::background_maintenance_timer(&app, || panic!(
                 "memory must not be sampled without a hidden candidate"
             )),
             IdleTimerAction::Kill
@@ -10237,13 +10153,17 @@ mod tests {
     }
 
     #[test]
-    fn minimised_hidden_tab_is_suspended_then_discarded_on_following_pressure_tick() {
+    fn minimised_hidden_tab_is_discarded_only_after_confirmed_suspension() {
         let app = app_with_pending(rect(800, 600));
         let calls = Rc::new(RefCell::new(Vec::new()));
         let hidden = App::active_tab_id(&app);
         let _active = App::new_tab(&app);
-        let hidden_since = Instant::now() - Duration::from_secs(29);
-        hidden_web_tab(&app, hidden, "https://hidden.example.test/", hidden_since);
+        hidden_web_tab(
+            &app,
+            hidden,
+            "https://hidden.example.test/",
+            Instant::now() - Duration::from_secs(31),
+        );
         app.borrow_mut()
             .tabs
             .iter_mut()
@@ -10257,18 +10177,7 @@ mod tests {
         app.borrow_mut().minimized = true;
         app.borrow_mut().benchmark_memory_pressure = true;
 
-        assert_eq!(
-            App::idle_timer_fired(&app, 0, false),
-            IdleTimerAction::Arm(DISCARD_TICK_MS)
-        );
-        assert!(
-            app.borrow()
-                .tabs
-                .iter()
-                .find(|tab| tab.id == hidden)
-                .unwrap()
-                .controller_created
-        );
+        App::background_maintenance_fired(&app);
         assert!(
             !app.borrow()
                 .tabs
@@ -10277,26 +10186,13 @@ mod tests {
                 .unwrap()
                 .suspended
         );
-        app.borrow_mut()
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.id == hidden)
-            .unwrap()
-            .hidden_since = Some(Instant::now() - Duration::from_secs(31));
-
-        assert_eq!(App::idle_timer_fired(&app, 0, false), IdleTimerAction::Kill);
+        assert!(closed_tabs(&calls).is_empty());
+        SUSPENSION_COMPLETIONS.with(|completed| completed.borrow_mut().push(hidden));
         assert_eq!(
-            *calls.borrow(),
-            [
-                "suspend:30000".to_owned(),
-                "suspend:30000".to_owned(),
-                format!("close:{}", hidden.0),
-            ]
+            App::background_maintenance_fired(&app),
+            IdleTimerAction::Kill
         );
-        let state = app.borrow();
-        let tab = state.tabs.iter().find(|tab| tab.id == hidden).unwrap();
-        assert!(tab.discarded);
-        assert!(!tab.controller_created);
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", hidden.0)]);
     }
 
     #[test]
@@ -10305,7 +10201,7 @@ mod tests {
         app.borrow_mut().minimized = true;
 
         assert_eq!(
-            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || panic!(
+            App::background_maintenance_timer(&app, || panic!(
                 "memory must not be sampled"
             )),
             IdleTimerAction::Kill
@@ -10334,12 +10230,12 @@ mod tests {
         app.borrow_mut().benchmark_memory_pressure = true;
 
         assert_eq!(
-            App::idle_timer_fired(&app, 0, false),
+            App::background_maintenance_fired(&app),
             IdleTimerAction::Arm(DISCARD_TICK_MS)
         );
         assert_eq!(closed_tabs(&calls), [format!("close:{}", older.0)]);
 
-        assert_eq!(App::idle_timer_fired(&app, 0, false), IdleTimerAction::Kill);
+        assert_eq!(App::background_maintenance_fired(&app), IdleTimerAction::Kill);
         assert_eq!(
             closed_tabs(&calls),
             [format!("close:{}", older.0), format!("close:{}", newer.0)]
@@ -10374,7 +10270,7 @@ mod tests {
             playing: Vec::new(),
         }));
         app.borrow_mut().benchmark_memory_pressure = true;
-        App::idle_timer_fired(&app, 0, true);
+        App::background_maintenance_fired(&app);
         assert_eq!(closed_tabs(&calls), [format!("close:{}", second.0)]);
         calls.borrow_mut().clear();
 
@@ -10422,7 +10318,7 @@ mod tests {
             playing: Vec::new(),
         }));
         app.borrow_mut().benchmark_memory_pressure = true;
-        App::idle_timer_fired(&app, 0, true);
+        App::background_maintenance_fired(&app);
         calls.borrow_mut().clear();
 
         assert!(App::close_tab(&app, first));
@@ -11064,6 +10960,7 @@ mod tests {
 
     thread_local! {
         static SLEEP_CHECK: RefCell<SleepCheck> = const { RefCell::new(SleepCheck::Inline(false)) };
+        static SUSPENSION_COMPLETIONS: RefCell<Vec<TabId>> = const { RefCell::new(Vec::new()) };
         static SLEEP_CHECKS_ASKED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
 
@@ -11125,6 +11022,12 @@ mod tests {
             self.calls.borrow_mut().push(format!("close:{}", tab.0));
             Ok(())
         }
+        fn suspend_tab(&mut self, tab: TabId, done: Box<dyn FnOnce(bool)>) {
+            self.check_sleep_blocked(tab, Box::new(move |blocked| done(!blocked)));
+        }
+        fn take_suspended_tabs(&mut self) -> Vec<TabId> {
+            SUSPENSION_COMPLETIONS.with(|completed| std::mem::take(&mut *completed.borrow_mut()))
+        }
         fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> windows::core::Result<()> {
             self.calls
                 .borrow_mut()
@@ -11163,7 +11066,7 @@ mod tests {
         assert!(App::close_tab(&app, second));
         assert!(App::close_tab(&app, first));
         assert_eq!(App::active_tab_id(&app), third);
-        App::idle_timer_fired(&app, 0, true);
+        App::background_maintenance_fired(&app);
 
         assert_eq!(
             *calls.borrow(),
@@ -12313,126 +12216,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_policy_trims_only_loaded_visible_pages_after_three_seconds() {
-        let decision = idle_memory_decision(false, true, 3_000, MemoryUsageTarget::Normal);
-        assert_eq!(decision.target, MemoryUsageTarget::Low);
-        assert_eq!(decision.timer, IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS));
-        assert_eq!(
-            idle_memory_decision(false, true, 2_999, MemoryUsageTarget::Normal),
-            IdleMemoryDecision {
-                target: MemoryUsageTarget::Normal,
-                timer: IdleTimerAction::Arm(1_000),
-            }
-        );
-        assert_eq!(
-            idle_memory_decision(false, false, 30_000, MemoryUsageTarget::Normal).timer,
-            IdleTimerAction::Kill
-        );
-    }
-
-    #[test]
-    fn background_policy_trims_loaded_pages_without_polling() {
-        for (minimized, loaded, target) in [
-            (false, true, MemoryUsageTarget::Low),
-            (true, false, MemoryUsageTarget::Low),
-            (false, false, MemoryUsageTarget::Normal),
-        ] {
-            assert_eq!(
-                background_memory_decision(minimized, loaded),
-                IdleMemoryDecision {
-                    target,
-                    timer: IdleTimerAction::Kill,
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn idle_policy_restores_after_activity_and_preserves_minimize_priority() {
-        assert_eq!(
-            idle_memory_decision(false, true, 999, MemoryUsageTarget::Low),
-            IdleMemoryDecision {
-                target: MemoryUsageTarget::Normal,
-                timer: IdleTimerAction::Arm(3_000),
-            }
-        );
-        assert_eq!(
-            idle_memory_decision(true, true, 0, MemoryUsageTarget::Normal),
-            IdleMemoryDecision {
-                target: MemoryUsageTarget::Low,
-                timer: IdleTimerAction::Kill,
-            }
-        );
-    }
-
-    #[test]
-    fn the_idle_timer_does_not_stay_repeating_after_memory_decision_is_stable() {
-        let counting = idle_memory_decision(false, true, 2_000, MemoryUsageTarget::Normal);
-        assert_eq!(counting.target, MemoryUsageTarget::Normal);
-        assert_eq!(counting.timer, IdleTimerAction::Arm(1_000));
-
-        let trimmed = idle_memory_decision(false, true, 3_000, MemoryUsageTarget::Normal);
-        assert_eq!(trimmed.target, MemoryUsageTarget::Low);
-        assert_eq!(trimmed.timer, IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS));
-
-        let stable_low = idle_memory_decision(false, true, 10_000, MemoryUsageTarget::Low);
-        assert_eq!(stable_low.target, MemoryUsageTarget::Low);
-        assert_eq!(stable_low.timer, IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS));
-
-        let active = idle_memory_decision(false, true, 0, MemoryUsageTarget::Low);
-        assert_eq!(active.target, MemoryUsageTarget::Normal);
-        assert_eq!(active.timer, IdleTimerAction::Arm(3_000));
-
-        let minimized = idle_memory_decision(true, true, 0, MemoryUsageTarget::Normal);
-        assert_eq!(minimized.target, MemoryUsageTarget::Low);
-        assert_eq!(minimized.timer, IdleTimerAction::Kill);
-    }
-
-    #[test]
-    fn idle_timer_applies_targets_and_logs_benchmark_transitions() {
-        let path =
-            std::env::temp_dir().join(format!("bowser-idle-trim-{}.csv", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let log = Rc::new(PerfLog::new(Some(&path)).unwrap());
-        let app = app_with_pending(rect(800, 600));
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        {
-            let mut state = app.borrow_mut();
-            state.log = log.clone();
-            state.engine = Some(recording_engine(calls.clone(), []));
-            state.page_loaded = true;
-            state.effective_memory_target = Some(MemoryUsageTarget::Normal);
-        }
-
-        assert_eq!(
-            App::idle_timer_fired(&app, 3_000, true),
-            IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS)
-        );
-        assert_eq!(
-            App::idle_timer_fired(&app, 2_000, true),
-            IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS)
-        );
-        assert_eq!(
-            App::idle_timer_fired(&app, 1_000, true),
-            IdleTimerAction::Arm(3_000)
-        );
-        assert_eq!(*calls.borrow(), ["target:Low", "target:Normal"]);
-        // Recent system-wide input in another application neither restores nor keeps polling.
-        assert_eq!(App::idle_timer_fired(&app, 0, false), IdleTimerAction::Kill);
-        assert_eq!(
-            calls.borrow().last().map(String::as_str),
-            Some("target:Low")
-        );
-        drop(app);
-        drop(log);
-
-        let events = std::fs::read_to_string(&path).unwrap();
-        assert!(events.contains("idle_trim_low,"));
-        assert!(events.contains("idle_trim_normal,"));
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
     fn minimized_or_zero_sized_viewports_never_become_engine_bounds() {
         let bounds = windows::Win32::Foundation::RECT {
             left: 0,
@@ -12719,7 +12502,49 @@ mod tests {
             true,
             true
         ));
-        assert_eq!(App::take_tab_change_flags(), (true, true));
+        assert_eq!(
+            App::take_tab_change_flags(HWND::default()),
+            TabChanges { structural: true, persisted: true, metadata: true, toolbar: true },
+        );
+    }
+
+    #[test]
+    fn same_document_address_updates_stay_off_the_structure_path() {
+        let hwnd = HWND::default();
+        App::post_tab_address_changed(hwnd, TabId(1), true, false);
+        App::post_tab_address_changed(hwnd, TabId(2), false, true);
+        assert_eq!(
+            App::take_tab_change_flags(hwnd),
+            TabChanges { persisted: true, toolbar: true, ..Default::default() },
+        );
+    }
+
+    #[test]
+    fn duplicate_metadata_is_a_noop_and_same_url_document_commits_still_apply_zoom() {
+        use engine::AddressChange;
+        let mut tab = AppTab::empty(TabId(1));
+        let initial = url::Url::parse("https://example.test/").unwrap();
+        let fragment = url::Url::parse("https://example.test/#details").unwrap();
+        tab.set_pending_address(&initial);
+        let first = tab.commit_address(&initial, AddressChange::Document);
+        assert!(first.changed && first.apply_zoom);
+        assert_eq!(tab.commit_address(&initial, AddressChange::Completion), AddressUpdate::default());
+        let in_page = tab.commit_address(&fragment, AddressChange::SameDocument);
+        assert!(in_page.changed && !in_page.apply_zoom);
+        assert_eq!(tab.commit_address(&fragment, AddressChange::SameDocument), AddressUpdate::default());
+        let reload = tab.commit_address(&fragment, AddressChange::Document);
+        assert!(!reload.changed && reload.apply_zoom);
+
+        assert!(tab.update_title("(3) Inbox", true, false));
+        assert!(!tab.update_title("(3) Inbox", true, false));
+        assert!(tab.update_favicon(vec![1, 2]));
+        assert!(tab.update_favicon_host());
+        assert!(!tab.update_favicon(vec![1, 2]));
+        assert!(!tab.update_favicon_host());
+        assert!(tab.update_favicon(vec![1, 3]));
+        tab.set_pending_address(&url::Url::parse("https://other.test/").unwrap());
+        assert!(!tab.update_favicon(vec![1, 3]));
+        assert!(tab.update_favicon_host());
     }
 
     #[test]
