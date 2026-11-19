@@ -70,9 +70,9 @@ impl EngineAdapter for FakeEngine {
         shared.calls.push(format!("mute:{}:{muted}", tab.0));
         Ok(())
     }
-    fn suspend_tab(&mut self, tab: TabId) -> windows::core::Result<()> {
+    fn suspend_tab(&mut self, tab: TabId, done: Box<dyn FnOnce(bool)>) {
         self.shared.borrow_mut().calls.push(format!("suspend:{}", tab.0));
-        Ok(())
+        done(true);
     }
 }
 

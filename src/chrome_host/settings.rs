@@ -417,6 +417,12 @@ pub enum Action {
     /// "Reset theme settings": the theme, accent and every theme option back to the defaults.
     ThemeReset,
     // --- end theme options ---
+    /// "Export browsing data": Bowser shows the save dialog and writes a backup encrypted with this
+    /// password (`crate::backup`).
+    BackupExport(crate::backup::BackupPassword),
+    /// "Import browsing data": Bowser shows the open dialog, restores the backup this password opens,
+    /// and restarts.
+    BackupImport(crate::backup::BackupPassword),
     // --- tab stacks (T10) ---
     /// "Workspace rules": `site` (a plain host) opens in the workspace named `workspace`.
     WorkspaceRuleAdd { site: String, workspace: String },
@@ -461,6 +467,15 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
             key => Action::Section(Some(Section::from_key(key)?)),
         },
         "autoupdate" if on_only => Action::AutoUpdate(f.on?),
+        // The page checks the length first; a new backup's password is checked again on export.
+        "backupexport" if text_only => {
+            let text = f.text.as_deref()?;
+            crate::backup::password_ok(text).then(|| Action::BackupExport(crate::backup::BackupPassword::new(text)))?
+        }
+        "backupimport" if text_only => {
+            let text = f.text.as_deref()?;
+            (!text.is_empty() && text.chars().count() <= 1024).then(|| Action::BackupImport(crate::backup::BackupPassword::new(text)))?
+        }
         "history" if on_only => Action::History(f.on?),
         "downloadask" if on_only => Action::DownloadAsk(f.on?),
         "translateoffer" if on_only => Action::TranslateOffer(f.on?),
@@ -930,6 +945,31 @@ mod tests {
             with_on.on = Some(true);
             assert_eq!(map_command(&with_on), None, "{name} with on");
         }
+    }
+
+    #[test]
+    fn backup_commands_carry_only_the_password() {
+        use crate::backup::BackupPassword;
+        let mut export = fields("backupexport");
+        assert_eq!(map_command(&export), None, "a backup needs a password");
+        export.text = Some("seven77".into());
+        assert_eq!(map_command(&export), None, "too short for a new backup");
+        export.text = Some("correct horse".into());
+        assert_eq!(map_command(&export), Some(Action::BackupExport(BackupPassword::new("correct horse"))));
+        export.on = Some(true);
+        assert_eq!(map_command(&export), None, "with a switch");
+        export.on = None;
+        export.url = Some("https://example.com/".into());
+        assert_eq!(map_command(&export), None, "with a url");
+
+        let mut import = fields("backupimport");
+        import.text = Some(String::new());
+        assert_eq!(map_command(&import), None, "an empty password");
+        import.text = Some("old7".into());
+        assert_eq!(map_command(&import), Some(Action::BackupImport(BackupPassword::new("old7"))), "an existing backup's password is whatever it was");
+        import.text = Some("x".repeat(1025));
+        assert_eq!(map_command(&import), None);
+        assert_eq!(format!("{:?}", Action::BackupExport(BackupPassword::new("correct horse"))), "BackupExport(BackupPassword(..))", "never printed");
     }
 
     #[test]

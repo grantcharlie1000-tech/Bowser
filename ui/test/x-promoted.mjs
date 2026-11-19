@@ -42,15 +42,15 @@ const PAGE = (initial, later, change = '') => `<!doctype html><html><body><div i
   try {
     var s = document.createElement('style'); s.id = 'bowser-cosmetic'; s.textContent = ${JSON.stringify(CSS)}; document.documentElement.appendChild(s);
     ${SCRIPT.trim()};
-    out.first = hidden();
     setTimeout(function () {
+      out.first = hidden(); out.firstChecks = window.__bowserXPromoted.stats.checked; out.initialSlices = window.__bowserXPromoted.stats.scans;
       document.getElementById('tl').insertAdjacentHTML('beforeend', ${JSON.stringify(later)});
       ${change}
       setTimeout(function () {
-        out.second = hidden(); out.statsHidden = window.__bowserXPromoted.stats.hidden;
+        out.second = hidden(); out.statsHidden = window.__bowserXPromoted.stats.hidden; out.secondChecks = window.__bowserXPromoted.stats.checked;
         s.remove();
-        document.getElementById('tl').insertAdjacentHTML('beforeend', ${JSON.stringify(ad('late'))});
         setTimeout(function () {
+          document.getElementById('tl').insertAdjacentHTML('beforeend', ${JSON.stringify(ad('late'))});
           out.afterOff = hidden(); out.marked = document.querySelectorAll('[data-bowser-ad]').length; out.flag = window.__bowserXPromoted;
           finish();
         }, 700);
@@ -123,6 +123,24 @@ test('removing the cosmetic style stops the script and unmarks every cell', { sk
   assert.equal(r.afterOff.late, false);
   assert.equal(r.marked, 0);
   assert.ok(!r.flag);
+});
+
+test('a later label and caret affect just the dirty posts across a large mounted timeline', { skip }, () => {
+  const initial = Array.from({ length: 200 }, (_, i) => normal(`n${i}`)).join('')
+    + cell('label', { name: 'Foo', handle: 'foo', label: '<span id="labelText">Organic</span>' }, 'untouched body')
+    + ad('caret').replace('data-testid="caret"', 'data-testid="missing"');
+  const change = `
+    document.getElementById('labelText').firstChild.data = 'Ad';
+    document.querySelector('#caret button').setAttribute('data-testid', 'caret');
+    document.body.appendChild(document.createTextNode('unrelated page update'));`;
+  const r = run(PAGE(initial, '', change));
+  assert.equal(r.firstChecks, 202);
+  assert.ok(r.initialSlices > 1, 'the mounted timeline is discovered across several tasks');
+  assert.equal(r.first.label, false);
+  assert.equal(r.first.caret, false);
+  assert.equal(r.second.label, true);
+  assert.equal(r.second.caret, true);
+  assert.equal(r.secondChecks - r.firstChecks, 2);
 });
 
 // The timeline data path in a real browser: X's GraphQL responses come from a local server and are read through

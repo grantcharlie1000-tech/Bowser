@@ -45,6 +45,16 @@ pub type DownloadPlanCallback =
 pub type ContextNotesCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId) -> Vec<(u64, String)>>;
 
 pub type FaviconChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, Vec<u8>)>;
+pub type AddressChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url, AddressChange)>;
+pub type HistoryChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, bool, bool)>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressChange {
+    Document,
+    SameDocument,
+    /// Successful NavigationCompleted fallback, in case SourceChanged did not deliver the URL.
+    Completion,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessFailureKind {
@@ -180,11 +190,21 @@ pub trait EngineAdapter {
             windows::Win32::Foundation::E_NOTIMPL,
         ))
     }
-    /// Runs one reader-view script (see `crate::reader`) in a tab and hands back its raw result: the
-    /// JSON text `ExecuteScript` produced. Only an http(s) page is ever scripted, checked against
-    /// the live address at the moment of the call; anything else, a missing page, a failed call
-    /// or an oversized answer reports `None`. `done` may run before this returns.
+    /// Runs a short page script and returns its raw JSON result. The page's live
+    /// address must be HTTP(S). A missing page, failed call, or oversized answer reports `None`.
+    /// `done` may run before this returns.
     fn run_reader_script(
+        &mut self,
+        tab: crate::tabs::TabId,
+        script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        const SHORT_SCRIPT_RESULT_LIMIT: usize = 64;
+        self.run_page_script(tab, script, SHORT_SCRIPT_RESULT_LIMIT, done);
+    }
+    /// Awaits a cooperative Reader scan and returns its bounded JSON string result under the
+    /// same page restrictions as `run_reader_script`.
+    fn run_reader_scan(
         &mut self,
         _tab: crate::tabs::TabId,
         _script: &str,
@@ -345,17 +365,25 @@ pub trait EngineAdapter {
     fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Earliest deadline for a hidden controller with a completed document. In-flight native
+    /// callbacks wake maintenance when they finish.
+    fn next_hidden_suspend(&self, _after: std::time::Duration) -> Option<std::time::Instant> {
+        None
+    }
+    /// Completed automatic suspensions, revalidated against the current hidden document.
+    fn take_suspended_tabs(&mut self) -> Vec<crate::tabs::TabId> {
+        Vec::new()
+    }
     /// Holds every hidden controller at the low memory target. Hiding a tab already does this, so
     /// the call only matters when efficiency mode switches on while tabs are already in the
     /// background. Returns how many tabs were set.
     fn force_background_memory_low(&mut self) -> usize {
         0
     }
-    /// Suspends one already hidden controller in response to an explicit user request.
-    fn suspend_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
-        Ok(())
+    /// Runs the sleep guard and suspends one hidden controller in response to a user request.
+    fn suspend_tab(&mut self, _tab: crate::tabs::TabId, done: Box<dyn FnOnce(bool)>) {
+        done(false);
     }
-    fn suspend(&mut self) {}
     fn set_memory_usage_target(
         &mut self,
         target: MemoryUsageTarget,
@@ -403,6 +431,25 @@ pub trait EngineAdapter {
         done: Box<dyn FnOnce(Result<usize, String>)>,
     ) {
         done(Err("This browser engine cannot read cookies.".to_owned()));
+    }
+    /// Every cookie of the profile `tab` belongs to, for a backup (`crate::backup`). `done` may run
+    /// later.
+    fn export_cookies(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        done: Box<dyn FnOnce(Result<Vec<crate::backup::CookieRecord>, String>)>,
+    ) {
+        done(Err("This browser engine cannot read cookies.".to_owned()));
+    }
+    /// Adds (or replaces) `cookies` in the profile `tab` belongs to, when restoring a backup, and
+    /// reports how many were set. `done` may run later.
+    fn import_cookies(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _cookies: Vec<crate::backup::CookieRecord>,
+        done: Box<dyn FnOnce(Result<usize, String>)>,
+    ) {
+        done(Err("This browser engine cannot set cookies.".to_owned()));
     }
     /// Deletes the cookies the browser would send to `url` from one tab and reports how many were
     /// removed. `done` may run later.
@@ -530,11 +577,14 @@ pub type DiagnosticDetailCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs
 
 #[derive(Clone, Default)]
 pub struct EngineEvents {
-    pub address_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
+    pub address_changed: Option<AddressChangedCallback>,
+    pub history_changed: Option<HistoryChangedCallback>,
     pub title_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, String)>>,
     pub page_loaded: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub controller_ready: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    /// A background operation finished; rearm maintenance outside the native callback.
+    pub background_maintenance: Option<std::rc::Rc<dyn Fn()>>,
     /// A page element went full screen or left it (a video's full-screen button). The window then
     /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`).
     pub fullscreen_changed: Option<FullscreenChangedCallback>,

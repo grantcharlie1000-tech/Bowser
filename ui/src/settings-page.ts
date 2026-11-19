@@ -51,6 +51,7 @@ import {
   SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_GROUPS, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
   addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
+  MAX_BACKUP_PASSWORD, backupPasswordProblem,
 } from './settings-page-logic';
 
 /** --- settings slim --- the disclosures remember whether they are open (a per-viewer convenience only). */
@@ -304,6 +305,8 @@ export function startSettingsPage(root: HTMLElement): void {
   let draft: Draft | null = null;
   /** Changes sent and not yet answered: while any are out, a snapshot does not reset the controls. */
   let pending = 0;
+  /** What the next "saved" answer means, when it is more than a save (a backup was written). */
+  let savedNote: string | null = null;
   let entered = false;
   let current: SettingsSection = 'profile';
   let query = '';
@@ -1486,6 +1489,42 @@ export function startSettingsPage(root: HTMLElement): void {
   resetBox.append(cancel, reset);
   paintReset();
   row(aboutCard, 'reset', resetBox);
+  // Back up and restore: the password goes to Bowser with the command and is cleared from the page at once;
+  // Bowser shows Windows' own dialog for the file, so the page never names a path.
+  const backupCard = card('about');
+  const passwordField = (aria: string, autocomplete: string): HTMLInputElement => {
+    const input = el('input', 'bw-input sp-backup-password');
+    input.type = 'password';
+    input.setAttribute('autocomplete', autocomplete);
+    input.maxLength = MAX_BACKUP_PASSWORD;
+    input.spellcheck = false;
+    input.placeholder = aria;
+    input.setAttribute('aria-label', aria);
+    return input;
+  };
+  const exportPassword = passwordField('Password', 'new-password');
+  const exportConfirm = passwordField('Repeat password', 'new-password');
+  const exportButton = textButton('Export…', () => {
+    const problem = backupPasswordProblem(exportPassword.value, exportConfirm.value);
+    if (problem !== null) { showToast(problem, false); (exportPassword.value === '' ? exportPassword : exportConfirm).focus(); return; }
+    const sent = cmd({ a: 'backupexport', text: exportPassword.value });
+    exportPassword.value = '';
+    exportConfirm.value = '';
+    if (sent) { pending += 1; savedNote = 'Backup saved'; }
+  }, { icon: 'save', aria: 'Export browsing data' });
+  const exportBox = el('div', 'sp-backup');
+  exportBox.append(exportPassword, exportConfirm, exportButton);
+  row(backupCard, 'backupExport', exportBox, { stack: true });
+  const importPassword = passwordField('Backup password', 'current-password');
+  const importButton = textButton('Import…', () => {
+    if (importPassword.value === '') { showToast('Enter the password the backup was saved with.', false); importPassword.focus(); return; }
+    const sent = cmd({ a: 'backupimport', text: importPassword.value });
+    importPassword.value = '';
+    if (sent) pending += 1;
+  }, { icon: 'import', aria: 'Import browsing data' });
+  const importBox = el('div', 'sp-backup');
+  importBox.append(importPassword, importButton);
+  row(backupCard, 'backupImport', importBox, { stack: true });
   const defaultBrowserCard = card('about');
   const defaultBrowserButton = textButton('Make default', () => cmd({ a: 'setdefault' }), { aria: 'Make Bowser the default browser' });
   const defaultBrowserRow = row(defaultBrowserCard, 'defaultBrowser', defaultBrowserButton);
@@ -2372,7 +2411,8 @@ export function startSettingsPage(root: HTMLElement): void {
       // Bowser runs queued commands together and answers once: this snapshot is the saved state.
       pending = 0;
       const ok = parsed.ack === 'saved' || parsed.ack === 'note';
-      const text = parsed.ack === 'saved' ? 'Saved' : parsed.error !== '' ? parsed.error : ok ? 'Done' : 'Settings could not be saved.';
+      const text = parsed.ack === 'saved' ? savedNote ?? 'Saved' : parsed.error !== '' ? parsed.error : ok ? 'Done' : 'Settings could not be saved.';
+      savedNote = null;
       // Over the welcome the toast is hidden with the page: an import's outcome or a failure is said
       // on the welcome instead.
       if (welcome.shown) { if (parsed.ack !== 'saved') welcome.say(text, ok); }

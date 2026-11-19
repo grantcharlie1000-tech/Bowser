@@ -29,7 +29,7 @@ pub const MIN_ARTICLE_WORDS: u32 = 250;
 /// not qualify).
 pub const MAX_LINK_PERCENT: u32 = 35;
 /// Longest result string accepted back from a page.
-const MAX_RESULT_LEN: usize = 56;
+pub(crate) const MAX_RESULT_LEN: usize = 56;
 
 pub const MIN_SIZE: u8 = 14;
 pub const MAX_SIZE: u8 = 30;
@@ -195,7 +195,7 @@ pub fn looks_like_article(words: u32, link_percent: u32) -> bool {
     words >= MIN_ARTICLE_WORDS && link_percent <= MAX_LINK_PERCENT
 }
 
-/// The script call for `action`, ready for `ExecuteScript`: `((function (o) {...}))({...})`. Colours
+/// The script call for `action`, ready for evaluation: `((function (o) {...}))({...})`. Colours
 /// that are not plain CSS colours are left out, and the page script validates them again.
 pub fn invocation(action: Action, prefs: Prefs, dark: bool, colours: &Colours) -> String {
     invocation_with(action, prefs, Typography::default(), dark, colours)
@@ -281,7 +281,26 @@ fn digits(text: &str, max_len: usize) -> Option<u32> {
     text.parse().ok()
 }
 
-/// Parses what `ExecuteScript` returned: a JSON string literal holding
+/// Extract the JSON string literal from a bounded `Runtime.evaluate` result. Ignore exceptions,
+/// canceled promises and other result types, even if they contain a field with reader-like text.
+pub(crate) fn cdp_result(raw: &str) -> Option<&str> {
+    use crate::blocker::json::{field, whole_object};
+    if raw.len() > 256 {
+        return None;
+    }
+    let response = whole_object(raw)?;
+    if field(&response, "exceptionDetails").is_some() || field(&response, "code").is_some() {
+        return None;
+    }
+    let result = whole_object(field(&response, "result")?)?;
+    if field(&result, "type")? != r#""string""# {
+        return None;
+    }
+    let value = field(&result, "value")?;
+    (value.len() <= MAX_RESULT_LEN + 2).then_some(value)
+}
+
+/// Parses the evaluated JSON string literal holding
 /// `r2|code|state|words|link|theme|size|lang`. Strict on purpose. The text came from a page's world, so
 /// any other shape, length or character is refused rather than interpreted.
 pub fn parse_result(raw: &str) -> Option<Outcome> {
@@ -461,6 +480,17 @@ mod tests {
         assert_eq!(parse_result("\"r2|err|off|0|0|dark|30|de\"").unwrap().code, Code::Failed);
         assert_eq!(parse_result("\"r2|ok|calm|0|100|light|22|fil\"").unwrap().state, Active::Calm);
         assert_eq!(parse_result("\"r2|ok|off|1|1|auto|19|zh\"").unwrap().lang.as_str(), "zh");
+    }
+
+    #[test]
+    fn cdp_unwraps_only_a_bounded_string_result() {
+        let text = r#""r2|ok|off|850|3|auto|19|en""#;
+        let valid = format!(r#"{{"result":{{"type":"string","value":{text}}}}}"#);
+        assert_eq!(cdp_result(&valid), Some(text));
+        assert!(cdp_result(&format!(r#"{{"exceptionDetails":{{}},"result":{{"type":"string","value":{text}}}}}"#)).is_none());
+        assert!(cdp_result(r#"{"result":{"type":"object","subtype":"null","value":null}}"#).is_none());
+        assert!(cdp_result(r#"{"code":-32000,"message":"Execution context was destroyed."}"#).is_none());
+        assert!(cdp_result(&format!(r#"{{"result":{{"type":"string","value":"{}"}}}}"#, "x".repeat(150))).is_none());
     }
 
     #[test]

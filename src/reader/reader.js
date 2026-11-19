@@ -1,6 +1,6 @@
 (function (o) {
   'use strict';
-  /* Bowser reader view: on demand only, run through ExecuteScript in the page's world. No network, no
+  /* Bowser reader view: on demand only, run in the page's world. No network, no
      page data leaves: the only output is the fixed-shape string built by res().
      o = {a: toggle|probe|exit, m: reader|calm, t: theme, s: px, d: dark, c: {bg,fg,ac,bd,fl},
           k: css (common part, marker, reader part), b: bar css}, built and validated by Rust. */
@@ -8,51 +8,111 @@
   var n = Object.freeze({
     q: E.querySelectorAll, qd: Document.prototype.querySelectorAll, ga: E.getAttribute, sa: E.setAttribute, ra: E.removeAttribute, rm: E.remove, as: E.attachShadow,
     tc: Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get, cs: W.getComputedStyle.bind(W),
-    now: P.now.bind(P), mk: D.createElement.bind(D), tw: D.createTreeWalker.bind(D), st: W.scrollTo.bind(W), sl: Array.prototype.slice
+    now: P.now.bind(P), mk: D.createElement.bind(D), st: W.scrollTo.bind(W), sl: Array.prototype.slice,
+    pause: W.scheduler && W.scheduler.yield ? W.scheduler.yield.bind(W.scheduler) : null, defer: W.setTimeout.bind(W)
   });
-  var KEY = Symbol.for('bowser.reader.v1'), T0 = n.now(), TH = ['auto', 'light', 'sepia', 'dark'];
+  var KEY = Symbol.for('bowser.reader.v1'), TH = ['auto', 'light', 'sepia', 'dark'];
   var NEG = /(^|[^a-z])(comments?|sidebar|footer|nav|menu|share|social|related|promo|adverts?|ads?|sponsor|cookies?|consent|widget|popup|modal|newsletter|subscribe|breadcrumbs?|toc|recirc|taboola|outbrain|editsection)([^a-z]|$)/;
   var POS = /(^|[^a-z])(article|post|entry|story|content|body|text|main|prose)([^a-z]|$)/;
   var COOK = /(^|[^a-z])(cookies?|consent|gdpr|cmp|onetrust|didomi|cookiebot|truste)([^a-z]|$)/;
   var HEX = /^(#[0-9a-f]{3,8}|rgba?\([0-9., %]{1,50}\))$/i;
 
-  function late() { return n.now() - T0 > 250; }
+  // Slice by both time and work. The latter also bounds a slice on pages that replace the clock.
+  var SCAN = Symbol.for('bowser.reader.scan'), STOP = {};
+  var SLICE_UNITS = 512, SLICE_MS = 4, TOTAL_UNITS = 2000000, TOTAL_MS = 250, TEXT_CHUNK = 512;
+  var sliceStart, units, checkAt, total = 0;
+  function step(cost) {
+    units += cost; total += cost;
+    if (total > TOTAL_UNITS) throw STOP;
+    if (units >= SLICE_UNITS) return true;
+    if (units < checkAt) return false;
+    checkAt = units + 32;
+    return n.now() - sliceStart >= SLICE_MS;
+  }
+  // Walk the light DOM without live collections or an uninterruptible climb back up a deep subtree.
+  function* walk(root, leave) {
+    var x = root.firstChild, parent;
+    while (x) {
+      if (step(1)) {
+        parent = x.parentNode;
+        yield null;
+        if (x.parentNode !== parent || !x.isConnected) throw STOP;
+      }
+      yield x;
+      if (x.firstChild) { x = x.firstChild; continue; }
+      while (x && x !== root) {
+        if (leave) leave(x);
+        if (x.nextSibling) { x = x.nextSibling; break; }
+        x = x.parentNode;
+        if (step(1)) yield null;
+      }
+      if (x === root) return;
+    }
+  }
   function q(e, s) { return (e === D ? n.qd : n.q).call(e, s); }
   function tx(e) { return n.tc.call(e); }
   function at(e, k) { return n.ga.call(e, k) || ''; }
   function set(e, k, v) { n.sa.call(e, k, v); }
-  // Text length and words ignore script and style text, which textContent includes.
-  function tl(e) {
-    var x = q(e, 'script,style,noscript,template'), s = tx(e).length, i;
-    for (i = 0; i < x.length; i++) s -= tx(x[i]).length;
-    return s;
-  }
-  function plain(e) {
-    var w = n.tw(e, 4), s = '', x;
-    while ((x = w.nextNode())) if (!/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(x.parentNode.nodeName)) s += x.data + ' ';
-    return s;
-  }
   function key(e) { return (at(e, 'id') + ' ' + at(e, 'class')).toLowerCase(); }
-  function words(t) {
-    var c = 0, sp = true, i, k, w;
-    for (i = 0; i < t.length; i++) {
-      k = t.charCodeAt(i);
-      if ((k > 0x303f && k < 0xa000) || (k > 0xabff && k < 0xd7b0)) { c += 0.5; sp = true; continue; } // CJK, Hangul
-      w = k > 32;
-      if (w && sp) c++;
-      sp = !w;
+  function* paragraph(p) {
+    var len = 0, commas = 0, data, i, end;
+    for (var x of walk(p)) {
+      if (!x) { yield; continue; }
+      if (x.nodeType !== 3 && x.nodeType !== 4) continue;
+      data = x.data; len += data.length;
+      for (i = 0; i < data.length;) {
+        if (step(4)) yield;
+        end = Math.min(i + TEXT_CHUNK, data.length);
+        for (; i < end; i++) if (data.charCodeAt(i) === 44) commas++;
+      }
     }
-    return Math.floor(c);
+    if (!p.isConnected) throw STOP;
+    return len < 50 ? 0 : 1 + commas + Math.min(len / 100 | 0, 3);
   }
-  function linkLen(e) {
-    var a = q(e, 'a'), s = 0, i;
-    for (i = 0; i < a.length && i < 3000; i++) s += tx(a[i]).length;
-    return s;
+  var EXCLUDED = /^(script|style|noscript|template)$/;
+  // Stream lengths and words separately. Each text node contributes a trailing space to the
+  // plain-text metric, as it did when we built one large string for the entire article.
+  function* measure(root, withWords) {
+    var skip = 0, anchors = new Set(), seen = 0, len = 0, links = 0, plain = 0, words = 0;
+    var data, i, end, k, gap, word;
+    function leave(x) {
+      if (x.nodeType !== 1) return;
+      if (EXCLUDED.test(x.localName)) skip--;
+      if (x.localName === 'a') anchors.delete(x);
+    }
+    for (var x of walk(root, leave)) {
+      if (!x) { yield; continue; }
+      if (x.nodeType === 1) {
+        if (EXCLUDED.test(x.localName)) skip++;
+        if (x.localName === 'a' && seen++ < 3000) anchors.add(x);
+        continue;
+      }
+      if (x.nodeType !== 3 && x.nodeType !== 4) continue;
+      data = x.data;
+      len += (1 - skip) * data.length;
+      links += anchors.size * data.length;
+      if (!withWords || x.nodeType !== 3 || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(x.parentNode.nodeName)) continue;
+      plain += data.length + 1; gap = true;
+      for (i = 0; i < data.length;) {
+        if (step(4)) yield;
+        end = Math.min(i + TEXT_CHUNK, data.length);
+        for (; i < end; i++) {
+          k = data.charCodeAt(i);
+          if ((k > 0x303f && k < 0xa000) || (k > 0xabff && k < 0xd7b0)) { words += 0.5; gap = true; continue; }
+          word = k > 32;
+          if (word && gap) words++;
+          gap = !word;
+        }
+      }
+    }
+    if (!root.isConnected) throw STOP;
+    return { len: len, links: links, w: Math.floor(words), l: Math.round(100 * Math.min(1, links / Math.max(plain, 1))) };
   }
-  function bad(p) {
+  function* bad(p) {
     var a = p, d = 0;
     for (; a && a !== D.body; a = a.parentElement, d++) {
-      // Spoiler Firewall: a paragraph inside a shielded unit never votes for the article, so a covered spoiler cannot pull its container in.
+      if (step(1)) yield;
+      // A paragraph inside a shielded unit never votes for the article.
       if (/(^| )shield( |$)/.test(at(a, 'data-sfw'))) return true;
       if (/^(NAV|ASIDE|FOOTER)$/.test(a.tagName) || /^(navigation|complementary|contentinfo|banner|search|dialog)$/.test(at(a, 'role')) || (d < 3 && NEG.test(key(a)))) return true;
     }
@@ -63,40 +123,52 @@
     if (t === 'ARTICLE' || at(a, 'itemprop') === 'articleBody') s += 10; else if (t === 'MAIN' || at(a, 'role') === 'main') s += 6;
     return s + (POS.test(k) ? 4 : 0) - (NEG.test(k) ? 10 : 0);
   }
-  // Readability-style scoring, written from scratch: each long paragraph votes for its nearest ancestors.
-  function find() {
-    var ps = D.getElementsByTagName('p'), m = new Map(), c = [], i, j, a, s, t, best = null, bs = 0, len, ld, sc, e, tg;
-    for (i = 0; i < ps.length && i < 1500 && !late(); i++) {
-      t = tx(ps[i]);
-      if (t.length < 50 || bad(ps[i])) continue;
-      s = t.split(',').length + Math.min(t.length / 100 | 0, 3);
-      for (a = ps[i].parentElement, j = 0; a && a !== de && j < 3; a = a.parentElement, j++) m.set(a, (m.has(a) ? m.get(a) : base(a)) + s / (j + 1));
+  // Each long paragraph votes for its nearest ancestors. Keep the eight highest candidates in
+  // insertion order for ties, without sorting a page-sized array in one turn.
+  function* find() {
+    var m = new Map(), c = [], count = 0, i, j, a, s, best = null, bs = 0, len, sc, e, tg, metrics;
+    for (var x of walk(de)) {
+      if (!x) { yield; continue; }
+      if (x.nodeType !== 1 || x.localName !== 'p') continue;
+      if (++count > 1500) break;
+      s = yield* paragraph(x);
+      if (!s || (yield* bad(x))) continue;
+      for (a = x.parentElement, j = 0; a && a !== de && j < 3; a = a.parentElement, j++) m.set(a, (m.has(a) ? m.get(a) : base(a)) + s / (j + 1));
     }
-    m.forEach(function (v, k) { c.push([k, v]); });
-    c.sort(function (x, y) { return y[1] - x[1]; });
-    for (i = 0; i < c.length && i < 8; i++) {
-      e = c[i][0]; sc = c[i][1] * (1 - linkLen(e) / Math.max(tl(e), 1));
-      if (sc > bs) { bs = sc; best = e; }
+    for (var candidate of m) {
+      if (step(1)) yield;
+      for (i = 0; i < c.length && c[i][1] >= candidate[1]; i++);
+      if (i < 8) { c.splice(i, 0, candidate); if (c.length > 8) c.pop(); }
+    }
+    for (i = 0; i < c.length; i++) {
+      e = c[i][0]; metrics = yield* measure(e, false);
+      sc = c[i][1] * (1 - metrics.links / Math.max(metrics.len, 1));
+      if (sc > bs) { bs = sc; best = e; len = metrics.len; }
     }
     if (!best) return null;
-    len = tl(best);
     tg = best.tagName === 'ARTICLE' || at(best, 'itemprop') === 'articleBody' ? 'ARTICLE' : '';
-    for (a = best.parentElement, j = 0; a && a !== de && j < 4 && tg !== 'ARTICLE'; a = a.parentElement, j++) { // widen to the title and lead
+    for (a = best.parentElement, j = 0; a && a !== de && j < 4 && tg !== 'ARTICLE'; a = a.parentElement, j++) {
       tg = a.tagName;
-      if (tl(a) >= len * 1.6 + 400) continue;
+      metrics = yield* measure(a, false);
+      if (metrics.len >= len * 1.6 + 400) continue;
       if (tg === 'ARTICLE' || at(a, 'itemprop') === 'articleBody') { best = a; tg = 'ARTICLE'; } else if (tg === 'MAIN' || at(a, 'role') === 'main') best = a;
     }
-    t = plain(best);
-    return { el: best, w: words(t), l: Math.round(100 * Math.min(1, linkLen(best) / Math.max(t.length, 1))) };
+    metrics = yield* measure(best, true);
+    return { el: best, w: metrics.w, l: metrics.l };
   }
   // Marks fixed or sticky overlays, cookie banners and (strict) sidebar-like blocks under scope as hidden.
   function sweep(scope, keep, strict) {
-    var all = q(scope, '*'), i, e, k, p, h = 0;
-    for (i = 0; i < all.length && i < 4000 && !late(); i++) {
+    var all = q(scope, '*'), start = n.now(), i, e, k, p, hide, h = 0;
+    for (i = 0; i < all.length && i < 4000; i++) {
+      if (i >= 64 && (i & 31) === 0 && n.now() - start > 250) break;
       e = all[i];
       if (keep && e.contains(keep)) continue;
-      k = key(e); p = style(e, 'position');
-      if (((p === 'fixed' || p === 'sticky') && (keep || tx(e).length < 2500)) || COOK.test(k) || (strict && NEG.test(k)) || at(e, 'role') === 'dialog' || at(e, 'aria-modal') === 'true') { set(e, 'data-bwr-x', 'h'); h++; }
+      k = key(e); hide = COOK.test(k) || (strict && NEG.test(k)) || at(e, 'role') === 'dialog' || at(e, 'aria-modal') === 'true';
+      if (!hide) {
+        p = style(e, 'position');
+        hide = (p === 'fixed' || p === 'sticky') && (keep || tx(e).length < 2500);
+      }
+      if (hide) { set(e, 'data-bwr-x', 'h'); h++; }
     }
     return h;
   }
@@ -199,27 +271,65 @@
   };
   if (!(cur && (cur.m === 'reader' || cur.m === 'calm') && typeof cur.fs === 'number')) cur = null;
   if (cur) { th = cur.th; fs = cur.fs; }
-  // The page's language, for offering translation: lang (or the content-language meta) cut to 2-3 letters.
-  function lang() {
-    var l = at(de, 'lang'), m = !l && q(D, 'meta[http-equiv=content-language]')[0];
-    l = (l || (m ? at(m, 'content') : '')).split(/[-_,\s]/)[0].toLowerCase();
-    return /^[a-z]{2,3}$/.test(l) ? l : '';
+  // Return only the 2–3 letter language hint and the fixed reader-result fields.
+  var language = '';
+  function* readLanguage() {
+    var l = at(de, 'lang');
+    if (!l) for (var x of walk(de)) {
+      if (!x) { yield; continue; }
+      if (x.nodeType === 1 && x.matches('meta[http-equiv=content-language]')) { l = at(x, 'content'); break; }
+    }
+    l = l.slice(0, 4).split(/[-_,\s]/)[0].toLowerCase();
+    language = /^[a-z]{2,3}$/.test(l) ? l : '';
   }
-  function res(code, st, w, l) { return 'r2|' + code + '|' + (st ? st.m : 'off') + '|' + (w | 0) + '|' + (l | 0) + '|' + th + '|' + fs + '|' + lang(); }
-  try {
-    if (a === 'test') return { find: find, words: words, bad: bad };
+  function res(code, st, w, l) { return 'r2|' + code + '|' + (st ? st.m : 'off') + '|' + (w | 0) + '|' + (l | 0) + '|' + th + '|' + fs + '|' + language; }
+  function* read() {
+    yield* readLanguage();
     if (a === 'probe') {
       if (cur) return res('ok', cur, 0, 0);
-      f = find();
+      f = yield* find();
       return res('ok', null, f ? f.w : 0, f ? f.l : 0);
     }
     if (cur) { exit(cur); if (a === 'exit' || cur.m === m) return res('ok', null, 0, 0); }
     if (a === 'exit') return res('ok', null, 0, 0);
-    f = find();
+    f = yield* find();
     if (m === 'reader' && (!f || f.w < 80)) return res('none', null, f ? f.w : 0, f ? f.l : 0);
+    if (f && !f.el.isConnected) throw STOP;
     return res('ok', enter(m, f), f ? f.w : 0, f ? f.l : 0);
-  } catch (x) {
-    try { if (D[KEY]) exit(D[KEY]); } catch (y) { /* leave the page as it is */ }
-    return res('err', null, 0, 0);
   }
+  return (async function () {
+    var href = W.location.href, body = D.body, reads = read(), cpu = 0, wake, canceled = false, slice;
+    var events = new AbortController(), opts = { signal: events.signal }, navigation = W.navigation;
+    function cancel() { canceled = true; if (wake) wake(); }
+    function onVisibility() { if (a === 'probe' && D.hidden) cancel(); }
+    try {
+      if (typeof D[SCAN] === 'function') D[SCAN]();
+      Object.defineProperty(D, SCAN, { value: cancel, configurable: true });
+      W.addEventListener('pagehide', cancel, opts);
+      W.addEventListener('popstate', cancel, opts);
+      W.addEventListener('hashchange', cancel, opts);
+      if (navigation) navigation.addEventListener('currententrychange', cancel, opts);
+      D.addEventListener('visibilitychange', onVisibility, opts);
+      while (!canceled && W.location.href === href && D.body === body && D.documentElement === de) {
+        units = 0; checkAt = 32; sliceStart = n.now();
+        slice = reads.next();
+        if (slice.done) return slice.value;
+        cpu += Math.max(0, n.now() - sliceStart);
+        if (cpu > TOTAL_MS) break;
+        await new Promise(function (resolve) {
+          wake = resolve;
+          if (n.pause) n.pause().then(resolve, resolve); else n.defer(resolve, 0);
+        });
+        wake = null;
+      }
+      return null;
+    } catch (x) {
+      if (x === STOP) return null;
+      try { if (D[KEY]) exit(D[KEY]); } catch (y) { /* leave the page as it is */ }
+      return res('err', null, 0, 0);
+    } finally {
+      events.abort();
+      if (D[SCAN] === cancel) delete D[SCAN];
+    }
+  })();
 })

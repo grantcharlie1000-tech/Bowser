@@ -148,10 +148,10 @@ impl App {
             return;
         }
         let weak = Rc::downgrade(app);
-        Self::run_reader_script(
+        Self::run_page_script(
             app,
             tab,
-            theme_custom::PAGE_COLOUR_SCRIPT.to_owned(),
+            PageScript::Short(theme_custom::PAGE_COLOUR_SCRIPT.to_owned()),
             Box::new(move |answer| {
                 let Some(app) = weak.upgrade() else { return };
                 let meta = answer.as_deref().and_then(theme_custom::parse_page_colour);

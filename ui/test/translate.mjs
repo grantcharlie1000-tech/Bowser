@@ -44,7 +44,7 @@ function runPage(html, script, body) {
   const dir = mkdtempSync(join(tmpdir(), 'bowser-translate-page-'));
   try {
     const driver = `
-(function () {
+(async function () {
   var R = ${script.trim().replace(/;$/, '')};
   var out = { errors: [] };
   try { ${body} } catch (e) { out.errors.push(String(e && e.stack || e)); }
@@ -53,7 +53,7 @@ function runPage(html, script, body) {
 })();`;
     const file = join(dir, 'page.html');
     writeFileSync(file, html.replace('</body>', () => `<script>${driver}</script></body>`));
-    const { stdout, stderr, status } = dump(pathToFileURL(file).href);
+    const { stdout, stderr, status } = dump(pathToFileURL(file).href, script === READER ? ['--virtual-time-budget=1000'] : []);
     const match = /name="tr-out" content="([^"]*)"/.exec(stdout);
     assert.ok(match, `no report (exit ${status}) ${stderr.slice(0, 300)}`);
     const report = JSON.parse(decodeURIComponent(match[1]));
@@ -229,7 +229,7 @@ test('reader probe: reports the page language as 2 to 3 letters or nothing', { s
   ];
   const results = cases.map(([open, want]) => {
     const r = runPage(`<!doctype html>${open}<body><p>hello</p></body></html>`, READER, `
-      out.probe = R({ a: 'probe', m: 'reader', t: 'auto', s: 19, d: false });
+      out.probe = await R({ a: 'probe', m: 'reader', t: 'auto', s: 19, d: false });
     `);
     return { open, want, probe: r.probe };
   });

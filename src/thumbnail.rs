@@ -1,8 +1,11 @@
 //! Page thumbnails for the tab hover card (Settings > Appearance > "Show a thumbnail in tab previews").
 //!
 //! The engine captures a tab's page as a JPEG the size of the page; [`downscale_jpeg`] shrinks it
-//! with WIC to a card-sized JPEG of a few kilobytes, and [`data_uri`] is what the hover card
+//! with WIC on a worker to a card-sized JPEG of a few kilobytes, and [`data_uri`] is what the hover card
 //! carries. Nothing here touches the network or the disk: a thumbnail lives in memory with its tab.
+
+#[cfg(any(windows, test))]
+pub(crate) mod worker;
 
 /// The thumbnail's bounding box in pixels (twice the card's 120 x 75 CSS pixels, so it is sharp at
 /// 200% scaling).
@@ -36,7 +39,7 @@ pub fn data_uri(bytes: &[u8]) -> Option<String> {
 
 /// Shrinks a captured page image (JPEG, PNG or BMP) to fit `max_w` x `max_h` and encodes it as a
 /// JPEG. None for an image that cannot be decoded, is too large, or whose thumbnail would be over
-/// [`MAX_THUMB_BYTES`]. COM must be initialised on the calling thread, as it is on the UI thread.
+/// [`MAX_THUMB_BYTES`]. COM must be initialised on the calling thread.
 #[cfg(windows)]
 pub fn downscale_jpeg(bytes: &[u8], max_w: u32, max_h: u32) -> Option<Vec<u8>> {
     use windows::Win32::{
@@ -172,5 +175,17 @@ mod tests {
         assert!(downscale_jpeg(b"not an image", THUMB_W, THUMB_H).is_none());
         assert!(downscale_jpeg(&[], THUMB_W, THUMB_H).is_none());
         assert!(downscale_jpeg(&bmp, 0, 10).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn thumbnail_worker_initializes_com_before_downscaling() {
+        let (reply, result) = std::sync::mpsc::channel();
+        worker::submit(worker::reserve_capture().unwrap(), move || {
+            let jpeg = downscale_jpeg(&gradient_bmp(320, 180), THUMB_W, THUMB_H);
+            reply.send(jpeg).unwrap();
+        });
+        let jpeg = result.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+        assert!(sendable(&jpeg));
     }
 }
