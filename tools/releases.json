@@ -1,5 +1,37 @@
 [
  {
+  "tag": "v0.0.39",
+  "date": "2026-11-19",
+  "prs": [
+   [
+    178,
+    "Pin Stable to v0.0.38"
+   ],
+   [
+    179,
+    "Reduce idle chrome wakeups and add Helium validation"
+   ],
+   [
+    172,
+    "Settings: export and import browsing data in a password-encrypted file"
+   ],
+   [
+    180,
+    "Reduce work that interrupts scrolling and page interactions"
+   ],
+   [
+    181,
+    "Tab unread dot, strong-password suggestion, more reliable save prompts"
+   ],
+   [
+    182,
+    "Bump Bowser to 0.0.39"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from fbed9eff58917110d432c78ba7809c969c95cd71. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.38",
   "date": "2026-11-19",
   "prs": [
