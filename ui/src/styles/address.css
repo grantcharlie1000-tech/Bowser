@@ -302,6 +302,98 @@
   margin-top: auto;
 }
 
+.dlg-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.dlg-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+}
+
+.dlg-folder-lead {
+  display: grid;
+  place-items: center;
+}
+
+/* Sub-folders step in inside the open list only; the closed field shows the folder plainly. */
+[role="option"]:has(.dlg-folder-lead.is-depth-1) { padding-inline-start: calc(var(--bw-space-3) + 16px); }
+[role="option"]:has(.dlg-folder-lead.is-depth-2) { padding-inline-start: calc(var(--bw-space-3) + 32px); }
+[role="option"]:has(.dlg-folder-lead.is-depth-3) { padding-inline-start: calc(var(--bw-space-3) + 48px); }
+[role="option"]:has(.dlg-folder-lead.is-depth-4) { padding-inline-start: calc(var(--bw-space-3) + 64px); }
+[role="option"]:has(.dlg-folder-lead.is-depth-5) { padding-inline-start: calc(var(--bw-space-3) + 80px); }
+
+.dlg-spacer {
+  flex: 1;
+}
+
+/* The bookmark bubble (Ctrl+D, the star): Chrome's "Bookmark added" card. Labels sit beside their
+   fields so the card stays short, the star says what happened, Done is the one primary action. */
+.dlg-address.is-bubble {
+  gap: var(--bw-space-3);
+  padding: var(--bw-space-4) var(--bw-space-4) var(--bw-space-3);
+}
+
+.dlg-address.is-bubble h1 {
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+}
+
+.dlg-star {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent-soft);
+  color: var(--bw-accent);
+}
+
+.dlg-star svg {
+  fill: currentColor;
+}
+
+.dlg-address.is-bubble .dlg-fields {
+  gap: var(--bw-space-2);
+}
+
+.dlg-address.is-bubble .dlg-field {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.dlg-address.is-bubble .dlg-field:has(textarea) {
+  align-items: start;
+}
+
+.dlg-address.is-bubble .dlg-field:has(textarea) .sp-label {
+  padding-top: 6px;
+}
+
+.dlg-address.is-bubble .sp-label {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.dlg-address.is-bubble .dlg-desc {
+  min-height: 48px;
+}
+
+.dlg-address.is-bubble .sp-field-error:empty {
+  display: none;
+}
+
+.dlg-address.is-bubble .dlg-actions {
+  align-items: center;
+}
+
 /* ---- Bookmarks bar (view=bar, one 28px row of the chrome's glass) ---- */
 .bm-root {
   background: transparent;
@@ -310,6 +402,8 @@
 .bm-bar {
   display: flex;
   align-items: center;
+  /* The whole row, so the far end ("Other bookmarks") and a right-click anywhere on it work. */
+  width: 100%;
   gap: var(--bw-space-0_5);
   height: 100%;
   padding: 0 var(--bw-space-2);
@@ -399,5 +493,21 @@
 }
 
 .bm-empty {
+  overflow: hidden;
   color: var(--bw-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-import {
+  color: var(--bw-accent);
+}
+
+.bm-other[hidden],
+.bm-sep[hidden] {
+  display: none;
+}
+
+.bm-other {
+  flex: none;
 }

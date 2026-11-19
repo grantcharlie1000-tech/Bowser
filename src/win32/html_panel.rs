@@ -8,7 +8,7 @@
 
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::{Rc, Weak},
     time::{Duration, Instant},
 };
@@ -69,6 +69,12 @@ struct Runtime {
     failed_posts: u8,
     query: String,
     bookmarks_query: String,
+    /// Bookmark folders open in the panel (their links ride in the snapshot). Kept while Bowser runs.
+    bookmarks_expanded: HashSet<u64>,
+    /// Why the panel's last bookmark change was refused; cleared by the next command.
+    bookmarks_error: String,
+    /// What the panel's last delete removed (with its nicknames and descriptions), for Undo.
+    bookmarks_undo: Option<BookmarkUndo>,
     panel: PanelId,
     /// A flyout is requested (it may still wait for the page to paint).
     open: bool,
@@ -86,6 +92,13 @@ struct Runtime {
     rail_press: bool,
     /// When a hover last switched the flyout (see `HOVER_CLICK_GRACE`).
     hovered_at: Option<Instant>,
+}
+
+/// A delete the panel can take back.
+struct BookmarkUndo {
+    removed: crate::bookmarks::Removed,
+    extras: Vec<(u64, crate::bookmark_extras::Extra)>,
+    label: String,
 }
 
 thread_local! {
@@ -108,6 +121,7 @@ pub(crate) fn register(app: &AppRef, owner: HWND, env: ChromeEnv) {
     let runtime = Rc::new(RefCell::new(Runtime {
         app: app.clone(), owner, window, host: None, ready: false, suspended: false, closed: false,
         failed: false, failed_posts: 0, query: String::new(), bookmarks_query: String::new(),
+        bookmarks_expanded: HashSet::new(), bookmarks_error: String::new(), bookmarks_undo: None,
         panel: PanelId::History, open: false, shown: false, placement: None, prior_focus: HWND::default(),
         context: None, closed_panel: None, closed_at: None, hold: 0, rail_press: false, hovered_at: None,
     }));
@@ -469,7 +483,16 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
         }
         PanelId::Bookmarks => {
             let store = profile_dir.as_deref().and_then(|dir| BookmarkStore::load(dir).ok()).unwrap_or_default();
-            chrome_host::panels::bookmarks::snapshot(&store, &query, crate::app::App::settings(&app).address.panel_single_click)
+            let Ok(state) = runtime.try_borrow() else { return; };
+            let view = chrome_host::panels::bookmarks::View {
+                query: &query,
+                single_click: crate::app::App::settings(&app).address.panel_single_click,
+                expanded: Some(&state.bookmarks_expanded),
+                error: &state.bookmarks_error,
+                undo: state.bookmarks_undo.as_ref().map_or("", |undo| undo.label.as_str()),
+                can_add_current: current_page(&app).is_some(),
+            };
+            chrome_host::panels::bookmarks::snapshot_view(&store, &view, |host| crate::favicon::load_favicon_bytes(host).ok().flatten())
         }
         PanelId::Customize => {
             let Some(dir) = profile_dir.as_deref() else { return; };
@@ -480,6 +503,156 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
         _ => return,
     };
     let _ = post(runtime, &host, &snapshot);
+}
+
+/// The shown tab's page as `(address, title)` when it can be bookmarked (a web page in a profile
+/// that keeps bookmarks).
+fn current_page(app: &AppRef) -> Option<(String, String)> {
+    let profile = profile::active().ok()?;
+    if !productivity::profile_allows_productivity(&profile) {
+        return None;
+    }
+    let tab = crate::app::App::active_tab_id(app);
+    let url = crate::app::App::tab_committed_url(app, tab)?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let title = crate::app::App::tab_name(app, tab)
+        .or_else(|| crate::app::App::tab_title(app, tab))
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
+    Some((url.to_string(), title))
+}
+
+/// Runs one Bookmarks panel command. Refusals land in the snapshot's `error`, never in a dialog.
+fn run_bookmarks(runtime: &Rc<RefCell<Runtime>>, f: protocol::PanelFields) {
+    use chrome_host::panels::bookmarks::{self as panel, Action as Bm};
+    let (app, owner) = {
+        let Ok(state) = runtime.try_borrow() else { return; };
+        (state.app.clone(), state.owner)
+    };
+    let Ok(profile) = profile::active() else { return; };
+    let profile_dir = profile.root();
+    let Ok(mut store) = BookmarkStore::load(profile_dir) else {
+        set_bookmark_error(runtime, "Bookmarks could not be read, so nothing was changed.".to_owned());
+        return;
+    };
+    let Some(action) = panel::map_command(&store, f) else { return; };
+    // Any new command replaces the last message; a new change also ends the chance to undo.
+    let keep_undo = !action.mutates() || action == Bm::Undo;
+    if let Ok(mut state) = runtime.try_borrow_mut() {
+        state.bookmarks_error.clear();
+        if !keep_undo { state.bookmarks_undo = None; }
+    }
+    let action = match action {
+        Bm::Search(query) => {
+            if let Ok(mut state) = runtime.try_borrow_mut() { state.bookmarks_query = query; }
+            return;
+        }
+        Bm::Expand { id, open } => {
+            if let Ok(mut state) = runtime.try_borrow_mut() {
+                if open { state.bookmarks_expanded.insert(id); } else { state.bookmarks_expanded.remove(&id); }
+            }
+            return;
+        }
+        Bm::Open { url, new_tab } => {
+            // "Open bookmarks in a new tab" (bm_open_new_tab).
+            let new_tab = new_tab || crate::app::App::settings(&app).address.bookmark_new_tab;
+            let _ = execute_history_action(&app, owner, Action::Open { url, new_tab });
+            if !new_tab { dismiss_runtime(runtime, Dismissal::FocusPage); }
+            return;
+        }
+        Bm::OpenAll(urls) => {
+            // Asks first from "confirm when opening N or more bookmarks" (bm_confirm_open).
+            holding(runtime, || super::address_bar::open_many(owner, &app, &urls));
+            return;
+        }
+        Bm::Copy(url) => {
+            let _ = super::window::copy_text_to_clipboard(owner, &url);
+            return;
+        }
+        Bm::Undo => {
+            let undo = runtime.try_borrow_mut().ok().and_then(|mut state| state.bookmarks_undo.take());
+            let Some(undo) = undo else { return; };
+            match store.restore(undo.removed).and_then(|_| store.save(profile_dir)) {
+                Ok(()) => {
+                    if !undo.extras.is_empty() {
+                        if let Ok(mut extras) = crate::bookmark_extras::Extras::load_for_change(profile_dir) {
+                            for (id, extra) in &undo.extras { let _ = extras.set(*id, &extra.nickname, &extra.description); }
+                            let _ = extras.save(profile_dir);
+                        }
+                    }
+                    super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                }
+                Err(error) => set_bookmark_error(runtime, format!("The bookmark could not be put back: {error}.")),
+            }
+            return;
+        }
+        Bm::AddCurrent { parent } => match current_page(&app) {
+            Some((url, title)) => Bm::AddLink { parent, title, url },
+            None => {
+                set_bookmark_error(runtime, "The page in this tab cannot be bookmarked.".to_owned());
+                return;
+            }
+        },
+        other => other,
+    };
+    if !productivity::profile_allows_productivity(&profile) {
+        set_bookmark_error(runtime, "Bookmarks are not saved in a guest session.".to_owned());
+        return;
+    }
+    // A folder a bookmark is added to opens, so the new bookmark is in view.
+    let opens = match &action { Bm::AddLink { parent, .. } | Bm::AddFolder { parent, .. } | Bm::Move { parent, .. } => Some(*parent), _ => None };
+    let deleted_label = match &action {
+        Bm::Delete(id) => store.items().iter().find(|i| i.id == *id).map(|item| {
+            let title = json_title(&item.title);
+            let inside = store.items().iter().filter(|i| i.parent == Some(item.id)).count();
+            match (&item.kind, inside) {
+                (crate::bookmarks::BookmarkKind::Folder, 0) => format!("Deleted folder \u{201c}{title}\u{201d}"),
+                (crate::bookmarks::BookmarkKind::Folder, _) => format!("Deleted folder \u{201c}{title}\u{201d} and what was in it"),
+                _ => format!("Deleted \u{201c}{title}\u{201d}"),
+            }
+        }),
+        _ => None,
+    };
+    match panel::mutate(&mut store, action) {
+        Err(message) => set_bookmark_error(runtime, message),
+        Ok(removed) => match store.save(profile_dir) {
+            Err(error) => set_bookmark_error(runtime, format!("Bookmarks could not be saved: {error}.")),
+            Ok(()) => {
+                if let Some(parent) = opens.filter(|p| *p != 0) {
+                    let id = if parent == crate::bookmarks::OTHER_WIRE { store.other() } else { Some(parent) };
+                    if let (Some(id), Ok(mut state)) = (id, runtime.try_borrow_mut()) { state.bookmarks_expanded.insert(id); }
+                }
+                if let Some(removed) = removed {
+                    // The nickname and description of what was deleted (a folder takes its contents)
+                    // go with it, and come back with an undo.
+                    let mut kept = Vec::new();
+                    if let Ok(mut extras) = crate::bookmark_extras::Extras::load_for_change(profile_dir) {
+                        for id in removed.ids() {
+                            if let Some(extra) = extras.get(id) { kept.push((id, extra.clone())); }
+                        }
+                        let before = extras.len();
+                        extras.prune(&store);
+                        if extras.len() != before { let _ = extras.save(profile_dir); }
+                    }
+                    if let Ok(mut state) = runtime.try_borrow_mut() {
+                        state.bookmarks_undo = Some(BookmarkUndo { removed, extras: kept, label: deleted_label.unwrap_or_else(|| "Deleted".to_owned()) });
+                    }
+                }
+                super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+            }
+        },
+    }
+}
+
+fn json_title(title: &str) -> String {
+    let short: String = title.chars().take(48).collect();
+    if short.len() < title.len() { format!("{short}\u{2026}") } else { short }
+}
+
+fn set_bookmark_error(runtime: &Rc<RefCell<Runtime>>, message: String) {
+    if let Ok(mut state) = runtime.try_borrow_mut() { state.bookmarks_error = message; }
 }
 
 fn post(runtime: &Rc<RefCell<Runtime>>, host: &ChromeHost, json: &str) -> bool {
@@ -594,59 +767,7 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             }
         }
         Command::Panel { kind: PanelType::Bookmarks, f } => {
-            let (app, owner) = {
-                let Ok(state) = runtime.try_borrow() else { return; };
-                (state.app.clone(), state.owner)
-            };
-            let Ok(profile) = profile::active() else { return; };
-            let profile_dir = profile.root();
-            let Ok(mut store) = BookmarkStore::load(profile_dir) else { return; };
-            let Some(action) = chrome_host::panels::bookmarks::map_command(&store, f) else { return; };
-            let mutates = action.mutates();
-            let mut deleted = false;
-            match action {
-                chrome_host::panels::bookmarks::Action::Search(query) => {
-                    if let Ok(mut state) = runtime.try_borrow_mut() { state.bookmarks_query = query; }
-                }
-                chrome_host::panels::bookmarks::Action::Open { url, new_tab } => {
-                    // "Open bookmarks in a new tab" (bm_open_new_tab).
-                    let new_tab = new_tab || crate::app::App::settings(&app).address.bookmark_new_tab;
-                    let _ = execute_history_action(&app, owner, Action::Open { url, new_tab });
-                    if !new_tab {
-                        dismiss_runtime(runtime, Dismissal::FocusPage);
-                        return;
-                    }
-                }
-                chrome_host::panels::bookmarks::Action::OpenAll(urls) => {
-                    // Asks first from "confirm when opening N or more bookmarks" (bm_confirm_open).
-                    holding(runtime, || super::address_bar::open_many(owner, &app, &urls));
-                    return;
-                }
-                chrome_host::panels::bookmarks::Action::Delete(id) => { deleted = store.delete(id) > 0; }
-                chrome_host::panels::bookmarks::Action::Rename { id, title } => { let _ = store.rename(id, &title); }
-                chrome_host::panels::bookmarks::Action::Update { id, title, url } => { let _ = store.update_bookmark(id, &title, &url); }
-                chrome_host::panels::bookmarks::Action::AddFolder { parent, title } => { let _ = store.add_folder(parent, &title); }
-                chrome_host::panels::bookmarks::Action::AddLink { parent, title, url } => { let _ = store.add_bookmark(parent, &title, &url); }
-                chrome_host::panels::bookmarks::Action::Move { id, parent, index } => { let _ = store.move_item(id, parent, index); }
-            }
-            // Searching and opening are read-only: no rewrite (and fsync) of bookmarks-v2.txt.
-            if mutates {
-                match store.save(profile_dir) {
-                    Err(error) => holding(runtime, || show_error_message(&format!("Bookmarks could not be saved: {error}"))),
-                    // The nickname and description of what was deleted (a folder takes its contents) go
-                    // with it, as the bookmark bar and the bookmark dialog already do.
-                    Ok(()) if deleted => {
-                        if let Ok(mut extras) = crate::bookmark_extras::Extras::load_for_change(profile_dir) {
-                            let before = extras.len();
-                            extras.prune(&store);
-                            if extras.len() != before {
-                                let _ = extras.save(profile_dir);
-                            }
-                        }
-                    }
-                    Ok(()) => {}
-                }
-            }
+            run_bookmarks(runtime, f);
             send_current(runtime);
         }
         Command::ComposerOpen { mode, id, name, url, rect } => {

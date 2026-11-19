@@ -132,7 +132,15 @@ fn visit(value: &Value, folder: &str, depth: usize, found: &mut Vec<Bookmark>) {
             }
         }
         Some("text/x-moz-place-container") => {
-            let title = string("title").unwrap_or("");
+            // Firefox's own roots, by their fixed guids: the toolbar is Bowser's bar, the menu and
+            // unfiled bookmarks are "Other bookmarks", the phone's go inside it.
+            let title = match string("guid") {
+                Some("toolbar_____") => "Bookmarks toolbar",
+                Some("menu________") => "Bookmarks menu",
+                Some("unfiled_____") => "Other bookmarks",
+                Some("mobile______") => "Mobile bookmarks",
+                _ => string("title").unwrap_or(""),
+            };
             let next = if title.is_empty() {
                 folder.to_owned()
             } else if folder.is_empty() {

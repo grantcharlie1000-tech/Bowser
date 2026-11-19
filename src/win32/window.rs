@@ -8281,7 +8281,10 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
     add_bookmark_now(hwnd, app);
 }
 
-/// Saves (or removes) the shown page's bookmark at once, with the toast.
+/// Ctrl+D and the star, as in Chrome, Edge and Firefox: a page that is not bookmarked is saved at
+/// once (to the folder the last bookmark went to) and the "Bookmark added" bubble opens to rename,
+/// move or remove it; a page that is bookmarked opens the same bubble to edit it. A key press never
+/// deletes a bookmark: Remove in the bubble does.
 pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
@@ -8300,34 +8303,54 @@ pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
         Ok(store) => store,
         Err(error) => { show_error_message(&format!("Bookmarks could not be loaded: {error}")); return; }
     };
-    match store.toggle(None, &title, url.as_str()).and_then(|added| {
-        store.save(profile.root())?;
-        Ok(added)
-    }) {
+    if store.find_url(url.as_str()).is_some() {
+        bookmark_feedback(hwnd, app, url.as_str(), false);
+        return;
+    }
+    let folder = store.last_folder();
+    match store.add_bookmark(folder, &title, url.as_str()).and_then(|_| store.save(profile.root())) {
         Err(error) => show_error_message(&format!("Bookmark could not be saved: {error}")),
-        Ok(added) => {
-        super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
-        if added && !page_description.is_empty() {
-            super::address_dialog::save_description(&profile, url.as_str(), &page_description);
-        }
-        // --- popup host (lane M) ---
-        menu::show(
-            hwnd,
-            screen_point(hwnd, main_menu_anchor(hwnd)),
-            menu::Placement::AboveLeft,
-            Menu {
-                header: None,
-                entries: vec![Entry::Item(
-                    Item::new(0, if added { "Bookmark saved" } else { "Bookmark removed" }, if added { Icon::Check } else { Icon::Close }).glyph("bookmark").disabled(),
-                )],
-                footer: "Bookmarks".into(),
-            },
-            "bookmark-toast",
-            |_, _| {},
-        );
-        // --- end popup host ---
+        Ok(()) => {
+            super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+            if !page_description.is_empty() {
+                super::address_dialog::save_description(&profile, url.as_str(), &page_description);
+            }
+            bookmark_feedback(hwnd, app, url.as_str(), true);
         }
     }
+}
+
+/// The bubble after Ctrl+D (HTML chrome), or, in the native chrome where it cannot open, the short
+/// toast by the main menu that said what happened.
+fn bookmark_feedback(hwnd: HWND, app: &AppRef, url: &str, added: bool) {
+    if html_environment(hwnd).is_some() {
+        super::address_dialog::show_bubble(hwnd, app, url, added);
+        return;
+    }
+    menu::show(
+        hwnd,
+        screen_point(hwnd, main_menu_anchor(hwnd)),
+        menu::Placement::AboveLeft,
+        Menu {
+            header: None,
+            entries: vec![Entry::Item(Item::new(0, if added { "Bookmark saved" } else { "Already bookmarked" }, Icon::Check).glyph("bookmark").disabled())],
+            footer: "Bookmarks".into(),
+        },
+        "bookmark-toast",
+        |_, _| {},
+    );
+}
+
+/// Where the bookmark bubble hangs (screen pixels): under the right end of the toolbar, where the
+/// star and the main menu are. `None` when the toolbar is not at the top (the floating sidebar card),
+/// and the bubble is centred instead.
+pub(super) fn bubble_anchor(hwnd: HWND) -> Option<windows::Win32::Foundation::POINT> {
+    let floating = with_chrome(hwnd, |s| !s.layout.float_island.is_empty()).unwrap_or(true);
+    if floating {
+        return None;
+    }
+    let point = main_menu_anchor(hwnd);
+    (point.x > 0 && point.y > 0).then(|| screen_point(hwnd, point))
 }
 
 // --- tab options (src/tab_options.rs, src/app/tab_features.rs) ---

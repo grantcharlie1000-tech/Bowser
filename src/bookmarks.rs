@@ -11,6 +11,26 @@ const MAX_ITEMS: usize = 5000;
 const MAX_FIELD: usize = 4096;
 /// The row that keeps the next bookmark id: `next<TAB>id`.
 const NEXT_ID_ROW: &str = "next";
+/// The row that names the "Other bookmarks" folder: `other<TAB>id` (`0`: none yet). Its presence
+/// also records that the one-time tidy of imported root folders ran. An older build skips it.
+const OTHER_ROW: &str = "other";
+/// The row that keeps the folder the last bookmark was saved to: `last<TAB>id` (`0`: the bar).
+const LAST_ROW: &str = "last";
+/// The name of the permanent folder beside the bookmarks bar (Chrome's and Edge's "Other bookmarks").
+pub const OTHER_TITLE: &str = "Other bookmarks";
+/// How the page names "Other bookmarks" before the folder exists: picking it creates the folder.
+pub const OTHER_WIRE: u64 = 0xffff_ffff;
+/// Top-level folders other browsers export for their bookmarks bar: imported, their contents go to
+/// the bar itself (the top level) instead of one folder button on it.
+/// Only names no person is likely to give a folder of their own: the tidy of existing trees uses
+/// these alone.
+const BAR_ALIASES: [&str; 4] = ["bookmarks bar", "bookmarks toolbar", "favorites bar", "favourites bar"];
+/// Top-level folders other browsers export beside the bar: they become "Other bookmarks".
+const OTHER_ALIASES: [&str; 5] = ["other bookmarks", "other favorites", "other favourites", "bookmarks menu", "unsorted bookmarks"];
+/// A phone's bookmarks (Chrome "Mobile bookmarks"): kept, inside "Other bookmarks".
+const MOBILE_ALIASES: [&str; 1] = ["mobile bookmarks"];
+/// Firefox backups name their roots by key (`toolbar`, `menu`): `src/import/firefox.rs` maps those by
+/// their fixed guids, so a folder a person named "Menu" is never taken for one.
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BookmarkKind {
@@ -37,16 +57,110 @@ pub struct BookmarkMatch {
 pub struct BookmarkStore {
     items: Vec<Bookmark>,
     next_id: u64,
+    /// The "Other bookmarks" folder: a top-level folder the bar shows at its far end and the panel
+    /// as its own root. It cannot be renamed, moved or deleted.
+    other: Option<u64>,
+    /// The folder the last bookmark was saved to; a new one goes there too (Chrome, Edge, Firefox).
+    last_folder: Option<u64>,
+    /// The one-time tidy of imported root folders ran (written as the `other` row).
+    tidied: bool,
+}
+/// What [`BookmarkStore::take`] removed, to put back with [`BookmarkStore::restore`] (undo).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Removed {
+    /// Each removed item with its index in the list before the removal, in index order.
+    items: Vec<(usize, Bookmark)>,
+}
+impl Removed {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    pub fn ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.items.iter().map(|(_, item)| item.id)
+    }
+    /// The item the removal was asked for (the first removed, the root of the sub-tree).
+    pub fn root(&self) -> Option<&Bookmark> {
+        let ids: Vec<u64> = self.ids().collect();
+        self.items.iter().map(|(_, item)| item).find(|item| item.parent.is_none_or(|p| !ids.contains(&p)))
+    }
 }
 impl BookmarkStore {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
             next_id: 1,
+            other: None,
+            last_folder: None,
+            tidied: false,
         }
     }
     pub fn items(&self) -> &[Bookmark] {
         &self.items
+    }
+    /// The "Other bookmarks" folder, when it exists.
+    pub fn other(&self) -> Option<u64> {
+        self.other
+    }
+    /// The id the page uses for "Other bookmarks": its own, or [`OTHER_WIRE`] before it exists.
+    pub fn other_wire(&self) -> u64 {
+        self.other.unwrap_or(OTHER_WIRE)
+    }
+    /// Whether `id` is a permanent folder (it cannot be renamed, moved or deleted).
+    pub fn is_permanent(&self, id: u64) -> bool {
+        self.other == Some(id)
+    }
+    /// The "Other bookmarks" folder, made (at the end of the top level) when it does not exist yet.
+    pub fn ensure_other(&mut self) -> io::Result<u64> {
+        if let Some(id) = self.other {
+            return Ok(id);
+        }
+        let id = self.add_folder(None, OTHER_TITLE)?;
+        self.other = Some(id);
+        self.tidied = true;
+        Ok(id)
+    }
+    /// A folder id from the page as a parent: `0` is the bar (the top level), [`OTHER_WIRE`] is
+    /// "Other bookmarks" (made when missing); anything else must be a folder.
+    pub fn resolve_parent(&mut self, wire: u64) -> io::Result<Option<u64>> {
+        match wire {
+            0 => Ok(None),
+            OTHER_WIRE => self.ensure_other().map(Some),
+            id => {
+                self.check_parent(Some(id))?;
+                Ok(Some(id))
+            }
+        }
+    }
+    /// The folder a new bookmark goes to: the one the last was saved to while it still exists,
+    /// else the bar (the top level).
+    pub fn last_folder(&self) -> Option<u64> {
+        self.last_folder.filter(|id| self.items.iter().any(|item| item.id == *id && item.kind == BookmarkKind::Folder))
+    }
+    pub fn set_last_folder(&mut self, folder: Option<u64>) {
+        self.last_folder = folder.filter(|id| self.items.iter().any(|item| item.id == *id && item.kind == BookmarkKind::Folder));
+    }
+    /// The link saved for `url` (compared as stored, after the same normalisation).
+    pub fn find_url(&self, url: &str) -> Option<&Bookmark> {
+        let url = valid_url(url)?;
+        self.items.iter().find(|item| matches!(&item.kind, BookmarkKind::Link { url: stored, .. } if *stored == url))
+    }
+    /// The folder names from the top level down to `item`'s folder.
+    pub fn folder_path(&self, item: &Bookmark) -> Vec<String> {
+        let mut path = Vec::new();
+        let mut parent = item.parent;
+        while let Some(id) = parent {
+            if path.len() >= self.items.len() {
+                break;
+            }
+            let Some(folder) = self.items.iter().find(|i| i.id == id) else { break };
+            path.push(folder.title.clone());
+            parent = folder.parent;
+        }
+        path.reverse();
+        path
     }
     pub fn load(profile_dir: &Path) -> io::Result<Self> {
         let v2 = profile_dir.join("bookmarks-v2.txt");
@@ -59,7 +173,20 @@ impl BookmarkStore {
                     .map_err(|_| invalid_data("bookmarks are not UTF-8"))?;
                 // A file that does not parse is an error, never an empty tree: every writer saves what
                 // it loaded, so `Ok(empty)` here would replace the user's bookmarks on the next edit.
-                Self::parse(&text)
+                let mut store = Self::parse(&text)?;
+                // Once per profile: imported "Bookmarks bar" / "Other bookmarks" folders become the
+                // bar itself and the "Other bookmarks" folder. Saved at once, so it never runs again.
+                if !store.tidied && !store.items.is_empty() {
+                    let before = (store.items.clone(), store.other);
+                    store.tidy_imported_roots();
+                    if (store.items.clone(), store.other) != before {
+                        let _ = store.save(profile_dir);
+                    } else {
+                        // Nothing to tidy: the file stays as it is, and so does its time stamp.
+                        store.tidied = false;
+                    }
+                }
+                Ok(store)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let mut store = Self::new();
@@ -69,6 +196,7 @@ impl BookmarkStore {
                 for (title, url, folder) in legacy {
                     let mut parent = None;
                     let mut path = String::new();
+                    let folder = import_folder(&folder);
                     for part in folder
                         .split('/')
                         .map(str::trim)
@@ -89,6 +217,7 @@ impl BookmarkStore {
                         store.add_bookmark(parent, &title, &url)?;
                     }
                 }
+                store.adopt_other();
                 if !store.items.is_empty() {
                     store.save(profile_dir)?;
                 }
@@ -109,6 +238,11 @@ impl BookmarkStore {
     pub fn add_folder(&mut self, parent: Option<u64>, title: &str) -> io::Result<u64> {
         self.check_parent(parent)?;
         let title = clean_title(title)?;
+        if parent.is_none() {
+            // A top-level folder made from here on is the user's own, whatever its name ("load"
+            // already ran the one-time tidy of imported root folders), so it never runs again.
+            self.tidied = true;
+        }
         let id = self.alloc()?;
         self.items.push(Bookmark {
             id,
@@ -167,6 +301,9 @@ impl BookmarkStore {
         }
     }
     pub fn rename(&mut self, id: u64, title: &str) -> io::Result<bool> {
+        if self.is_permanent(id) {
+            return Err(invalid_input("this folder cannot be renamed"));
+        }
         let title = clean_title(title)?;
         let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
             return Ok(false);
@@ -203,8 +340,13 @@ impl BookmarkStore {
         Ok(true)
     }
     pub fn delete(&mut self, id: u64) -> usize {
-        if !self.items.iter().any(|i| i.id == id) {
-            return 0;
+        self.take(id).len()
+    }
+    /// Removes `id` and everything inside it, returning what went (with where it was) so
+    /// [`Self::restore`] can put it back. A permanent folder is never removed.
+    pub fn take(&mut self, id: u64) -> Removed {
+        if self.is_permanent(id) || !self.items.iter().any(|i| i.id == id) {
+            return Removed::default();
         }
         let mut ids = vec![id];
         let mut index = 0;
@@ -218,9 +360,69 @@ impl BookmarkStore {
             }
             index += 1;
         }
-        let count = ids.len();
-        self.items.retain(|i| !ids.contains(&i.id));
-        count
+        let mut removed = Removed::default();
+        let mut index = 0;
+        self.items.retain(|i| {
+            let gone = ids.contains(&i.id);
+            if gone {
+                removed.items.push((index, i.clone()));
+            }
+            index += 1;
+            !gone
+        });
+        removed
+    }
+    /// Puts back what [`Self::take`] removed, where it was. Items whose id is in use again, or
+    /// whose folder is gone, are skipped; `Ok(n)` is how many came back.
+    pub fn restore(&mut self, removed: Removed) -> io::Result<usize> {
+        if self.items.len() + removed.items.len() > MAX_ITEMS {
+            return Err(invalid_input("too many bookmarks"));
+        }
+        let mut coming: Vec<(usize, Bookmark)> = removed
+            .items
+            .into_iter()
+            .filter(|(_, item)| !self.items.iter().any(|i| i.id == item.id))
+            .filter(|(_, item)| match &item.kind {
+                BookmarkKind::Link { url, .. } => self.find_url(url).is_none(),
+                BookmarkKind::Folder => true,
+            })
+            .collect();
+        // A folder that comes back may come after its contents in the list: parents are checked
+        // against what is there and what is coming back, until nothing more drops out.
+        loop {
+            let folders: Vec<u64> = self
+                .items
+                .iter()
+                .chain(coming.iter().map(|(_, item)| item))
+                .filter(|i| i.kind == BookmarkKind::Folder)
+                .map(|i| i.id)
+                .collect();
+            let before = coming.len();
+            coming.retain(|(_, item)| item.parent.is_none_or(|p| folders.contains(&p)));
+            if coming.len() == before {
+                break;
+            }
+        }
+        let back = coming.len();
+        for (index, item) in coming {
+            self.next_id = self.next_id.max(item.id.saturating_add(1));
+            self.items.insert(index.min(self.items.len()), item);
+        }
+        Ok(back)
+    }
+    /// Sorts folder `parent`'s own items: folders first, then by name (case-insensitive, numbers
+    /// in number order), as Chrome's "Sort by name" does. Sub-folders keep their order.
+    pub fn sort_folder(&mut self, parent: Option<u64>) {
+        let slots: Vec<usize> = self.items.iter().enumerate().filter(|(_, i)| i.parent == parent).map(|(n, _)| n).collect();
+        let mut children: Vec<Bookmark> = slots.iter().map(|n| self.items[*n].clone()).collect();
+        let other = self.other;
+        children.sort_by(|a, b| {
+            let rank = |i: &Bookmark| (Some(i.id) == other, !matches!(i.kind, BookmarkKind::Folder));
+            rank(a).cmp(&rank(b)).then_with(|| natural_key(&a.title).cmp(&natural_key(&b.title)))
+        });
+        for (slot, child) in slots.into_iter().zip(children) {
+            self.items[slot] = child;
+        }
     }
     pub fn move_item(
         &mut self,
@@ -229,6 +431,9 @@ impl BookmarkStore {
         index: usize,
     ) -> io::Result<bool> {
         self.check_parent(new_parent)?;
+        if self.is_permanent(id) {
+            return Err(invalid_input("this folder cannot be moved"));
+        }
         let Some(pos) = self.items.iter().position(|i| i.id == id) else {
             return Ok(false);
         };
@@ -270,6 +475,77 @@ impl BookmarkStore {
             .ok_or_else(|| invalid_input("bookmark not found"))?
             .parent;
         self.move_item(id, parent, index)
+    }
+    /// The one-time tidy of what other browsers' exports left at the top level: a "Bookmarks bar"
+    /// (or toolbar, or favorites bar) folder gives its contents to the bar itself, in its place; the
+    /// first "Other bookmarks" (or "Bookmarks menu", "Other favorites") folder becomes the permanent
+    /// "Other bookmarks" and later ones are merged into it. Nothing is deleted but emptied root
+    /// folders. Marks the store tidied.
+    pub fn tidy_imported_roots(&mut self) {
+        self.tidied = true;
+        let top: Vec<(u64, String)> = self
+            .items
+            .iter()
+            .filter(|i| i.parent.is_none() && i.kind == BookmarkKind::Folder && Some(i.id) != self.other)
+            .map(|i| (i.id, i.title.trim().to_lowercase()))
+            .collect();
+        for (id, title) in &top {
+            if BAR_ALIASES.contains(&title.as_str()) {
+                self.hoist(*id, None);
+            } else if OTHER_ALIASES.contains(&title.as_str()) {
+                match self.other {
+                    None => {
+                        self.other = Some(*id);
+                        if let Some(item) = self.items.iter_mut().find(|i| i.id == *id) {
+                            item.title = OTHER_TITLE.to_owned();
+                        }
+                    }
+                    Some(other) => self.hoist(*id, Some(other)),
+                }
+            }
+        }
+        self.adopt_other();
+        if let Some(other) = self.other {
+            if let Some(item) = self.items.iter_mut().find(|i| i.id == other) {
+                item.title = OTHER_TITLE.to_owned();
+            }
+        }
+    }
+    /// Moves folder `id`'s items into `into` (in the folder's place when `into` is its own parent,
+    /// else at the end), then removes the emptied folder.
+    fn hoist(&mut self, id: u64, into: Option<u64>) {
+        let Some(at) = self.items.iter().position(|i| i.id == id) else { return };
+        let parent = self.items[at].parent;
+        let mut moved: Vec<Bookmark> = Vec::new();
+        self.items.retain(|i| {
+            if i.parent == Some(id) {
+                moved.push(i.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for item in &mut moved {
+            item.parent = into;
+        }
+        let at = self.items.iter().position(|i| i.id == id).unwrap_or(self.items.len());
+        let insert_at = if into == parent { at } else { self.items.len() };
+        self.items.splice(insert_at..insert_at, moved);
+        self.items.retain(|i| i.id != id);
+        if self.last_folder == Some(id) {
+            self.last_folder = into;
+        }
+    }
+    /// Without a marked "Other bookmarks", a top-level folder of that name is it.
+    fn adopt_other(&mut self) {
+        if self.other.is_some() {
+            return;
+        }
+        self.other = self
+            .items
+            .iter()
+            .find(|i| i.parent.is_none() && i.kind == BookmarkKind::Folder && i.title.trim().eq_ignore_ascii_case(OTHER_TITLE))
+            .map(|i| i.id);
     }
     pub fn children(&self, parent: Option<u64>) -> Vec<&Bookmark> {
         self.items.iter().filter(|i| i.parent == parent).collect()
@@ -402,6 +678,7 @@ impl BookmarkStore {
                 counts.limited += 1;
                 continue;
             }
+            let folder = import_folder(folder);
             let Some(url) = valid_url(url.trim()) else {
                 counts.skipped += 1;
                 continue;
@@ -462,6 +739,7 @@ impl BookmarkStore {
             urls.insert(url);
             counts.added += 1;
         }
+        self.adopt_other();
         counts
     }
     /// Appends `item` with a fresh id when the tree stays inside the item and file-size limits;
@@ -491,6 +769,13 @@ impl BookmarkStore {
         let next = format!("{NEXT_ID_ROW}\t{}\n", self.next_id);
         if self.next_id > highest.saturating_add(1) && out.len() + next.len() <= MAX_BYTES {
             out.push_str(&next);
+        }
+        let other = self.other.filter(|id| self.items.iter().any(|i| i.id == *id));
+        if self.tidied || other.is_some() {
+            out.push_str(&format!("{OTHER_ROW}\t{}\n", other.unwrap_or(0)));
+        }
+        if let Some(last) = self.last_folder() {
+            out.push_str(&format!("{LAST_ROW}\t{last}\n"));
         }
         out
     }
@@ -529,6 +814,15 @@ impl BookmarkStore {
                 if let Ok(next) = next.parse::<u64>() {
                     s.next_id = s.next_id.max(next);
                 }
+                continue;
+            }
+            if let Some(other) = line.strip_prefix(OTHER_ROW).and_then(|rest| rest.strip_prefix('\t')) {
+                s.tidied = true;
+                s.other = other.parse::<u64>().ok().filter(|id| *id != 0);
+                continue;
+            }
+            if let Some(last) = line.strip_prefix(LAST_ROW).and_then(|rest| rest.strip_prefix('\t')) {
+                s.last_folder = last.parse::<u64>().ok().filter(|id| *id != 0);
                 continue;
             }
             if rows == MAX_ITEMS {
@@ -589,8 +883,31 @@ impl BookmarkStore {
         for item in s.items.iter_mut().filter(|i| cyclic.contains(&i.id)) {
             item.parent = None;
         }
+        // "Other bookmarks" is a folder at the top level, or there is none.
+        let items = &s.items;
+        s.other = s.other.filter(|id| items.iter().any(|i| i.id == *id && i.parent.is_none() && i.kind == BookmarkKind::Folder));
+        s.adopt_other();
         Ok(s)
     }
+}
+/// An imported folder path with other browsers' root folders mapped onto Bowser's: the bookmarks
+/// bar's own folder goes (its contents are the bar), the rest go to "Other bookmarks", a phone's to
+/// "Other bookmarks/Mobile bookmarks".
+fn import_folder(path: &str) -> String {
+    let mut parts = path.split('/').map(str::trim).filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else { return String::new() };
+    let rest: Vec<&str> = parts.collect();
+    let key = first.to_lowercase();
+    let head: Vec<&str> = if BAR_ALIASES.contains(&key.as_str()) {
+        Vec::new()
+    } else if OTHER_ALIASES.contains(&key.as_str()) {
+        vec![OTHER_TITLE]
+    } else if MOBILE_ALIASES.contains(&key.as_str()) {
+        vec![OTHER_TITLE, "Mobile bookmarks"]
+    } else {
+        vec![first]
+    };
+    head.into_iter().chain(rest).collect::<Vec<_>>().join("/")
 }
 /// What [`BookmarkStore::import_links`] did with the links it was given.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -600,6 +917,25 @@ pub struct ImportCounts {
     pub skipped: usize,
     /// Not added because the tree reached its item or file-size limit.
     pub limited: usize,
+}
+/// A sort key that orders names case-insensitively with runs of digits by their value
+/// ("Item 2" before "Item 10").
+fn natural_key(text: &str) -> Vec<(u8, u128, String)> {
+    let mut key = Vec::new();
+    let mut chars = text.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(digit) = c.to_digit(10) {
+            let mut value = u128::from(digit);
+            while let Some(next) = chars.peek().and_then(|c| c.to_digit(10)) {
+                value = value.saturating_mul(10).saturating_add(u128::from(next));
+                chars.next();
+            }
+            key.push((0, value, String::new()));
+        } else {
+            key.push((1, 0, c.to_lowercase().collect()));
+        }
+    }
+    key
 }
 /// One line of `bookmarks-v2.txt`.
 fn row_text(i: &Bookmark) -> String {
@@ -885,5 +1221,120 @@ mod tests {
         let mut fresh = BookmarkStore::new();
         fresh.add_bookmark(None, "A", "https://a.example/").unwrap();
         assert_eq!(fresh.serialize().lines().count(), 2, "{}", fresh.serialize());
+    }
+
+    /// Chrome and Firefox exports carry their own root folders. Imported, the bar's contents are the
+    /// bar (not one "Bookmarks bar" folder button on it) and the rest is "Other bookmarks".
+    #[test]
+    fn imported_root_folders_map_onto_the_bar_and_other_bookmarks() {
+        let mut s = BookmarkStore::new();
+        let counts = s.import_links([
+            ("Bookmarks bar", "News", "https://news.example/"),
+            ("Bookmarks bar / Work", "Mail", "https://mail.example/"),
+            ("Other bookmarks", "Recipes", "https://food.example/"),
+            ("Mobile bookmarks", "Phone", "https://phone.example/"),
+            ("Bookmarks toolbar", "Firefox bar", "https://ff.example/"),
+            ("Bookmarks menu / Reading", "Paper", "https://paper.example/"),
+            ("Menu", "Pizza", "https://pizza.example/"),
+        ]);
+        assert_eq!(counts.added, 7);
+        let path = |url: &str| s.folder_path(s.find_url(url).unwrap()).join("/");
+        assert_eq!(path("https://news.example/"), "");
+        assert_eq!(path("https://mail.example/"), "Work");
+        assert_eq!(path("https://ff.example/"), "");
+        assert_eq!(path("https://food.example/"), OTHER_TITLE);
+        assert_eq!(path("https://phone.example/"), "Other bookmarks/Mobile bookmarks");
+        assert_eq!(path("https://paper.example/"), "Other bookmarks/Reading");
+        assert_eq!(path("https://pizza.example/"), "Menu", "a folder a person named Menu stays theirs");
+        let other = s.other().expect("the imported folder is Other bookmarks");
+        assert_eq!(s.items().iter().filter(|i| i.parent.is_none() && i.kind == BookmarkKind::Folder).count(), 3, "Work, Menu and Other bookmarks");
+        assert!(s.rename(other, "Mine").is_err() && s.move_item(other, None, 0).is_err());
+        assert_eq!(s.delete(other), 0, "a permanent folder is never deleted");
+        let again = BookmarkStore::parse(&s.serialize()).unwrap();
+        assert_eq!(again.other(), Some(other));
+    }
+
+    /// Bookmarks imported before this version sit in a "Bookmarks bar" folder: the first load tidies
+    /// them once, in place, and the tidy is written so it never runs again.
+    #[test]
+    fn a_tree_imported_earlier_is_tidied_once_on_load() {
+        let mut s = BookmarkStore::new();
+        let first = s.add_bookmark(None, "First", "https://first.example/").unwrap();
+        let bar = s.add_folder(None, "Bookmarks bar").unwrap();
+        let a = s.add_bookmark(Some(bar), "A", "https://a.example/").unwrap();
+        let sub = s.add_folder(Some(bar), "Sub").unwrap();
+        let other = s.add_folder(None, "Other Bookmarks").unwrap();
+        let o = s.add_bookmark(Some(other), "O", "https://o.example/").unwrap();
+        let last = s.add_bookmark(None, "Last", "https://last.example/").unwrap();
+        let dir = std::env::temp_dir().join(format!("bowser-bookmarks-tidy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Written as an older build wrote it: no `other` row.
+        let old: String = s.serialize().lines().filter(|l| !l.starts_with("other\t")).map(|l| format!("{l}\n")).collect();
+        fs::write(dir.join("bookmarks-v2.txt"), old).unwrap();
+        let loaded = BookmarkStore::load(&dir).unwrap();
+        let top: Vec<u64> = loaded.children(None).iter().map(|i| i.id).collect();
+        assert_eq!(top, vec![first, a, sub, other, last], "the bar folder's items take its place");
+        assert_eq!(loaded.other(), Some(other));
+        assert_eq!(loaded.items().iter().find(|i| i.id == o).unwrap().parent, Some(other));
+        assert_eq!(loaded.items().iter().find(|i| i.id == other).unwrap().title, OTHER_TITLE);
+        assert!(fs::read_to_string(dir.join("bookmarks-v2.txt")).unwrap().contains(&format!("\nother\t{other}\n")), "the tidy is saved");
+        // A folder the user makes later with that name is left alone.
+        let mut later = loaded.clone();
+        let mine = later.add_folder(None, "Bookmarks bar").unwrap();
+        later.save(&dir).unwrap();
+        assert!(BookmarkStore::load(&dir).unwrap().items().iter().any(|i| i.id == mine));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn other_bookmarks_is_made_when_first_picked_and_the_last_folder_is_remembered() {
+        let mut s = BookmarkStore::new();
+        assert_eq!(s.other_wire(), OTHER_WIRE);
+        assert_eq!(s.resolve_parent(0).unwrap(), None);
+        let other = s.resolve_parent(OTHER_WIRE).unwrap().unwrap();
+        assert_eq!(s.other(), Some(other));
+        assert_eq!(s.resolve_parent(OTHER_WIRE).unwrap(), Some(other), "made once");
+        assert!(s.resolve_parent(777).is_err());
+        s.set_last_folder(Some(other));
+        let back = BookmarkStore::parse(&s.serialize()).unwrap();
+        assert_eq!(back.last_folder(), Some(other));
+        s.set_last_folder(Some(999));
+        assert_eq!(s.last_folder(), None, "a folder that is gone means the bar");
+    }
+
+    #[test]
+    fn a_deleted_folder_comes_back_whole_and_in_place() {
+        let mut s = BookmarkStore::new();
+        s.add_bookmark(None, "Before", "https://before.example/").unwrap();
+        let folder = s.add_folder(None, "Work").unwrap();
+        let inner = s.add_folder(Some(folder), "Inner").unwrap();
+        s.add_bookmark(Some(inner), "Deep", "https://deep.example/").unwrap();
+        s.add_bookmark(Some(folder), "Mail", "https://mail.example/").unwrap();
+        s.add_bookmark(None, "After", "https://after.example/").unwrap();
+        // Put the folder after its contents in the list, as moves can.
+        s.move_item(inner, Some(folder), 0).unwrap();
+        let before = s.clone();
+        let removed = s.take(folder);
+        assert_eq!(removed.len(), 4);
+        assert_eq!(removed.root().unwrap().id, folder);
+        assert_eq!(s.items().len(), 2);
+        assert_eq!(s.restore(removed).unwrap(), 4);
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn sort_by_name_puts_folders_first_and_numbers_in_order() {
+        let mut s = BookmarkStore::new();
+        s.add_bookmark(None, "item 10", "https://ten.example/").unwrap();
+        s.add_bookmark(None, "Item 2", "https://two.example/").unwrap();
+        s.add_folder(None, "zeta").unwrap();
+        s.add_bookmark(None, "apple", "https://apple.example/").unwrap();
+        s.add_folder(None, "Alpha").unwrap();
+        let other = s.ensure_other().unwrap();
+        s.move_item(other, None, 0).ok();
+        s.sort_folder(None);
+        let names: Vec<&str> = s.children(None).iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(names, ["Alpha", "zeta", "apple", "Item 2", "item 10", OTHER_TITLE]);
     }
 }
