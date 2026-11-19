@@ -26,6 +26,10 @@ async function open(path, { mode = "strict", ocr = SLOW_OCR, settle = 700 } = {}
     const res = await r.fetch({ url: `http://127.0.0.1:${srv.portA}${u.pathname}${u.search}` });
     await r.fulfill({ response: res });
   });
+  await ctx.route("https://i.ytimg.com/**", async (r) => {
+    const res = await r.fetch({ url: `http://127.0.0.1:${srv.portA}/static/pic.svg` });
+    await r.fulfill({ response: res });
+  });
   const p = await ctx.newPage();
   await p.goto(`https://www.youtube.com/${path.slice(1)}`, { waitUntil: "load" });
   await sleep(settle);
@@ -72,6 +76,73 @@ await test("a video that turns live (class added after load) is released; turnin
   await sleep(700);
   assert.notEqual(await shielded(), "none", "covered again when no longer live");
   await ctx.close();
+});
+
+await test("watch metadata filters its video without covering unrelated recommendations", async () => {
+  const { ctx, p } = await open("/watch/vod");
+  try {
+    await p.locator("ytd-watch-flexy").evaluate((watch) => watch.insertAdjacentHTML("beforeend", `
+      <div id="related">
+        <yt-lockup-view-model id="related-normal"><yt-thumbnail-view-model><img src="/static/pic.svg" width="220" height="120"></yt-thumbnail-view-model><a href="/watch?v=normal">How to repair a bicycle</a></yt-lockup-view-model>
+        <yt-lockup-view-model id="related-gta"><yt-thumbnail-view-model><img src="/static/pic.svg" width="220" height="120"></yt-thumbnail-view-model><a href="/watch?v=gta">GTA 6 gameplay highlights</a></yt-lockup-view-model>
+      </div>`));
+    await p.waitForFunction(() => document.querySelector("#related-gta")?.matches('[data-sfw="shield"]'));
+    assert.deepEqual(await visible(p, "#related-normal img"), [true]);
+  } finally { await ctx.close(); }
+});
+
+await test("typing in a comment composer leaves the editor and normal playback usable", async () => {
+  const { ctx, p } = await open("/watch");
+  try {
+    await p.locator("ytd-comments").evaluate((comments) => comments.insertAdjacentHTML("beforeend", `
+      <ytd-comment-thread-renderer><form><label>Reply <input id="reply" type="text"></label><div id="composer" role="textbox" contenteditable="true"></div></form></ytd-comment-thread-renderer>`));
+    for (const id of ["reply", "composer"]) {
+      const editor = p.locator(`#${id}`);
+      await editor.pressSequentially("GTA 6 gameplay", { delay: 15 });
+      assert.equal(await editor.evaluate((el) => el.value ?? el.textContent), "GTA 6 gameplay");
+      assert.equal(await editor.evaluate((el) => getComputedStyle(el).visibility), "visible");
+    }
+    assert.equal(await p.locator("video#v").evaluate((v) => v.paused), false);
+  } finally { await ctx.close(); }
+});
+
+await test("a visual match covers an uncaptioned thumbnail and a timed-out check releases clean results", async () => {
+  const { ctx, p } = await open("/watch", { ocr: { youtubeVisual: true, manual: true } });
+  try {
+    await p.locator("#related").evaluate((related) => {
+      for (const id of ["untitled", "photo", "timeout"]) related.insertAdjacentHTML("beforeend",
+        `<yt-lockup-view-model id="${id}"><yt-thumbnail-view-model><img width="240" height="160" src="https://i.ytimg.com/vi/${id}/hqdefault.jpg"></yt-thumbnail-view-model><a href="/watch?v=${id}">Watch this</a></yt-lockup-view-model>`);
+    });
+    await p.waitForFunction(() => window.__sfw.ocr.log.length === 3);
+    assert.deepEqual(await visible(p, "#untitled img, #photo img, #timeout img"), [false, false, false]);
+    await p.evaluate(() => {
+      window.__sfw.ocr.settle("/untitled/", { status: "visual" });
+      window.__sfw.ocr.settle("/photo/", { status: "ok", text: "" });
+    });
+    await p.waitForFunction(() => document.querySelector("#untitled").matches('[data-sfw="shield"]'));
+    await p.waitForFunction(() => document.querySelector("#timeout img").getAttribute("data-sfw-m") === "ok");
+    assert.deepEqual(await visible(p, "#untitled img, #photo img, #timeout img"), [false, true, true]);
+    assert.equal(await p.locator("video#v").evaluate((v) => v.paused), false);
+  } finally { await ctx.close(); }
+});
+
+await test("player controls can update without reclassifying the active video", async () => {
+  const { ctx, p } = await open("/watch", { settle: 2400 });
+  try {
+    const units = await p.evaluate(async () => {
+      const player = document.getElementById("movie_player");
+      player.insertAdjacentHTML("beforeend", '<div class="ytp-chrome-bottom"><button>Controls</button></div>');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const start = window.__sfw.ctl.stats().units;
+      const button = player.querySelector("button");
+      for (let i = 0; i < 24; i++) {
+        button.setAttribute("aria-label", i % 2 ? "Pause, keyboard shortcut K" : "Play, keyboard shortcut K");
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return window.__sfw.ctl.stats().units - start;
+    });
+    assert.equal(units, 0);
+  } finally { await ctx.close(); }
 });
 
 await browser.close();

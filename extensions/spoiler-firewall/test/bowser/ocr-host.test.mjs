@@ -52,7 +52,7 @@ test("the hook is one non-enumerable, non-writable, non-configurable frozen prop
   assert.equal(descriptor, '{"enumerable":false,"writable":false,"configurable":false}');
   assert.equal(vm.runInContext(`Object.isFrozen(globalThis[${JSON.stringify(HOOK)}])`, win), true);
   assert.equal(vm.runInContext(`Object.keys(globalThis).includes(${JSON.stringify(HOOK)})`, win), false);
-  assert.equal(vm.runInContext(`Object.keys(globalThis[${JSON.stringify(HOOK)}]).sort().join()`, win), "deliver,drain");
+  assert.equal(vm.runInContext(`Object.keys(globalThis[${JSON.stringify(HOOK)}]).sort().join()`, win), "deliver,drain,feed");
   // a page cannot redefine it
   assert.throws(() => vm.runInContext(`Object.defineProperty(globalThis, ${JSON.stringify(HOOK)}, { value: 1 })`, win), TypeError);
 });
@@ -61,13 +61,21 @@ test("requests are enqueued, drained once, and settled by deliver", async () => 
   const { host, win } = boot(ON);
   const a = host.ocr.request({ url: "https://pbs.twimg.com/media/a.jpg#frag" });
   const b = host.ocr.request({ url: "/relative.png" });
+  const c = host.ocr.request({ url: "https://i.ytimg.com/vi/id/hqdefault.jpg" });
+  assert.equal(host.ocr.youtubeVisual, true);
   const call = (expr) => vm.runInContext(`globalThis[${JSON.stringify(HOOK)}].${expr}`, win);
   const drained = JSON.parse(call(`drain(${JSON.stringify(KEY)})`));
-  assert.deepEqual(drained.map((d) => d.url), ["https://pbs.twimg.com/media/a.jpg", "https://x.com/relative.png"]);
+  assert.deepEqual(drained.map((d) => d.url), ["https://pbs.twimg.com/media/a.jpg", "https://x.com/relative.png", "https://i.ytimg.com/vi/id/hqdefault.jpg"]);
   assert.deepEqual(JSON.parse(call(`drain(${JSON.stringify(KEY)})`)), [], "handed out once");
-  call(`deliver(${JSON.stringify(KEY)}, ${JSON.stringify(JSON.stringify([{ id: drained[0].id, status: "ok", text: "hello" }, { id: drained[1].id, status: "unavailable" }]))})`);
+  const results = [
+    { id: drained[0].id, status: "ok", text: "hello" },
+    { id: drained[1].id, status: "unavailable" },
+    { id: drained[2].id, status: "visual" },
+  ];
+  call(`deliver(${JSON.stringify(KEY)}, ${JSON.stringify(JSON.stringify(results))})`);
   assert.deepEqual(JSON.parse(JSON.stringify(await a)), { status: "ok", text: "hello" });
   assert.deepEqual(JSON.parse(JSON.stringify(await b)), { status: "unavailable" });
+  assert.deepEqual(JSON.parse(JSON.stringify(await c)), { status: "visual" });
 });
 
 test("non-http(s) and malformed requests settle unavailable at once and are never queued", async () => {

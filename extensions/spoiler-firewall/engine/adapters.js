@@ -97,14 +97,20 @@ SFW.adapters = (function () {
     hotUrl: redditHot,
   });
   // ---- YouTube -----------------------------------------------------------------------------------------------
+  const YOUTUBE_CARDS = ["ytd-rich-item-renderer", "ytd-rich-grid-media", "ytd-video-renderer", "ytd-compact-video-renderer",
+    "ytd-grid-video-renderer", "ytd-playlist-renderer", "ytd-playlist-panel-video-renderer", "ytd-reel-item-renderer",
+    "yt-lockup-view-model", "yt-lockup-view-model-wiz", "ytm-compact-video-renderer", "ytm-video-with-context-renderer",
+    "ytm-compact-playlist-renderer", "ytm-shorts-lockup-view-model",
+    ".ytp-ce-element", ".ytp-videowall-still", ".ytp-suggestion-link"];
   def({
     id: "youtube", threadUrl: /^\/(watch|shorts\/|live\/)/, hosts: /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i, highRisk: true,
-    item: ["ytd-rich-item-renderer", "ytd-video-renderer", "ytd-compact-video-renderer", "ytd-reel-item-renderer", "ytd-comment-thread-renderer", "ytd-comment-view-model", "ytd-playlist-renderer",
-      "ytd-grid-video-renderer", "ytd-channel-renderer", "ytd-shelf-renderer", "ytm-shorts-lockup-view-model", "yt-lockup-view-model", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", "ytd-player",
+    item: YOUTUBE_CARDS.concat(["ytd-comment-thread-renderer", "ytd-comment-view-model",
+      "ytd-channel-renderer", "ytd-shelf-renderer", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", ".html5-video-player",
       ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer",
-      "yt-live-chat-text-message-renderer", "yt-live-chat-paid-message-renderer", "yt-live-chat-membership-item-renderer", "yt-live-chat-banner-renderer"],
+      "yt-live-chat-text-message-renderer", "yt-live-chat-paid-message-renderer", "yt-live-chat-membership-item-renderer", "yt-live-chat-banner-renderer"]),
+    cards: YOUTUBE_CARDS,
     thread: ["ytd-watch-flexy", "ytd-watch-grid", "ytd-search", "ytd-browse"],
-    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-watch-metadata ytd-channel-name"],
+    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner"],
     media: ["ytd-thumbnail", "yt-image", "yt-img-shadow", "#movie_player", ".ytp-cued-thumbnail-overlay-image"],
     avatars: ["#avatar img", "#avatar-link img", "#author-thumbnail img", "#channel-thumbnail img", "#author-photo img", "#avatar-btn img", "yt-avatar-shape img", "yt-decorated-avatar-view-model img", "img.yt-spec-avatar-shape__image"],
     attrs: ["title", "aria-label", "alt"],
@@ -385,6 +391,7 @@ SFW.adapters = (function () {
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
       avatars: join(valid(def.avatars || [], doc)),
+      cards: join(valid(def.cards || [], doc)),
       mediaIgnore: join(valid((def.avatars || []).concat(def.mediaIgnore || []), doc)),
       ocr: def.ocr !== false,
       exempt: def.exempt ? join(valid(def.exempt.sel, doc)) : "",
