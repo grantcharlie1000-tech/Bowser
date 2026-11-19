@@ -130,9 +130,18 @@ async function run(name, cfg, html = readFileSync(join(fixtures, name), 'utf8'))
     closed = once(child, 'close');
     const portFile = join(profile, 'DevToolsActivePort');
     const timeout = AbortSignal.timeout(30000);
-    while (!existsSync(portFile) && child.exitCode === null) await delay(20, undefined, { signal: timeout });
-    assert.ok(existsSync(portFile), `${name}: DevTools did not start ${stderr}`);
-    const port = readFileSync(portFile, 'utf8').split('\n')[0];
+    let port;
+    while (!port && child.exitCode === null) {
+      try {
+        const fields = readFileSync(portFile, 'utf8').split(/\r?\n/);
+        if (/^[0-9]+$/.test(fields[0]) && fields[1]?.startsWith('/devtools/browser/')) port = fields[0];
+      } catch (error) {
+        // Edge briefly holds the published port file open exclusively on Windows.
+        if (error.code !== 'ENOENT' && error.code !== 'EBUSY') throw error;
+      }
+      if (!port) await delay(20, undefined, { signal: timeout });
+    }
+    assert.ok(port, `${name}: DevTools did not start ${stderr}`);
     let target;
     while (!target && child.exitCode === null) {
       const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: timeout });
