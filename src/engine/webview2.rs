@@ -5622,6 +5622,7 @@ unsafe fn configure_controller(
             let last_login_submitted = Rc::new(Cell::new(None::<Instant>));
             let last_autofill_request = Rc::new(Cell::new(None::<Instant>));
             let last_autofill_submitted = Rc::new(Cell::new(None::<Instant>));
+            let last_autofill_generate = Rc::new(Cell::new(None::<Instant>));
             let mut token = 0;
             webview.add_WebMessageReceived(
                 &WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
@@ -5672,6 +5673,7 @@ unsafe fn configure_controller(
                         crate::passwords::LoginMessageKind::Submitted => (&last_login_submitted, Duration::from_secs(2)),
                         crate::passwords::LoginMessageKind::AutofillRequest => (&last_autofill_request, Duration::from_millis(250)),
                         crate::passwords::LoginMessageKind::AutofillSubmitted => (&last_autofill_submitted, Duration::from_secs(2)),
+                        crate::passwords::LoginMessageKind::GeneratePassword => (&last_autofill_generate, Duration::from_millis(500)),
                     };
                     if last.get().is_some_and(|previous| {
                         now.duration_since(previous) < gap

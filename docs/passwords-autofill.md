@@ -35,12 +35,21 @@ one-time codes, coupons and captchas are never filled.
 - The menu lists the site's saved logins, "Use a strong password", saved addresses or saved cards,
   and a link to the settings section. A pick runs a fill script pinned to the origin the menu was
   built for; it fills only visible, editable, recognised fields in the focused field's form.
-- A generated password is filled into every new-password field (password and confirmation) and saved
+- Focusing an empty new-password field (the first one of a sign-up or change-password form) shows a
+  small card under it: "Use a strong password". One click sends `autofill-generate` and Bowser fills a
+  generated password into every new-password field (password and confirmation). Typing, leaving the
+  field or Escape dismisses the card, and it is offered once per field. The password is saved
   automatically when the same site submits it.
-- Submissions are caught on `submit`, on sign-in/checkout buttons, on Enter in a password form, and on
-  `pagehide` after typing a password (script-driven sign-ins). Multi-step sign-ins remember the
-  username from the first step. Bowser then offers to save or update the login, the address or the
-  card. Card security codes are never captured or stored.
+- Submissions are caught on `submit`, on Enter in a password form, and on a click of a button, link,
+  ARIA button or any element the page styles as one (a styled `span` or `div`), whether it is a
+  sign-up or a plain sign-in. A control with an unrelated label ("Let's go") counts when a password
+  was typed in the same panel; show/hide, forgot, cancel and similar controls never do. A sign-in
+  screen that closes by script after a typed password (single-page apps, game menus) is caught when
+  the password box goes away, and `pagehide` catches script-driven navigation. Multi-step sign-ins
+  remember the username from the first step. Bowser then offers to save or update the login, the
+  address or the card. Card security codes are never captured or stored.
+- "Not now" quiets that one username on that site for the session; dismissing the prompt by clicking
+  away does not, so the next sign-in is offered again.
 
 ## Settings section
 
