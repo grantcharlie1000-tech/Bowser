@@ -72,7 +72,7 @@ mod tab_ghost; // the native ghost of a held tab (docs/design/tab-drag.md)
 mod window;
 
 pub(crate) use window::{
-    gated_chords, refresh_edit_font, refresh_theme, schedule_idle_timer, schedule_power_timer, set_link_timer, set_tab_tick, set_theme_timer,
+    gated_chords, refresh_edit_font, refresh_theme, schedule_power_timer, set_link_timer, set_tab_tick, set_theme_timer,
     set_thumbnail_timer, show_pending_address, sync_address_input,
 };
 pub(crate) use window::address_bar_revealed; // --- layout (thread T6) ---
@@ -100,7 +100,7 @@ use windows::{
 };
 
 pub use window::{rail_activate, run};
-pub(crate) use window::{arm_engine_recovery_timeout, recover_native_chrome};
+pub(crate) use window::{arm_engine_recovery_timeout, recover_native_chrome, schedule_background_maintenance};
 
 pub(crate) const WM_ENGINE_FAILURE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x87;
 
@@ -242,7 +242,7 @@ pub(crate) const WM_CHAIN_STEP: u32 = windows::Win32::UI::WindowsAndMessaging::W
 pub(crate) const WM_DOWNLOADS_TIMER: usize = 0xB070;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
 pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
-pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
+pub(crate) const WM_BACKGROUND_MAINTENANCE_TIMER: usize = 1;
 pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
 /// Runs only while a chrome transition is moving; it stops itself once the motion has settled.
 pub(crate) const WM_ANIMATION_TIMER: usize = 3;

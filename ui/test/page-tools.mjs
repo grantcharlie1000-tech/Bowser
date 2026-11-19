@@ -84,12 +84,12 @@ const skip = EDGE ? false : 'Microsoft Edge is not installed';
 function runPage(html, driver) {
   const dir = mkdtempSync(join(tmpdir(), 'bowser-pt-test-'));
   try {
-    const wrapped = `(function(){var out={errors:[]};try{${driver}}catch(e){out.errors.push(String(e&&e.stack||e));}var m=document.createElement('meta');m.name='pt-out';m.content=encodeURIComponent(JSON.stringify(out));document.head.appendChild(m);})();`;
+    const wrapped = `(async function(){var out={errors:[]};try{if(document.readyState==='loading')await new Promise(resolve=>document.addEventListener('DOMContentLoaded',resolve,{once:true}));${driver}}catch(e){out.errors.push(String(e&&e.stack||e));}var m=document.createElement('meta');m.name='pt-out';m.content=encodeURIComponent(JSON.stringify(out));document.head.appendChild(m);})();`;
     const file = join(dir, 'page.html');
     writeFileSync(file, html.replace('</body>', () => `<script>${wrapped}</script></body>`));
     const profile = join(dir, 'profile');
     mkdirSync(profile);
-    const result = spawnSync(EDGE, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--window-size=1000,800', '--dump-dom', pathToFileURL(file).href], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 60000 });
+    const result = spawnSync(EDGE, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--window-size=1000,800', '--virtual-time-budget=1000', '--dump-dom', pathToFileURL(file).href], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 60000 });
     const match = /name="pt-out" content="([^"]*)"/.exec(result.stdout ?? '');
     assert.ok(match, `no report (exit ${result.status}) ${String(result.stderr).slice(0, 300)}`);
     const report = JSON.parse(decodeURIComponent(match[1]));
@@ -174,13 +174,13 @@ const readerDriver = (extra) => `
   var R = ${READER};
   var o = Object.assign({ a: 'toggle', m: 'reader', t: 'auto', s: 19, d: false, k: ${JSON.stringify(CSS)}, b: ${JSON.stringify(BAR)}, c: { bg: '#fff', fg: '#111', ac: '#06c', bd: '#ccc', fl: '#eee' } }, ${JSON.stringify(extra)});
   var before = document.documentElement.outerHTML;
-  out.result = R(o);
+  out.result = await R(o);
   var r = document.querySelector('[data-bwr-k=r]'), cs = getComputedStyle(r);
   out.font = cs.fontFamily; out.size = cs.fontSize; out.line = cs.lineHeight; out.mode = cs.writingMode; out.htmlMode = getComputedStyle(document.documentElement).writingMode;
   out.maxWidth = cs.maxWidth; out.width = r.getBoundingClientRect().width;
   out.bar = shadows.length ? Array.from(shadows[0].querySelectorAll('button,span')).map(function (b) { return b.getAttribute('aria-label') || b.textContent; }) : null;
   out.barRole = shadows.length ? shadows[0].querySelector('.b').getAttribute('role') : null;
-  out.exit = R(Object.assign({}, o, { a: 'exit' }));
+  out.exit = await R(Object.assign({}, o, { a: 'exit' }));
   out.restored = document.documentElement.outerHTML === before;
 `;
 
@@ -194,7 +194,8 @@ test('reader view: font, size, line height and column width come from the settin
   assert.match(custom.font, /Consolas/);
   assert.equal(custom.size, '24px');
   assert.ok(Math.abs(parseFloat(custom.line) - 24 * 2.0) < 0.01, custom.line);
-  assert.ok(custom.width < plain.width, `a 50ch column is narrower than 68ch (${custom.width} vs ${plain.width})`);
+  const sameFont = runPage(ARTICLE, readerDriver({ f: 'mono', s: 24, l: 20, w: 68 }));
+  assert.ok(custom.width < sameFont.width, `a 50ch column is narrower than 68ch at the same font and size (${custom.width} vs ${sameFont.width})`);
   const sans = runPage(ARTICLE, readerDriver({ f: 'sans' }));
   assert.match(sans.font, /Segoe UI|system-ui/);
   const wide = runPage(ARTICLE, readerDriver({ w: 120 }));
@@ -204,7 +205,7 @@ test('reader view: font, size, line height and column width come from the settin
   assert.match(bad.font, /Georgia/);
   assert.ok(Math.abs(parseFloat(bad.line) - 19 * 1.6) < 0.01);
   assert.ok(Math.abs(bad.width - plain.width) < 1);
-  for (const r of [plain, custom, sans, wide, bad]) assert.ok(r.restored, 'the document is restored exactly');
+  for (const r of [plain, custom, sameFont, sans, wide, bad]) assert.ok(r.restored, 'the document is restored exactly');
 });
 
 test('reader view: vertical text runs top to bottom', { skip }, () => {

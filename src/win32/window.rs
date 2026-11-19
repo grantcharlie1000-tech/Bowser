@@ -1,7 +1,7 @@
 use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_HISTORY_BACK,
-    WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
+    WM_HISTORY_FORWARD, WM_BACKGROUND_MAINTENANCE_TIMER, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
     WM_PANE_FOCUSED, WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY,
     WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, WM_RAIL_CHANGED, WM_HTML_CHROME_ENV, card, command_palette, frame, glass,
     import_panel, island_menu, menu, devtools_dock, notes_panel, passwords_panel, privacy_panel, settings_panel,
@@ -58,7 +58,6 @@ use windows::{
             SetWindowRgn,
         },
         System::LibraryLoader::GetModuleHandleW,
-        System::SystemInformation::GetTickCount,
         System::Threading::GetCurrentProcessId,
         UI::{
             Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
@@ -66,7 +65,7 @@ use windows::{
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
                 GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetFocus, GetKeyState,
-                GetLastInputInfo, LASTINPUTINFO, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE,
+                ReleaseCapture, SetCapture, SetFocus, TME_LEAVE,
                 TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_LBUTTON,
                 VK_MENU, VK_RBUTTON, VK_RETURN, VK_SHIFT, VK_UP,
             },
@@ -240,13 +239,23 @@ enum DeferredChromeCommand {
 const ANIMATION_FRAME_MS: u32 = 16;
 /// `wParam` of `WM_SETTINGCHANGE` when the system message font may have changed.
 const SPI_SETNONCLIENTMETRICS: usize = 0x002A;
+#[derive(PartialEq, Eq)]
 struct TabSnapshot {
     id: TabId,
     title: String,
     loading: bool,
+    pinned: bool,
+    muted: bool,
+    private: bool,
     favicon_key: Option<FaviconKey>,
     favicon: Option<Rc<favicon::FaviconBitmap>>,
     marker: Option<Marker>,
+}
+
+#[derive(Clone, Copy)]
+struct TabRefresh {
+    reprojected: bool,
+    rows_changed: bool,
 }
 
 #[derive(Clone)]
@@ -505,6 +514,8 @@ struct WindowChrome {
     palette: &'static Palette,
     tabs: Vec<TabSnapshot>,
     slots: Vec<StripSlot>,
+    group_inputs: Vec<tab_groups::TabGroupInput>,
+    group_preferences: tab_groups::GroupPreferences,
     sidebar: Option<crate::vertical_tabs::SidebarLayout>,
     /// Unpinned vertical tabs open over the page. `None` while pinned, horizontal, or fully closed.
     rail_flyout: Option<RailFlyout>,
@@ -688,7 +699,7 @@ struct WindowChrome {
     // --- vertical sidebar (lane S) ---
     html_tabs_layout: Option<chrome_host::protocol::LayoutMode>,
     // --- tab options --- the last `tabopts` message the strip was sent.
-    html_tabs_opts: Option<String>,
+    html_tabs_opts: Option<chrome_host::protocol::StripOptions>,
     // --- end tab options ---
     html_tabs_workspace: Option<(String, String)>,
     // --- end vertical sidebar ---
@@ -792,6 +803,8 @@ impl WindowChrome {
             palette: glass::palette(), // --- auto-hide (T11) --- a new window has hidden no bar yet, so it starts glass
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
+            group_inputs: Vec::new(),
+            group_preferences: tab_groups::GroupPreferences::default(),
             sidebar: None,
             rail_flyout: None,
             rail_flyout_posted: 0,
@@ -975,159 +988,130 @@ impl WindowChrome {
         self.relayout(RelayoutRequest { w: self.client.0, h: self.client.1, dpi: self.dpi, active: inputs.active, maximised: inputs.maximised, arrangement: inputs.arrangement, density: inputs.density, sidebar_width: width, centred_address_bar: inputs.centred_address_bar, font_scale: inputs.font_scale, ui_font: &inputs.ui_font });
         true
     }
-    fn refresh(&mut self, app: &AppRef, structural: bool) {
+    fn refresh(&mut self, app: &AppRef, structural: bool) -> TabRefresh {
         let now = Instant::now();
-        let ids = App::tab_ids(app);
         let active = App::active_tab_id(app);
-        self.split_active = App::split_view(app).is_some();
-        self.split_orientation = App::split_view(app).map_or_else(Default::default, |split| split.orientation);
-        self.split_layout = App::split_view(app);
-        // A change of active tab moves the collapsed-group representative and the active tab's width,
-        // so it re-projects and relays out even when the posting path was not structural. Projection
-        // inputs are collected whenever it runs, so both paths reach `project_strip` with real data.
-        let active_changed = self.active_tab != Some(active);
-        let reproject = structural || active_changed;
-        let preferences = reproject.then(|| App::tab_group_preferences(app));
-        let markers = App::tab_markers(app);
-        let mut tabs = Vec::with_capacity(ids.len());
-        // The app's own projection inputs, so manual placement and the settle rule apply to the strip.
-        let group_inputs = if reproject {
-            App::tab_group_inputs(app)
-        } else {
-            Vec::new()
-        };
-        let mut sidebar_tabs = Vec::with_capacity(if reproject { ids.len() } else { 0 });
+        let split = App::split_view(app);
+        self.split_active = split.is_some();
+        self.split_orientation = split.map_or_else(Default::default, |split| split.orientation);
+        self.split_layout = split;
+        let group_inputs = App::tab_group_inputs(app);
+        let preferences = App::tab_group_preferences(app);
+        let reprojected = structural
+            || self.active_tab != Some(active)
+            || self.group_inputs != group_inputs
+            || self.group_preferences != preferences;
+        let markers = App::tab_markers(app, &group_inputs, &preferences);
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
-        let html_strip = self.html_tab_region().is_some();
-        // The previous snapshot by id: one pass, not a search of every old tab for every tab.
-        // A visit recorded below lands in a history that has no deleted sites.
+        let native_icons = native_favicon_wanted(self.html_tab_region().is_some());
         self.reread_history_after_a_deletion();
         let previous: HashMap<TabId, &TabSnapshot> = self.tabs.iter().map(|tab| (tab.id, tab)).collect();
-        for &id in &ids {
-            let old = previous.get(&id).copied();
-            let raw_title = App::tab_title(app, id).unwrap_or_default();
-            // --- tab options --- a name the user gave the tab wins over the page's title.
-            let title = if let Some(name) = App::tab_name(app, id) {
-                name
-            } else if raw_title.trim().is_empty() {
-                "New tab".to_owned()
-            } else {
-                raw_title.clone()
-            };
-            // --- end tab options ---
-            let loading = App::tab_loading(app, id);
-            // The sidebar rows are only rebuilt on a reprojection, so only then are they collected.
-            if reproject {
-                sidebar_tabs.push((id, title.clone(), App::tab_pinned(app, id), loading));
-            }
-            let key = App::tab_favicon_key(app, id);
-            // A live HTML tab strip paints the favicons itself: no bytes are fetched or decoded here.
-            // `tab_favicon` decodes on demand for the native readers that still want one.
-            let image = if !native_favicon_wanted(html_strip) {
-                None
-            } else if old.is_some_and(|t| {
-                t.favicon_key == key
-                    && (key.is_none()
-                        || t.favicon
-                            .as_ref()
-                            .is_some_and(|image| image.width == size && image.height == size))
-            }) {
-                old.and_then(|tab| tab.favicon.clone())
-            } else if let (Some(k), Some(bytes)) = (key, App::tab_favicon(app, id)) {
-                decode_cached_favicon(&mut self.favicons, &mut self.failed, k, size, &bytes)
+        let reusable_favicon = |id, key| {
+            previous.get(&id).and_then(|tab| {
+                (tab.favicon_key == Some(key)).then_some(())?;
+                tab.favicon.as_ref().filter(|image| image.width == size && image.height == size)
+            })
+        };
+        let entries = App::chrome_tabs(app, |id, key| {
+            native_icons && reusable_favicon(id, key).is_none() && !self.failed.contains(&(key, size))
+        });
+        let mut tabs = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let id = entry.id;
+            let title = entry.custom_title.unwrap_or_else(|| {
+                if entry.title.trim().is_empty() { "New tab".to_owned() } else { entry.title.clone() }
+            });
+            let image = if native_icons {
+                entry.favicon_key.and_then(|key| {
+                    reusable_favicon(id, key).cloned().or_else(|| {
+                        decode_cached_favicon(&mut self.favicons, &mut self.failed, key, size, entry.favicon.as_deref()?)
+                    })
+                })
             } else {
                 None
             };
-            // A finished load of an http(s) page is a visit, however the page was reached (typed,
-            // link, redirect, same-document change, reload). A private tab leaves no trace: not in
-            // history.txt, not in suggestions.
-            let just_finished = old.is_some_and(|t| t.loading) && !loading;
-            let private = App::tab_private(app, id);
-            if crate::private::may_persist(crate::private::Store::History, private, false) {
-                let committed = App::tab_committed_url(app, id);
-                if let Some((url, visit_title)) = self.visits.observe(
+            if crate::private::may_persist(crate::private::Store::History, entry.private, false)
+                && let Some((url, title)) = self.visits.observe(
                     id.0,
-                    committed.as_ref().map(url::Url::as_str),
-                    &raw_title,
-                    loading,
-                    just_finished,
-                ) {
-                    if crate::private::may_persist(crate::private::Store::SuggestionHistory, private, false) {
-                        loaded_history(&mut self.history, &mut self.history_load).record(&url, &visit_title);
-                    }
-                    if persist_profile_history(url, visit_title) {
-                        self.history_dirty = true;
-                    }
+                    entry.url.as_ref().map(url::Url::as_str),
+                    &entry.title,
+                    entry.loading,
+                    entry.completed_documents,
+                )
+            {
+                if crate::private::may_persist(crate::private::Store::SuggestionHistory, entry.private, false) {
+                    loaded_history(&mut self.history, &mut self.history_load).record(&url, &title);
+                }
+                if persist_profile_history(url, title) {
+                    self.history_dirty = true;
                 }
             }
             tabs.push(TabSnapshot {
                 id,
                 title,
-                loading,
-                favicon_key: key,
+                loading: entry.loading,
+                pinned: entry.pinned,
+                muted: entry.muted,
+                private: entry.private,
+                favicon_key: entry.favicon_key,
                 favicon: image,
                 marker: markers.get(&id).copied(),
             });
         }
-        let active_index = ids.iter().position(|&id| id == active).unwrap_or(0);
-        let slots = match preferences.as_ref() {
-            Some(preferences) if reproject => {
-                tab_groups::project_strip(&group_inputs, active_index, preferences)
-            }
-            _ => self.slots.clone(),
-        };
-        if reproject {
-            self.sidebar_rows = crate::chrome::vertical_paint::rows(
-                &sidebar_tabs,
-                &group_inputs,
-                preferences
-                    .as_ref()
-                    .expect("preferences loaded for reprojection"),
-                active,
-            );
-        }
-        // Still the old tabs and layout here, so a tab that is leaving keeps its island to fade from.
+        let rows_changed = self.tabs != tabs;
         let hovered = self.hovered_tab();
         if structural {
-            let (layout, old, old_slots) = (&self.layout, &self.tabs, &self.slots);
-            self.motion.sync(
-                &ids,
-                hovered,
-                Some(active),
-                |id| {
-                    old_slots
-                        .iter()
-                        .position(|slot| old.get(slot.tab_index).is_some_and(|tab| tab.id == id))
-                        .and_then(|slot| layout.tab(slot))
-                },
-                now,
-            );
+            let old_bounds: HashMap<_, _> = self.slots.iter().enumerate().filter_map(|(index, slot)| {
+                Some((self.tabs.get(slot.tab_index)?.id, self.layout.tab(index)?))
+            }).collect();
+            let ids: Vec<_> = tabs.iter().map(|tab| tab.id).collect();
+            self.motion.sync(&ids, hovered, Some(active), |id| old_bounds.get(&id).copied(), now);
         }
         self.active_tab = Some(active);
-        self.views.clear();
-        self.tabs = tabs;
-        self.slots = slots;
-        let index = hovered.and_then(|id| {
-            self.slots.iter().position(|slot| {
-                self.tabs
-                    .get(slot.tab_index)
-                    .is_some_and(|tab| tab.id == id)
-            })
-        });
-        self.hover = moved_hover(self.hover, index);
-        if !self.focused {
-            self.edit_text.clear();
-            if let Some(url) = self.urls.get(&App::active_tab_id(app)) {
-                self.edit_text.push_str(url)
-            }
+        if rows_changed || reprojected {
+            self.views.clear();
         }
-        if reproject {
+        self.tabs = tabs;
+        if reprojected {
+            let active_index = self.tabs.iter().position(|tab| tab.id == active).unwrap_or(0);
+            self.slots = tab_groups::project_strip(&group_inputs, active_index, &preferences);
+            let side_tabs: Vec<_> = self.tabs.iter()
+                .map(|tab| (tab.id, tab.title.clone(), tab.pinned, tab.loading))
+                .collect();
+            self.sidebar_rows = crate::chrome::vertical_paint::rows(
+                &side_tabs, &group_inputs, &preferences, active,
+            );
+            self.group_inputs = group_inputs;
+            self.group_preferences = preferences;
+            let index = hovered.and_then(|id| {
+                self.slots.iter().position(|slot| {
+                    self.tabs.get(slot.tab_index).is_some_and(|tab| tab.id == id)
+                })
+            });
+            self.hover = moved_hover(self.hover, index);
             let settings = App::settings(app);
             let sidebar_width = self.sidebar_width(app);
-            let arrangement = App::arrangement(app).with_address_bar_revealed(self.address_bar_revealed); // --- layout (thread T6) ---
-            self.relayout(RelayoutRequest { w: self.client.0, h: self.client.1, dpi: self.dpi, active: App::active_tab_id(app), maximised: self.layout.maximised, arrangement, density: settings.ui_density, sidebar_width, centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
+            let arrangement = App::arrangement(app).with_address_bar_revealed(self.address_bar_revealed);
+            self.relayout(RelayoutRequest { w: self.client.0, h: self.client.1, dpi: self.dpi, active, maximised: self.layout.maximised, arrangement, density: settings.ui_density, sidebar_width, centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
+            self.motion.sync_groups(&self.group_specs(), now);
+        } else if rows_changed {
+            let by_id: HashMap<_, _> = self.tabs.iter().map(|tab| (tab.id, tab)).collect();
+            for row in &mut self.sidebar_rows {
+                if let crate::chrome::vertical_paint::SidebarRow::Tab { id, title, loading, .. } = row
+                    && let Some(tab) = by_id.get(id)
+                {
+                    title.clone_from(&tab.title);
+                    *loading = tab.loading;
+                }
+            }
         }
-        self.motion.sync_groups(&self.group_specs(), now);
+        if !self.focused {
+            self.edit_text.clear();
+            if let Some(url) = self.urls.get(&active) {
+                self.edit_text.push_str(url);
+            }
+        }
+        TabRefresh { reprojected, rows_changed }
     }
     fn relayout(&mut self, request: RelayoutRequest<'_>) {
         let RelayoutRequest { w, h, dpi, active, maximised, arrangement, density, sidebar_width, centred_address_bar, font_scale, ui_font } = request;
@@ -2384,15 +2368,15 @@ pub(crate) fn set_thumbnail_timer(hwnd: HWND) {
 }
 // --- end tab options ---
 
-pub(crate) fn schedule_idle_timer(hwnd: HWND, action: IdleTimerAction) {
+pub(crate) fn schedule_background_maintenance(hwnd: HWND, action: IdleTimerAction) {
     unsafe {
         match action {
             IdleTimerAction::Kill => {
-                let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_BACKGROUND_MAINTENANCE_TIMER);
             }
             IdleTimerAction::Arm(ms) => {
-                let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
-                let _ = SetTimer(Some(hwnd), WM_IDLE_TRIM_TIMER, ms, None);
+                let _ = KillTimer(Some(hwnd), WM_BACKGROUND_MAINTENANCE_TIMER);
+                let _ = SetTimer(Some(hwnd), WM_BACKGROUND_MAINTENANCE_TIMER, ms, None);
             }
         }
     }
@@ -2545,13 +2529,12 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
         hwnd,
         caret_blink_allowed(foreground, minimised, edit_focused(hwnd)),
     );
-    let (changed, gained) = with_chrome(hwnd, |s| {
+    let changed = with_chrome(hwnd, |s| {
         let changed = foreground != s.foreground;
-        let gained = foreground && !s.foreground;
         s.foreground = foreground;
-        (changed, gained)
+        changed
     })
-    .unwrap_or((false, false));
+    .unwrap_or(false);
     if !foreground {
         card::cancel(hwnd);
     }
@@ -2568,12 +2551,6 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
         }
     }
     // --- end window and panels ---
-    // Returning to the window counts as activity: restore the page's memory target and resume the idle cadence
-    // that stopped while another application was active. Activation can arrive from a modal loop that already
-    // holds the app state, so the borrow is checked first.
-    if let Some(app) = app.filter(|app| gained && app.try_borrow_mut().is_ok()) {
-        schedule_idle_timer(hwnd, App::idle_timer_fired(app, 0, true));
-    }
 }
 
 /// Runs on the UI thread when the foreground window changes. It only posts a message, so the state change
@@ -3474,22 +3451,20 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_TABS_CHANGED => {
+                let changes = App::take_tab_change_flags(hwnd);
                 if let Some(app) = app {
                     if auto_hide::page_fullscreen_owner(hwnd).is_some_and(|owner| owner != App::active_tab_id(app)) {
                         auto_hide::page_fullscreen(hwnd, app, false);
                     }
-                    let (structural, persisted) = App::take_tab_change_flags();
+                    let structural = changes.structural;
                     if structural {
                         card::cancel_card(hwnd);
                     }
                     let previously_active = with_chrome(hwnd, |s| s.active_tab).flatten();
                     let refreshed = with_chrome(hwnd, |s| {
                         let previous_viewport = s.layout.viewport;
-                        s.refresh(app, structural);
-                        (
-                            (s.layout.strip, s.layout.tab_row),
-                            previous_viewport != s.layout.viewport,
-                        )
+                        let tabs = s.refresh(app, structural);
+                        (tabs, previous_viewport != s.layout.viewport)
                     });
                     if refreshed.as_ref().is_some_and(|(_, changed)| *changed) {
                         sync_split_ratio(hwnd, App::split_view(app));
@@ -3507,17 +3482,15 @@ unsafe extern "system" fn window_proc(
                         super::history_page::history_changed(hwnd);
                     }
                     let active = App::active_tab_id(app);
-                    // An address change inside a store's page (it navigates without loading) shows
-                    // or hides Add to Bowser now, not at the next unrelated repaint.
-                    sync_store_listing(hwnd, Some(app));
+                    let active_changed = previously_active != Some(active);
                     // --- popup host (lane M) ---
                     // A tab or workspace switch dismisses an open HTML menu.
-                    if let Some(context) = popup_context(hwnd) {
+                    if (structural || active_changed) && let Some(context) = popup_context(hwnd) {
                         html_popup::note_context(hwnd, context);
                         html_panel::note_context(hwnd, context); // --- rail flyouts ---
                     }
                     // --- end popup host ---
-                    if previously_active != Some(active) {
+                    if active_changed {
                         card::cancel_card(hwnd);
                         let value = App::tab_committed_url(app, active)
                             .map(|url| url.to_string())
@@ -3543,36 +3516,36 @@ unsafe extern "system" fn window_proc(
                         let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                         devtools_dock::follow_active_tab(hwnd, active);
                     }
-                    card::sync(hwnd, app, |id| tab_anchor(hwnd, id));
-                    island_menu::sync(hwnd, app, |id| ball_anchor(hwnd, id));
-                    super::split_ui::tabs_changed(hwnd, app); // --- split view ---
-                    if structural {
+                    let reprojected = refreshed.is_some_and(|(tabs, _)| tabs.reprojected);
+                    let rows_changed = refreshed.is_some_and(|(tabs, _)| tabs.rows_changed);
+                    if changes.metadata || reprojected {
+                        card::sync(hwnd, app, |id| tab_anchor(hwnd, id));
+                        island_menu::sync(hwnd, app, |id| ball_anchor(hwnd, id));
+                        super::split_ui::tabs_changed(hwnd, app);
+                    }
+                    if structural || refreshed.is_some_and(|(_, viewport_changed)| viewport_changed) {
                         position_edit(hwnd);
                         repaint(hwnd);
-                        arm_motion(hwnd);
-                    } else if let Some(((toolbar, tabs), _)) = refreshed
-                        .filter(|_| {
-                            with_chrome(hwnd, |s| {
-                                native_strip_pixels_change(s.html_region().is_some(), s.html_tab_region().is_some())
-                            })
-                            .unwrap_or(true)
-                        })
-                    {
-                        for strip in [toolbar, tabs] {
-                            let rect = windows::Win32::Foundation::RECT {
-                                left: strip.left,
-                                top: strip.top,
-                                right: strip.right,
-                                bottom: strip.bottom,
-                            };
-                            let _ = InvalidateRect(Some(hwnd), Some(&rect), false);
-                        }
+                    } else {
+                        let _ = with_chrome(hwnd, |s| {
+                            if changes.toolbar && s.html_region().is_none() {
+                                invalidate(hwnd, s.layout.strip);
+                            }
+                            if (rows_changed || reprojected) && s.html_tab_region().is_none() {
+                                invalidate(hwnd, s.sidebar.map_or(s.layout.tab_row, |sidebar| sidebar.sidebar));
+                            }
+                        });
                     }
-                    arm_motion(hwnd);
-                    // Titles, loading, favicons, the active tab: the tab strip and toolbar follow.
-                    mark_chrome_dirty(hwnd);
+                    if changes.metadata || reprojected || rows_changed {
+                        arm_motion(hwnd);
+                        mark_chrome_dirty(hwnd);
+                    } else if changes.toolbar {
+                        // In-page store links can show or hide Add to Bowser immediately.
+                        sync_store_listing(hwnd, Some(app));
+                        html_sync(hwnd);
+                    }
                     // Debounced crash-recovery snapshot: one timer, armed only when dirty.
-                    if persisted && App::session_changed(app) {
+                    if changes.persisted && App::session_changed(app) {
                         let _ = SetTimer(
                             Some(hwnd),
                             WM_SESSION_SAVE_TIMER,
@@ -4725,20 +4698,10 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
-            WM_TIMER if wparam.0 == WM_IDLE_TRIM_TIMER => {
-                if let Some(app) = app {
-                    let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
-                    let mut last = LASTINPUTINFO {
-                        cbSize: size_of::<LASTINPUTINFO>() as u32,
-                        ..Default::default()
-                    };
-                    let idle = if GetLastInputInfo(&mut last).as_bool() {
-                        GetTickCount().wrapping_sub(last.dwTime)
-                    } else {
-                        0
-                    };
-                    let foreground = foreground_is_ours(hwnd);
-                    schedule_idle_timer(hwnd, App::idle_timer_fired(app, idle, foreground));
+            WM_TIMER if wparam.0 == WM_BACKGROUND_MAINTENANCE_TIMER => {
+                if let Some(app) = app.filter(|app| app.try_borrow().is_ok()) {
+                    let _ = KillTimer(Some(hwnd), WM_BACKGROUND_MAINTENANCE_TIMER);
+                    schedule_background_maintenance(hwnd, App::background_maintenance_fired(app));
                 }
                 LRESULT(0)
             }
@@ -4997,7 +4960,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), chrome_recovery::TIMER);
                 let _ = KillTimer(Some(hwnd), surface_recovery::TIMER);
                 let _ = KillTimer(Some(hwnd), ENGINE_RECOVERY_TIMER);
-                let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_BACKGROUND_MAINTENANCE_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
@@ -5038,7 +5001,7 @@ unsafe extern "system" fn window_proc(
                 super::panel_webapp::shutdown();
                 passwords_panel::clear_password_clipboard_timer(hwnd);
                 let _ = KillTimer(Some(hwnd), super::WM_POWER_TIMER);
-                let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_BACKGROUND_MAINTENANCE_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
@@ -5068,6 +5031,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                let _ = App::take_tab_change_flags(hwnd);
                 crate::instance::release_window(hwnd);
                 #[cfg(feature = "experimental-engine-context-menu")]
                 crate::engine::engine_menu_owner_destroyed(hwnd);
@@ -5325,12 +5289,6 @@ pub(crate) fn tab_favicon(hwnd: HWND, id: TabId) -> Option<Rc<crate::favicon::Fa
 /// Whether the native tab row needs decoded favicons: not while the HTML tab strip is live.
 fn native_favicon_wanted(html_tabs_live: bool) -> bool {
     !html_tabs_live
-}
-
-/// Whether a tab change that moves no tab must repaint the native toolbar and tab row: only when
-/// either is not drawn by a live HTML view.
-fn native_strip_pixels_change(html_toolbar_live: bool, html_tabs_live: bool) -> bool {
-    !(html_toolbar_live && html_tabs_live)
 }
 
 /// `bytes` decoded at `size` through the favicon cache. A failed decode is remembered in `failed`,
@@ -11435,27 +11393,23 @@ fn forget_closed_tab_urls(s: &mut WindowChrome, open: &HashSet<TabId>) {
 /// is read only for tabs whose favicon key changed, and entries of closed tabs are dropped. Returns
 /// the tabs that have a sendable favicon.
 fn html_tabs_favicons(hwnd: HWND, app: &AppRef, keys: &[(TabId, Option<FaviconKey>)]) -> HashSet<TabId> {
-    for &(id, key) in keys {
-        let cached =
-            with_chrome(hwnd, |s| s.html_favicons.get(&id).map(|favicon| favicon.key)).flatten();
-        if key == cached {
-            continue;
-        }
-        let entry = key.map(|key| HtmlFavicon {
-            key,
-            png: App::tab_favicon(app, id).filter(|png| chrome_host::favicon_sendable(png)),
-        });
-        let _ = with_chrome(hwnd, |s| match entry {
-            Some(entry) => {
-                s.html_favicons.insert(id, entry);
-            }
-            None => {
-                s.html_favicons.remove(&id);
-            }
-        });
-    }
+    let changed = with_chrome(hwnd, |s| {
+        keys.iter().copied().filter(|(id, key)| {
+            *key != s.html_favicons.get(id).map(|favicon| favicon.key)
+        }).collect::<Vec<_>>()
+    }).unwrap_or_default();
+    let fetch: Vec<_> = changed.iter().filter_map(|(id, key)| key.map(|_| *id)).collect();
+    let mut bytes = App::tab_favicons(app, &fetch);
     let live: HashSet<TabId> = keys.iter().map(|&(id, _)| id).collect();
     with_chrome(hwnd, |s| {
+        for (id, key) in changed {
+            if let Some(key) = key {
+                let png = bytes.remove(&id).filter(|png| chrome_host::favicon_sendable(png));
+                s.html_favicons.insert(id, HtmlFavicon { key, png });
+            } else {
+                s.html_favicons.remove(&id);
+            }
+        }
         s.html_favicons.retain(|id, _| live.contains(id));
         s.html_favicons_sent.retain(|id, _| live.contains(id));
         s.html_favicons
@@ -11571,8 +11525,8 @@ pub(crate) fn open_feeds_panel(hwnd: HWND, app: &AppRef) {
 // --- end toolbars and feeds ---
 
 /// What the strip marks on tab `id`, from the one pass `App::tab_strip_extras` made.
-fn html_tab_marks(extras: &[crate::app::TabStripExtra], id: TabId) -> chrome_host::protocol::TabMarks {
-    let Some(extra) = extras.iter().find(|extra| extra.id == id) else {
+fn html_tab_marks(extra: Option<&crate::app::TabStripExtra>, now: Instant) -> chrome_host::protocol::TabMarks {
+    let Some(extra) = extra else {
         return Default::default();
     };
     chrome_host::protocol::TabMarks {
@@ -11580,7 +11534,7 @@ fn html_tab_marks(extras: &[crate::app::TabStripExtra], id: TabId) -> chrome_hos
         notify: extra.notify,
         asleep: extra.asleep,
         progress: extra.progress,
-        reload: extra.reload.map(|(_, next)| next.saturating_duration_since(Instant::now()).as_secs_f64().ceil() as u32),
+        reload: extra.reload.map(|(_, next)| next.saturating_duration_since(now).as_secs_f64().ceil() as u32),
         idle: extra.idle,
     }
 }
@@ -11593,114 +11547,100 @@ fn html_tabs_sync(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    // Titles, loading and markers come from the snapshot the native strip paints.
+    // The painted rows and their group data were collected together by WindowChrome::refresh.
     let tab_layout = App::tab_layout(&app);
     let rail = App::sidebar_collapsed(&app);
-    let Some((host, snapshot, mode)) = with_chrome(hwnd, |s| {
-        if !s.html_state_building[1] && !s.html_tabs.as_ref().is_some_and(ChromeHost::awaiting_initial) { s.html_tab_region()?; }
-        // --- vertical sidebar (lane S) ---
-        // The side tells the strip which way the page is, for dragging a tab out onto it.
+    let Some((host, snapshot, favicon_keys, inputs, preferences, generation, mode)) = with_chrome(hwnd, |s| {
+        if !s.html_state_building[1] && !s.html_tabs.as_ref().is_some_and(ChromeHost::awaiting_initial) {
+            s.html_tab_region()?;
+        }
         let mode = if s.sidebar.is_some() {
             chrome_host::protocol::LayoutMode::Vertical {
                 right: tab_layout == crate::settings::TabLayout::VerticalRight,
                 rail,
-                // --- floating zen sidebar --- the column comes back as a card: the strip has no island of its own.
                 float: !s.layout.float_island.is_empty(),
             }
         } else {
-            chrome_host::protocol::LayoutMode::Horizontal { bottom: tab_layout == crate::settings::TabLayout::TabsBottom }
+            chrome_host::protocol::LayoutMode::Horizontal {
+                bottom: tab_layout == crate::settings::TabLayout::TabsBottom,
+            }
         };
-        // --- end vertical sidebar ---
         Some((
             s.html_tabs.clone()?,
-            s.tabs
-                .iter()
-                .map(|tab| (tab.id, tab.title.clone(), tab.loading, tab.marker))
+            s.tabs.iter()
+                .map(|tab| (tab.id, tab.title.clone(), tab.loading, tab.marker, tab.pinned, tab.muted, tab.private))
                 .collect::<Vec<_>>(),
-            // --- vertical sidebar (lane S) ---
+            s.tabs.iter().map(|tab| (tab.id, tab.favicon_key)).collect::<Vec<_>>(),
+            s.group_inputs.clone(),
+            s.group_preferences.clone(),
+            s.html_state_generation[1],
             mode,
-            // --- end vertical sidebar ---
         ))
-    })
-    .flatten() else {
+    }).flatten() else {
         return;
     };
     let ids: Vec<TabId> = snapshot.iter().map(|(id, ..)| *id).collect();
     let active = App::active_tab_id(&app);
-    // --- vertical sidebar (lane S) ---
-    let layout = chrome_host::protocol::layout_json(mode);
-    let layout_pending = with_chrome(hwnd, |s| chrome_host::protocol::layout_needs_sync(s.html_tabs_layout, mode)).unwrap_or(false);
-    if layout_pending && host.post_json(&layout).is_ok() {
-        let _ = with_chrome(hwnd, |s| s.html_tabs_layout = Some(mode));
-    }
     let workspace_set = App::workspaces(&app);
     let workspace = workspace_set.active();
     let workspace_name = workspace.name().to_owned();
     let glyph = format!("g:{}", format!("{:?}", workspace.icon()).to_lowercase());
-    // --- tab stacks and workspaces (T10) --- the header shows the workspace's emoji when it has one;
-    // the emoji is part of what was sent, so a change of it is sent again.
-    let emoji = workspace.emoji().map(str::to_owned);
+    let emoji = workspace.emoji();
     let workspaces_on = App::workspaces_enabled(&app);
-    let workspace_icon = format!("{glyph}|{}|{workspaces_on}", emoji.as_deref().unwrap_or(""));
-    if let Some(json) = chrome_host::protocol::workspace_json_with(&workspace_name, &glyph, emoji.as_deref(), workspaces_on) {
-        let already_sent = with_chrome(hwnd, |s| {
-            s.html_tabs_workspace.as_ref().is_some_and(|(name, icon)| name == &workspace_name && icon == &workspace_icon)
-        }).unwrap_or(false);
-        if !already_sent && host.post_json(&json).is_ok() {
-            let _ = with_chrome(hwnd, |s| s.html_tabs_workspace = Some((workspace_name.clone(), workspace_icon.clone())));
-        }
-    }
-    // --- end vertical sidebar ---
-    // --- tab options --- what the strip draws beyond the model, and how it draws it.
-    let strip_options = html_strip_options(hwnd, &app);
-    let strip_extras = App::tab_strip_extras(&app, &ids);
-    {
-        let json = chrome_host::protocol::tabopts_json(&strip_options);
-        let pending = with_chrome(hwnd, |s| s.html_tabs_opts.as_deref() != Some(json.as_str())).unwrap_or(false);
-        if pending && host.post_json(&json).is_ok() {
-            let _ = with_chrome(hwnd, |s| s.html_tabs_opts = Some(json));
-        }
-    }
-    // --- end tab options ---
-    let inputs = App::tab_group_inputs(&app);
-    let preferences = App::tab_group_preferences(&app);
-    let tab_states: Vec<HtmlTabSnapshot> = snapshot
-        .into_iter()
-        .map(|(id, title, loading, marker)| {
-            (
-                id,
-                title,
-                loading,
-                marker,
-                App::tab_pinned(&app, id),
-                App::tab_muted(&app, id),
-                App::tab_private(&app, id),
-            )
-        })
-        .collect();
-    let favicon_keys: Vec<(TabId, Option<FaviconKey>)> = ids
-        .iter()
-        .map(|&id| (id, App::tab_favicon_key(&app, id)))
-        .collect();
+    let workspace_icon = format!("{glyph}|{}|{workspaces_on}", emoji.unwrap_or(""));
     let current_inputs = HtmlTabsInputs {
         mode,
         workspace: (workspace_name, workspace_icon),
         active,
-        snapshot: tab_states,
+        snapshot,
         group_inputs: inputs,
         group_preferences: preferences,
         favicons: favicon_keys,
-        generation: with_chrome(hwnd, |s| s.html_state_generation[1]).unwrap_or(0),
-        extras: strip_extras,
-        options: strip_options,
+        generation,
+        extras: App::tab_strip_extras(&app, &ids),
+        options: html_strip_options(hwnd, &app),
     };
-    let is_unchanged = with_chrome(hwnd, |s| {
-        s.html_tabs_last.is_some()
-            && s.html_tabs_synced_inputs.as_ref() == Some(&current_inputs)
-            && s.html_favicons_sent.len() == s.html_favicons.iter().filter(|(_, f)| f.png.is_some()).count()
-    })
-    .unwrap_or(false);
-    if is_unchanged {
+    let Some((layout_pending, workspace_pending, options_pending, rows_pending)) = with_chrome(hwnd, |s| {
+        (
+            chrome_host::protocol::layout_needs_sync(s.html_tabs_layout, mode),
+            s.html_tabs_workspace.as_ref() != Some(&current_inputs.workspace),
+            s.html_tabs_opts.as_ref() != Some(&current_inputs.options),
+            s.html_tabs_last.is_none()
+                || s.html_tabs_synced_inputs.as_ref() != Some(&current_inputs)
+                || s.html_favicons.iter().any(|(id, favicon)| {
+                    favicon.png.is_some() && s.html_favicons_sent.get(id) != Some(&favicon.key)
+                }),
+        )
+    }) else {
+        return;
+    };
+    if layout_pending && host.post_json(&chrome_host::protocol::layout_json(mode)).is_ok() {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[1] == generation {
+                s.html_tabs_layout = Some(mode);
+            }
+        });
+    }
+    if workspace_pending
+        && let Some(json) = chrome_host::protocol::workspace_json_with(
+            &current_inputs.workspace.0, &glyph, emoji, workspaces_on,
+        )
+        && host.post_json(&json).is_ok()
+    {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[1] == generation {
+                s.html_tabs_workspace = Some(current_inputs.workspace.clone());
+            }
+        });
+    }
+    if options_pending && host.post_json(&chrome_host::protocol::tabopts_json(&current_inputs.options)).is_ok() {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[1] == generation {
+                s.html_tabs_opts = Some(current_inputs.options.clone());
+            }
+        });
+    }
+    if !rows_pending {
         return;
     }
     let inputs = &current_inputs.group_inputs;
@@ -11712,8 +11652,8 @@ fn html_tabs_sync(hwnd: HWND) {
     // Closed tabs' addresses go too (the strip shows one workspace, so every open tab is kept).
     let open: HashSet<TabId> = App::all_tab_ids(&app).into_iter().collect();
     let _ = with_chrome(hwnd, |s| forget_closed_tab_urls(s, &open));
-    // The pinned, muted and private flags were read once for the comparison above; App finds each
-    // tab by a scan, so reading them again per row would scan every tab for every tab once more.
+    let extras_by_id: HashMap<_, _> = current_inputs.extras.iter().map(|extra| (extra.id, extra)).collect();
+    let now = Instant::now();
     let rows: Vec<chrome_host::TabRow> = current_inputs
         .snapshot
         .iter()
@@ -11731,7 +11671,7 @@ fn html_tabs_sync(hwnd: HWND) {
                 .flatten()
                 .map(|key| chrome_host::row_group(&key, preferences)),
             has_favicon: with_png.contains(&id),
-            marks: html_tab_marks(&current_inputs.extras, id),
+            marks: html_tab_marks(extras_by_id.get(&id).copied(), now),
         })
         .collect();
     let items = chrome_host::tab_items(&rows);
@@ -11753,7 +11693,10 @@ fn html_tabs_sync(hwnd: HWND) {
             ))
         })
         .collect();
-    let (send_json, sends, generation) = with_chrome(hwnd, |s| {
+    let Some((send_json, sends)) = with_chrome(hwnd, |s| {
+        if s.html_state_generation[1] != generation {
+            return None;
+        }
         s.html_tabs_groups = groups;
         let send_json = s.html_tabs_last.as_deref() != Some(json.as_str());
         let mut sends = Vec::new();
@@ -11765,9 +11708,10 @@ fn html_tabs_sync(hwnd: HWND) {
                 sends.push((*id, favicon.key, png.clone()));
             }
         }
-        (send_json, sends, s.html_state_generation[1])
-    })
-    .unwrap_or_default();
+        Some((send_json, sends))
+    }).flatten() else {
+        return;
+    };
     if !send_json || host.post_json(&json).is_ok() {
         let _ = with_chrome(hwnd, |s| {
             if s.html_state_generation[1] == generation {
@@ -12891,13 +12835,19 @@ pub(crate) fn show_pending_address(hwnd: HWND, edit: HWND, id: TabId, url: &url:
 pub(crate) fn sync_address_input(hwnd: HWND, edit: HWND, id: TabId, url: &url::Url, minimal_url: bool) -> bool {
     let shown = omnibox::address_display(url, minimal_url);
     let full = omnibox::focused_address_display(url);
-    let _ = with_chrome(hwnd, |s| s.full_urls.insert(id, full));
-    if omnibox::should_sync_displayed_url(edit_focused(hwnd)) {
-        return super::set_input_text(edit, &shown);
+    let _ = with_chrome(hwnd, |s| {
+        s.full_urls.insert(id, full);
+        s.urls.insert(id, shown.clone());
+    });
+    if !omnibox::should_sync_displayed_url(edit_focused(hwnd)) {
+        return true;
     }
-    let _ = with_chrome(hwnd, |s| s.urls.insert(id, shown));
-    mark_chrome_dirty(hwnd);
-    true
+    let previous = with_chrome(hwnd, |s| std::mem::replace(&mut s.programmatic_text_update, true));
+    let result = super::set_input_text(edit, &shown);
+    if let Some(previous) = previous {
+        let _ = with_chrome(hwnd, |s| s.programmatic_text_update = previous);
+    }
+    result
 }
 /// The text index under a client-space `x`, from the chrome's own metrics so it matches what is painted.
 fn omnibox_text_index(hwnd: HWND, text: &str, client_x: i32) -> usize {
@@ -13270,9 +13220,11 @@ unsafe extern "system" fn edit_subclass(
             return result;
         }
         if msg == windows::Win32::UI::WindowsAndMessaging::WM_SETTEXT {
-            let _ = with_chrome(main, |s| s.programmatic_text_update = true);
+            let previous = with_chrome(main, |s| std::mem::replace(&mut s.programmatic_text_update, true));
             let result = DefSubclassProc(hwnd, msg, w, l);
-            let _ = with_chrome(main, |s| s.programmatic_text_update = false);
+            if let Some(previous) = previous {
+                let _ = with_chrome(main, |s| s.programmatic_text_update = previous);
+            }
             let text = read_edit(hwnd);
             let display = url::Url::parse(&text)
                 .ok()
@@ -13289,7 +13241,9 @@ unsafe extern "system" fn edit_subclass(
                 s.edit_text.clone_from(&display);
             });
             invalidate_omni(main);
-            mark_chrome_dirty(main);
+            if previous != Some(true) {
+                mark_chrome_dirty(main);
+            }
             return result;
         }
         if msg == WM_SETFOCUS {
@@ -13540,7 +13494,7 @@ mod tests {
             APP_MENU_PROBE_TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
             crate::engine::app_context_menu_probe::reload::RELOAD_TIMER,
-            WM_IDLE_TRIM_TIMER, WM_CARET_BLINK_TIMER, WM_ANIMATION_TIMER, WM_SESSION_SAVE_TIMER,
+            WM_BACKGROUND_MAINTENANCE_TIMER, WM_CARET_BLINK_TIMER, WM_ANIMATION_TIMER, WM_SESSION_SAVE_TIMER,
             super::super::WM_PRIVACY_STATS_TIMER, WM_PROGRESS_TIMER, WM_SPLIT_BOUNDS_TIMER,
             super::super::WM_POWER_TIMER, super::super::WM_IMPORT_OFFER_TIMER,
             super::super::WM_READER_PROBE_TIMER, super::super::WM_TRANSLATE_WATCH_TIMER,
@@ -13803,14 +13757,6 @@ mod tests {
     }
 
     #[test]
-    fn native_strip_repaints_unless_both_html_views_are_live() {
-        assert!(native_strip_pixels_change(false, false));
-        assert!(native_strip_pixels_change(true, false));
-        assert!(native_strip_pixels_change(false, true));
-        assert!(!native_strip_pixels_change(true, true));
-    }
-
-    #[test]
     fn native_favicons_are_wanted_only_without_a_live_html_tab_strip() {
         assert!(native_favicon_wanted(false));
         assert!(!native_favicon_wanted(true));
@@ -13853,6 +13799,9 @@ mod tests {
                 id: TabId(id),
                 title: String::new(),
                 loading: false,
+                pinned: false,
+                muted: false,
+                private: false,
                 favicon_key: None,
                 favicon: None,
                 marker: None,

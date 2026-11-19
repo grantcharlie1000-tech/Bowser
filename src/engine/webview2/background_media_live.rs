@@ -189,7 +189,7 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         engine.suspend_hidden_tabs(policy.suspend_after.as_millis() as u64).unwrap();
         assert!(pump(15, || {
             let state = engine.core.borrow();
-            state.suspended.contains(&idle) && state.suspend_checks.get(&media).is_none_or(|pending| !pending.get())
+            state.suspended.contains(&idle) && state.suspend_checks.get(&media).is_none_or(|pending| pending.completed_at.get().is_some())
         }), "sweep must finish the media check and confirm the silent control suspended");
         // Check native state before any script can wake a view, then prove continued
         // progression after the completed sweep (not just playback before it ran).

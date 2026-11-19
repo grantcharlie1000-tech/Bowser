@@ -4,7 +4,7 @@
 //! This is not a validating parser. It finds value boundaries in well-formed JSON and returns
 //! `None` on anything it cannot follow, so a caller can always fall back to "leave it alone".
 
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 /// Containers nested deeper than this are treated as malformed.
 const MAX_DEPTH: usize = 1024;
@@ -167,50 +167,69 @@ fn hex4(chars: &mut std::str::Chars<'_>) -> Option<u32> {
 
 /// Decodes a raw JSON string value (quotes included). A lone surrogate becomes U+FFFD.
 pub(crate) fn string_value(raw: &str) -> Option<String> {
+    string_value_limited(raw, usize::MAX).map(Cow::into_owned)
+}
+
+pub(crate) fn string_value_limited(raw: &str, limit: usize) -> Option<Cow<'_, str>> {
     let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
     if !inner.contains('\\') {
-        return Some(inner.to_owned());
+        return (inner.len() <= limit).then_some(Cow::Borrowed(inner));
     }
-    let mut out = String::with_capacity(inner.len());
+    if inner.len() > limit.saturating_mul(6) {
+        return None;
+    }
+    let mut out = String::with_capacity(inner.len().min(limit));
     let mut chars = inner.chars();
     while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        let decoded = match chars.next()? {
-            '"' => '"',
-            '\\' => '\\',
-            '/' => '/',
-            'b' => '\u{8}',
-            'f' => '\u{c}',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            'u' => {
-                let unit = hex4(&mut chars)?;
-                let paired = (0xD800..0xDC00).contains(&unit).then(|| {
-                    let mut ahead = chars.clone();
-                    let low = (ahead.next() == Some('\\') && ahead.next() == Some('u'))
-                        .then(|| hex4(&mut ahead))
-                        .flatten()
-                        .filter(|low| (0xDC00..0xE000).contains(low))?;
-                    chars = ahead;
-                    char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))
-                });
-                match paired {
-                    Some(pair) => pair.unwrap_or('\u{FFFD}'),
-                    None => char::from_u32(unit).unwrap_or('\u{FFFD}'),
+        let decoded = if ch != '\\' {
+            ch
+        } else {
+            match chars.next()? {
+                '"' => '"',
+                '\\' => '\\',
+                '/' => '/',
+                'b' => '\u{8}',
+                'f' => '\u{c}',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'u' => {
+                    let unit = hex4(&mut chars)?;
+                    let paired = (0xD800..0xDC00).contains(&unit).then(|| {
+                        let mut ahead = chars.clone();
+                        let low = (ahead.next() == Some('\\') && ahead.next() == Some('u'))
+                            .then(|| hex4(&mut ahead))
+                            .flatten()
+                            .filter(|low| (0xDC00..0xE000).contains(low))?;
+                        chars = ahead;
+                        char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))
+                    });
+                    match paired {
+                        Some(pair) => pair.unwrap_or('\u{FFFD}'),
+                        None => char::from_u32(unit).unwrap_or('\u{FFFD}'),
+                    }
                 }
+                _ => return None,
             }
-            _ => return None,
         };
+        if decoded.len_utf8() > limit - out.len() {
+            return None;
+        }
         out.push(decoded);
     }
-    Some(out)
+    Some(Cow::Owned(out))
 }
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_DECODE: [u8; 256] = {
+    let mut values = [u8::MAX; 256];
+    let mut index = 0;
+    while index < BASE64.len() {
+        values[BASE64[index] as usize] = index as u8;
+        index += 1;
+    }
+    values
+};
 
 /// Standard base64 (RFC 4648 section 4) with `=` padding.
 pub(crate) fn base64_encode(bytes: &[u8]) -> String {
@@ -232,25 +251,37 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
 
 /// Decodes standard padded base64; `None` on any other character or a bad length.
 pub(crate) fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    base64_decode_limited(text, usize::MAX)
+}
+
+pub(crate) fn base64_decode_limited(text: &str, limit: usize) -> Option<Vec<u8>> {
     let bytes = text.as_bytes();
     if bytes.len() % 4 != 0 {
         return None;
     }
-    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    for (index, chunk) in bytes.chunks(4).enumerate() {
-        let last = index + 1 == bytes.len() / 4;
-        let padding = chunk.iter().rev().take_while(|&&b| b == b'=').count();
-        if padding > 2 || (padding > 0 && !last) {
-            return None;
-        }
+    let padding = if bytes.ends_with(b"==") {
+        2
+    } else {
+        usize::from(bytes.ends_with(b"="))
+    };
+    let size = bytes.len() / 4 * 3 - padding;
+    if size > limit {
+        return None;
+    }
+    let mut out = Vec::with_capacity(size);
+    // Padding is allowed only at the end. Every other byte must be in the RFC 4648 alphabet.
+    for chunk in bytes[..bytes.len() - padding].chunks(4) {
         let mut n = 0u32;
-        for &byte in &chunk[..4 - padding] {
-            let value = BASE64.iter().position(|&c| c == byte)? as u32;
-            n = (n << 6) | value;
+        for &byte in chunk {
+            let value = BASE64_DECODE[usize::from(byte)];
+            if value == u8::MAX {
+                return None;
+            }
+            n = (n << 6) | u32::from(value);
         }
-        n <<= 6 * padding as u32;
+        n <<= 6 * (4 - chunk.len());
         let decoded = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        out.extend_from_slice(&decoded[..3 - padding]);
+        out.extend_from_slice(&decoded[..chunk.len() - 1]);
     }
     Some(out)
 }
@@ -312,6 +343,19 @@ mod tests {
         assert_eq!(string_value(r#""\ud83dx""#).as_deref(), Some("\u{FFFD}x"));
         assert_eq!(string_value(r#""\q""#), None);
         assert_eq!(string_value("unquoted"), None);
+    }
+
+    #[test]
+    fn decoded_limits_count_bytes_and_padding() {
+        assert_eq!(string_value_limited(r#""\u00e9""#, 2).as_deref(), Some("é"));
+        assert_eq!(string_value_limited(r#""\u00e9""#, 1), None);
+        assert_eq!(string_value_limited(r#""é""#, 1), None);
+        assert_eq!(
+            base64_decode_limited("Zg==", 1).as_deref(),
+            Some(b"f".as_slice())
+        );
+        assert_eq!(base64_decode_limited("Zm8=", 1), None);
+        assert_eq!(base64_decode_limited("Zm9v", 2), None);
     }
 
     #[test]

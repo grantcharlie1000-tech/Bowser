@@ -125,17 +125,23 @@ test('sleep script conservatively preserves blurred edits and unreadable frame s
 });
 
 test('automatic suspension protects media and revalidates async completion', () => {
-  const method = engine.slice(engine.indexOf('    fn suspend_hidden_tabs('), engine.indexOf('    fn force_background_memory_low('));
-  assert.doesNotMatch(method, /tab\.suspend\(\)/, 'no unchecked automatic TrySuspend path');
-  assert.match(method, /webview_audio_blocks_sleep\(&webview\)/);
-  assert.match(method, /self\.check_sleep_blocked\(id,[\s\S]*?automatic_suspend_allowed/);
-  assert.match(method, /finish_automatic_suspend\([\s\S]*?status\.is_ok\(\) && suspended,[\s\S]*?current\(\)/);
-  assert.match(method, /completion_api\.Resume\(\)/, 'late activation/navigation cannot stay frozen');
-  const completion = method.slice(method.indexOf('TrySuspendCompletedHandler::create'));
+  const dispatch = engine.slice(engine.indexOf('    fn suspend_hidden_tabs('), engine.indexOf('    fn next_hidden_suspend('));
+  assert.match(dispatch, /for _ in 0\.\.SUSPEND_BUDGET/);
+  assert.match(dispatch, /last_suspend_check = id;\s*self\.start_suspend_attempt/);
+  const selection = engine.slice(engine.indexOf('    fn suspend_due('), engine.indexOf('    fn suspend_slot_wait('));
+  assert.match(selection, /attempt\.completed_at\.get\(\)\?/, 'only one probe in flight for a tab');
+  assert.match(selection, /attempt\.retry_for\(&document\)/);
+  const attempt = engine.slice(engine.indexOf('    fn start_suspend_attempt('), engine.indexOf('fn automatic_suspend_allowed('));
+  assert.match(attempt, /owner_downloading/);
+  assert.match(attempt, /webview_audio_blocks_sleep\(&webview\)/);
+  assert.match(attempt, /self\.check_sleep_blocked\(\s*id,[\s\S]*?automatic_suspend_allowed/);
+  assert.match(attempt, /finish_automatic_suspend\([\s\S]*?status\.is_ok\(\) && suspended,[\s\S]*?current\(\)/);
+  assert.match(attempt, /callback_api\.Resume\(\)/, 'late activation or navigation cannot stay frozen');
+  const completion = attempt.slice(attempt.indexOf('TrySuspendCompletedHandler::create'));
   assert.doesNotMatch(completion, /core\.borrow_mut\(/, 'COM reentrancy cannot panic borrowing core');
-  assert.match(completion, /completion_pending\.set\(false\)/);
+  assert.match(completion, /callback_finish\(recorded\.get\(\)\)/);
+  assert.match(attempt, /attempt\.completed_at\.set\(Some\(Instant::now\(\)\)\)/);
   assert.match(completion, /core\.try_borrow_mut\(\)/);
-  assert.match(method, /state\.suspend_checks\.contains_key\(id\)/, 'only one probe in flight');
   assert.match(engine, /fn automatic_suspend_rechecks_the_fence_after_native_audio_callbacks/);
   assert.match(engine, /fn automatic_suspend_completion_can_reenter_during_a_core_borrow/);
   assert.match(engine, /fn automatic_suspend_verdict_is_scoped_to_one_hidden_document_and_controller/);

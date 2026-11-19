@@ -761,22 +761,38 @@ fn read_history_for_update(path: &Path) -> std::io::Result<Vec<HistoryEntry>> {
 /// loading flag and persists whatever it returns.
 #[derive(Debug, Default)]
 pub struct VisitTracker {
-    /// Per tab: the address last recorded and whether its title was only the address.
-    last: std::collections::HashMap<u32, (String, bool)>,
+    last: std::collections::HashMap<u32, RecordedVisit>,
+}
+
+#[derive(Debug)]
+struct RecordedVisit {
+    url: String,
+    placeholder_title: bool,
+    completed_documents: u64,
 }
 
 impl VisitTracker {
-    /// `just_finished`: the tab was loading at the previous observation and is not now (a load,
-    /// including a reload of the same address, completed). Returns `(url, title)` to persist.
+    /// The completion count captures same-address reloads even when the UI batches away the
+    /// loading state. Returns `(url, title)` to persist.
     pub fn observe(
         &mut self,
         tab: u32,
         url: Option<&str>,
         title: &str,
         loading: bool,
-        just_finished: bool,
+        completed_documents: u64,
     ) -> Option<(String, String)> {
         if loading {
+            return None;
+        }
+        let title = title.trim();
+        let titled = !title.is_empty();
+        let previous = self.last.get(&tab);
+        if previous.is_some_and(|last| {
+            url == Some(last.url.as_str())
+                && last.completed_documents == completed_documents
+                && (!last.placeholder_title || !titled)
+        }) {
             return None;
         }
         // Only credential-free http(s) pages are history: no about:, data:, helium:, bowser: or file:.
@@ -785,13 +801,11 @@ impl VisitTracker {
             self.last.remove(&tab);
             return None;
         };
-        let title = title.trim();
-        let titled = !title.is_empty();
-        let record = match self.last.get(&tab) {
-            None => true,
-            Some((last, _)) if *last != url => true,
-            Some((_, was_placeholder)) => just_finished || (*was_placeholder && titled),
-        };
+        let record = previous.is_none_or(|last| {
+            last.url != url
+                || last.completed_documents != completed_documents
+                || (last.placeholder_title && titled)
+        });
         if !record {
             return None;
         }
@@ -799,7 +813,11 @@ impl VisitTracker {
             // Closed tabs are never reported; a bounded reset only costs one repeated visit.
             self.last.clear();
         }
-        self.last.insert(tab, (url.clone(), !titled));
+        self.last.insert(tab, RecordedVisit {
+            url: url.clone(),
+            placeholder_title: !titled,
+            completed_documents,
+        });
         let title = if titled { title.to_owned() } else { url.clone() };
         Some((url, title))
     }
@@ -1698,23 +1716,24 @@ mod tests {
     fn visit_tracker_records_a_finished_load_however_the_page_was_reached() {
         let mut visits = VisitTracker::default();
         // Still loading: nothing yet, even though the address is already known.
-        assert_eq!(visits.observe(1, Some("https://example.com/"), "", true, false), None);
+        assert_eq!(visits.observe(1, Some("https://example.com/"), "", true, 0), None);
         // A link click, with no omnibox involved, is recorded when the load finishes.
         assert_eq!(
-            visits.observe(1, Some("https://example.com/"), "Example", false, true),
+            visits.observe(1, Some("https://example.com/"), "Example", false, 1),
             Some(("https://example.com/".into(), "Example".into()))
         );
         // The same state seen again records nothing.
-        assert_eq!(visits.observe(1, Some("https://example.com/"), "Example", false, false), None);
-        // A redirect or same-document change lands on a new address.
+        assert_eq!(visits.observe(1, Some("https://example.com/"), "Example", false, 1), None);
+        // Same-document navigation lands on a new address without completing a document.
         assert_eq!(
-            visits.observe(1, Some("https://example.com/next#a"), "Next", false, true),
+            visits.observe(1, Some("https://example.com/next#a"), "Next", false, 1),
             Some(("https://example.com/next#a".into(), "Next".into()))
         );
-        // A reload of the same address is a visit again.
-        assert!(visits.observe(1, Some("https://example.com/next#a"), "Next", false, true).is_some());
+        // A fast reload counts again even when both observations show loading=false.
+        assert!(visits.observe(1, Some("https://example.com/next#a"), "Next", false, 2).is_some());
+        assert_eq!(visits.observe(1, Some("https://example.com/next#a"), "Next", false, 2), None);
         // Another tab is independent.
-        assert!(visits.observe(2, Some("https://example.com/next#a"), "Next", false, false).is_some());
+        assert!(visits.observe(2, Some("https://example.com/next#a"), "Next", false, 1).is_some());
     }
 
     #[test]
@@ -1730,28 +1749,28 @@ mod tests {
             "file:///C:/a.txt",
             "https://user:pw@example.com/",
         ] {
-            assert_eq!(visits.observe(1, Some(url), "T", false, true), None, "{url}");
+            assert_eq!(visits.observe(1, Some(url), "T", false, 1), None, "{url}");
         }
-        assert_eq!(visits.observe(1, None, "T", false, true), None);
+        assert_eq!(visits.observe(1, None, "T", false, 1), None);
         // Leaving a page for an internal one forgets it, so returning to it counts as a new visit.
-        assert!(visits.observe(3, Some("https://a.test/"), "A", false, true).is_some());
-        assert_eq!(visits.observe(3, Some("helium://settings"), "S", false, true), None);
-        assert!(visits.observe(3, Some("https://a.test/"), "A", false, false).is_some());
+        assert!(visits.observe(3, Some("https://a.test/"), "A", false, 1).is_some());
+        assert_eq!(visits.observe(3, Some("helium://settings"), "S", false, 1), None);
+        assert!(visits.observe(3, Some("https://a.test/"), "A", false, 1).is_some());
     }
 
     #[test]
     fn visit_tracker_uses_the_address_for_an_empty_title_then_upgrades_it() {
         let mut visits = VisitTracker::default();
         assert_eq!(
-            visits.observe(1, Some("https://example.com/p"), "  ", false, true),
+            visits.observe(1, Some("https://example.com/p"), "  ", false, 1),
             Some(("https://example.com/p".into(), "https://example.com/p".into()))
         );
         // The real title arrives after the load finished: recorded once more, then left alone.
         assert_eq!(
-            visits.observe(1, Some("https://example.com/p"), "Page", false, false),
+            visits.observe(1, Some("https://example.com/p"), "Page", false, 1),
             Some(("https://example.com/p".into(), "Page".into()))
         );
-        assert_eq!(visits.observe(1, Some("https://example.com/p"), "Page (2)", false, false), None);
+        assert_eq!(visits.observe(1, Some("https://example.com/p"), "Page (2)", false, 1), None);
     }
 
     #[test]

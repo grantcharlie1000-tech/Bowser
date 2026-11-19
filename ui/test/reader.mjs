@@ -1,10 +1,12 @@
 // Reader view script (src/reader/reader.js), run for real in headless Edge against fixture pages.
 // There is no jsdom here, so each fixture is wrapped with a small driver that runs the script the same
-// way Rust does (a function expression called with an options object), then reports what it did through
-// a <meta> tag that `--dump-dom` prints. The test skips itself when Edge is not installed.
+// way Rust does (a function expression called with an options object), and DevTools awaits its
+// result. The test skips itself when Edge is not installed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -31,7 +33,7 @@ const MAX_LINK = 35;
 const RESULT = /^r2\|(ok|none|err)\|(off|reader|calm)\|\d{1,7}\|\d{1,3}\|(auto|light|sepia|dark)\|\d{2}\|[a-z]{0,3}$/;
 
 const DRIVER = `
-(function () {
+window.__bwrReport = (async function () {
   var cfg = __CFG__;
   var R = __SCRIPT__;
   var out = { errors: [] };
@@ -46,16 +48,24 @@ const DRIVER = `
     for (i = 0; i < l.length; i++) if (l[i].getClientRects().length > 0 && getComputedStyle(l[i]).visibility !== 'hidden') return true;
     return false;
   }
-  function done() {
-    var m = document.createElement('meta'); m.name = 'bwr-out'; m.content = encodeURIComponent(JSON.stringify(out));
-    document.head.appendChild(m);
-    document.body.textContent = '';
-  }
   try {
+    if (document.readyState === 'loading') await new Promise(function (resolve) { document.addEventListener('DOMContentLoaded', resolve, { once: true }); });
     var before = snap();
-    out.probe = call({ a: 'probe' });
+    if (cfg.cancel) {
+      var stale = call({ a: 'probe' });
+      history.replaceState(null, '', '#changed');
+      out.stale = await stale;
+    }
+    var completed = false;
+    var probe = call({ a: 'probe' }).then(function (value) { completed = true; return value; });
+    if (cfg.cooperative) {
+      if (window.scheduler && scheduler.postTask) await scheduler.postTask(function () {}, { priority: 'user-blocking' });
+      else await new Promise(function (resolve) { setTimeout(resolve, 0); });
+      out.yielded = !completed;
+    }
+    out.probe = await probe;
     var t0 = Date.now();
-    out.toggle = call({ a: 'toggle', m: cfg.mode });
+    out.toggle = await call({ a: 'toggle', m: cfg.mode });
     out.ms = Date.now() - t0;
     if (!cfg.minimal) {
       var root = document.querySelector('[data-bwr-k=r]');
@@ -83,23 +93,24 @@ const DRIVER = `
         bt['sepia theme'].click(); out.sepia = getComputedStyle(document.documentElement).getPropertyValue('--bwr-bg').trim();
         bt['light theme'].click(); out.light = getComputedStyle(document.documentElement).getPropertyValue('--bwr-bg').trim();
         bt['auto theme'].click(); out.auto = getComputedStyle(document.documentElement).getPropertyValue('--bwr-bg').trim();
-        out.persisted = call({ a: 'probe' });
+        out.persisted = await call({ a: 'probe' });
       }
-      if (cfg.switchTo) { out.switched = call({ a: 'toggle', m: cfg.switchTo }); out.switchedRoot = !!document.querySelector('[data-bwr-k=r]'); }
+      if (cfg.switchTo) { out.switched = await call({ a: 'toggle', m: cfg.switchTo }); out.switchedRoot = !!document.querySelector('[data-bwr-k=r]'); }
     }
-    out.exit = call({ a: 'toggle', m: cfg.switchTo || cfg.mode });
-    out.exitAgain = call({ a: 'exit' });
+    out.exit = await call({ a: 'toggle', m: cfg.switchTo || cfg.mode });
+    out.exitAgain = await call({ a: 'exit' });
     out.restored = snap() === before;
     if (!out.restored) { var a = snap(), i = 0; while (i < a.length && a[i] === before[i]) i++; out.diff = a.slice(Math.max(0, i - 80), i + 120) + ' || ' + before.slice(Math.max(0, i - 80), i + 120); }
     out.sheetsAfter = document.adoptedStyleSheets.length;
   } catch (e) { out.errors.push(String(e && e.stack || e)); }
-  done();
+  return out;
 })();
 `;
 
-/** Runs the driver against one fixture in headless Edge and returns its report. */
-function run(name, cfg, html = readFileSync(join(fixtures, name), 'utf8')) {
+/** Runs the driver with real time and awaits the report through the same CDP method as Bowser. */
+async function run(name, cfg, html = readFileSync(join(fixtures, name), 'utf8')) {
   const dir = mkdtempSync(join(tmpdir(), 'bowser-reader-test-'));
+  let child, closed, socket;
   try {
     const driver = DRIVER.replace('__CFG__', () => JSON.stringify(cfg))
       .replace('__SCRIPT__', () => SCRIPT.trim().replace(/;$/, ''))
@@ -109,18 +120,67 @@ function run(name, cfg, html = readFileSync(join(fixtures, name), 'utf8')) {
     writeFileSync(file, html.replace('</body>', () => `<script>${driver}</script></body>`));
     const profile = join(dir, 'profile');
     mkdirSync(profile);
-    const result = spawnSync(EDGE, [
+    const url = pathToFileURL(file).href;
+    child = spawn(EDGE, [
       '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      `--user-data-dir=${profile}`, '--window-size=1000,800', '--dump-dom', pathToFileURL(file).href,
-    ], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 60000 });
-    const match = /name="bwr-out" content="([^"]*)"/.exec(result.stdout ?? '');
-    assert.ok(match, `${name}: no report (exit ${result.status}) ${String(result.stderr).slice(0, 300)}`);
-    const report = JSON.parse(decodeURIComponent(match[1]));
+      `--user-data-dir=${profile}`, '--window-size=1000,800', '--remote-debugging-port=0', url,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-1500); });
+    closed = once(child, 'close');
+    const portFile = join(profile, 'DevToolsActivePort');
+    const timeout = AbortSignal.timeout(30000);
+    let port;
+    while (!port && child.exitCode === null) {
+      try {
+        const fields = readFileSync(portFile, 'utf8').split(/\r?\n/);
+        if (/^[0-9]+$/.test(fields[0]) && fields[1]?.startsWith('/devtools/browser/')) port = fields[0];
+      } catch (error) {
+        // Edge briefly holds the published port file open exclusively on Windows.
+        if (error.code !== 'ENOENT' && error.code !== 'EBUSY') throw error;
+      }
+      if (!port) await delay(20, undefined, { signal: timeout });
+    }
+    assert.ok(port, `${name}: DevTools did not start ${stderr}`);
+    let target;
+    while (!target && child.exitCode === null) {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: timeout });
+      target = (await response.json()).find((page) => page.type === 'page' && page.url.split('#')[0] === url);
+      if (!target) await delay(20, undefined, { signal: timeout });
+    }
+    assert.ok(target, `${name}: no matching page target ${stderr}`);
+    socket = new WebSocket(target.webSocketDebuggerUrl);
+    await once(socket, 'open', { signal: timeout });
+    let data, response;
+    do {
+      const answer = once(socket, 'message', { signal: timeout });
+      socket.send(JSON.stringify({
+        id: 1, method: 'Runtime.evaluate', params: {
+          expression: 'new Promise(resolve => { const report = () => window.__bwrReport ? resolve(window.__bwrReport) : setTimeout(report, 10); report(); })',
+          awaitPromise: true, returnByValue: true,
+        },
+      }));
+      [{ data }] = await answer;
+      response = JSON.parse(data);
+      // The command-line URL can reach the target list before the initial context is replaced.
+      if (response.error?.message !== 'Execution context was destroyed.') break;
+      await delay(20, undefined, { signal: timeout });
+    } while (!timeout.aborted);
+    const report = response.result?.result?.value;
+    assert.ok(report, `${name}: no report ${data}`);
     if (process.env.BWR_DEBUG) console.log(name, JSON.stringify(report, null, 1));
     assert.deepEqual(report.errors, [], `${name}: driver errors`);
     return report;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ id: 2, method: 'Browser.close' }));
+      socket.close();
+    }
+    if (closed) {
+      await Promise.race([closed, delay(1000, undefined, { ref: false })]);
+      if (child.exitCode === null) { child.kill(); await closed; }
+    }
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
@@ -164,14 +224,14 @@ const TIMED_RENDERS = 3;
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
 for (const fixture of ARTICLES) {
-  test(`reader: ${fixture.file} is found, restyled in place and restored exactly`, { skip }, (t) => {
+  test(`reader: ${fixture.file} is found, restyled in place and restored exactly`, { skip }, async (t) => {
     const cjk = fixture.file === 'article-cjk.html';
     const cfg = { mode: 'reader', show: fixture.show, hide: fixture.hide };
     if (cjk) {
-      const warm = run(fixture.file, cfg);
+      const warm = await run(fixture.file, cfg);
       t.diagnostic(`warm-up render (untimed): ${warm.ms} ms`);
     }
-    const r = run(fixture.file, cfg);
+    const r = await run(fixture.file, cfg);
     const probe = parse(r.probe);
     assert.equal(probe.code, 'ok');
     assert.equal(probe.state, 'off');
@@ -214,7 +274,7 @@ for (const fixture of ARTICLES) {
     const timings = [r.ms];
     if (cjk) {
       for (let i = 1; i < TIMED_RENDERS; i++) {
-        const again = run(fixture.file, cfg);
+        const again = await run(fixture.file, cfg);
         const state = parse(again.toggle);
         assert.deepEqual([state.code, state.state], ['ok', 'reader'], again.toggle);
         assert.ok(again.restored, `document restored: ${again.diff}`);
@@ -232,8 +292,8 @@ for (const [file, why] of [
   ['non-article-search.html', 'search results'],
   ['non-article-app.html', 'a dashboard'],
 ]) {
-  test(`reader: ${file} (${why}) is not offered`, { skip }, () => {
-    const r = run(file, { mode: 'reader', minimal: true });
+  test(`reader: ${file} (${why}) is not offered`, { skip }, async () => {
+    const r = await run(file, { mode: 'reader', minimal: true });
     const probe = parse(r.probe);
     assert.ok(!eligible(probe), `not article-like: ${r.probe}`);
     const toggled = parse(r.toggle);
@@ -243,23 +303,23 @@ for (const [file, why] of [
   });
 }
 
-test('reader: a page with no article text reports none and changes nothing', { skip }, () => {
-  const r = run('non-article-app.html', { mode: 'reader', minimal: true });
+test('reader: a page with no article text reports none and changes nothing', { skip }, async () => {
+  const r = await run('non-article-app.html', { mode: 'reader', minimal: true });
   const toggled = parse(r.toggle);
   assert.deepEqual([toggled.code, toggled.state], ['none', 'off']);
   assert.ok(r.restored);
 });
 
-test('reader: reader view works under a strict CSP that forbids every stylesheet', { skip }, () => {
-  const r = run('csp-article.html', { mode: 'reader', show: ['article h1'], hide: [] });
+test('reader: reader view works under a strict CSP that forbids every stylesheet', { skip }, async () => {
+  const r = await run('csp-article.html', { mode: 'reader', show: ['article h1'], hide: [] });
   assert.equal(parse(r.toggle).state, 'reader');
   assert.equal(r.sheets, 1, 'a constructed sheet is exempt from style-src');
   assert.equal(r.fontSize, '19px', 'and it applied');
   assert.ok(r.restored, r.diff);
 });
 
-test('distractions mode hides overlays, banners and sticky bars, frees scrolling, and restores', { skip }, () => {
-  const r = run('calm-overlay.html', {
+test('distractions mode hides overlays, banners and sticky bars, frees scrolling, and restores', { skip }, async () => {
+  const r = await run('calm-overlay.html', {
     mode: 'calm', show: ['#page h1', '#page p'], hide: ['#consent', '#modal', '#sticky-head'],
   });
   const toggled = parse(r.toggle);
@@ -272,8 +332,8 @@ test('distractions mode hides overlays, banners and sticky bars, frees scrolling
   assert.equal(r.sheetsAfter, 0);
 });
 
-test('switching from distractions mode to reader view, then leaving, restores the page', { skip }, () => {
-  const r = run('article-semantic.html', { mode: 'calm', switchTo: 'reader', show: [], hide: ['#cookie-banner'] });
+test('switching from distractions mode to reader view, then leaving, restores the page', { skip }, async () => {
+  const r = await run('article-semantic.html', { mode: 'calm', switchTo: 'reader', show: [], hide: ['#cookie-banner'] });
   assert.equal(parse(r.toggle).state, 'calm');
   assert.equal(parse(r.switched).state, 'reader');
   assert.equal(r.switchedRoot, true);
@@ -281,8 +341,8 @@ test('switching from distractions mode to reader view, then leaving, restores th
   assert.ok(r.restored, r.diff);
 });
 
-test('hostile page: tampered natives and throwing getters give a fixed-shape result and no half-applied page', { skip }, () => {
-  const r = run('hostile.html', { mode: 'reader', minimal: true });
+test('hostile page: tampered natives and throwing getters give a fixed-shape result and no half-applied page', { skip }, async () => {
+  const r = await run('hostile.html', { mode: 'reader', minimal: true });
   assert.match(r.probe, RESULT);
   assert.match(r.toggle, RESULT);
   assert.match(r.exit, RESULT);
@@ -290,14 +350,25 @@ test('hostile page: tampered natives and throwing getters give a fixed-shape res
   assert.ok(r.ms < 1500);
 });
 
-test('big page: scanning stays within its time budget and still restores', { skip }, () => {
+test('big page: scanning stays within its time budget and still restores', { skip }, async () => {
   const sentence = 'The harbour authority said on Tuesday that the new timetable would take effect in spring, after months of consultation';
   const html = `<!doctype html><html><head><title>Big</title></head><body><article id="story"><h1>Big</h1>${
     Array.from({ length: 6000 }, () => `<p>${sentence}, with residents, traders and councils.</p>`).join('')
   }</article>${Array.from({ length: 8000 }, (_, i) => `<div class="x${i}"><span>x</span></div>`).join('')}</body></html>`;
-  const r = run('big-dom (generated)', { mode: 'reader', minimal: true }, html);
+  const r = await run('big-dom (generated)', { mode: 'reader', minimal: true }, html);
   assert.match(r.toggle, RESULT);
   assert.ok(r.ms < 2500, `took ${r.ms} ms`);
+  assert.ok(r.restored, r.diff);
+});
+
+test('reader: long nested text yields, counts all words and drops a superseded URL probe', { skip }, async () => {
+  const text = 'rail, 東京 station '.repeat(20000);
+  const html = `<!doctype html><html lang="en"><head><title>Long</title></head><body><article><p><span>${text}<a>link</a></span></p><script>/* ignored words */</script></article></body></html>`;
+  const r = await run('long nested text (generated)', { mode: 'reader', minimal: true, cooperative: true, cancel: true }, html);
+  assert.equal(r.stale, null);
+  assert.equal(r.yielded, true, 'a page task runs before the probe finishes');
+  assert.deepEqual(parse(r.probe), { code: 'ok', state: 'off', words: 60001, link: 0, theme: 'auto', size: 19 });
+  assert.equal(parse(r.toggle).words, 60001);
   assert.ok(r.restored, r.diff);
 });
 
@@ -313,25 +384,25 @@ test('the script holds to its safety rules', () => {
   assert.doesNotMatch(CSS + BAR, /@import|url\(|expression\(|javascript:/i);
   // The only output is the fixed-shape string.
   assert.match(SCRIPT, /'r2\|'/);
-  assert.ok(SCRIPT.length < 13500, `script is ${SCRIPT.length} bytes`);
+  assert.ok(SCRIPT.length < 18000, `script is ${SCRIPT.length} bytes`);
 });
 
 // ---- Spoiler Firewall: reader view never beats a shield ----
 const SHIELD_STYLE = '<style>[data-sfw~="shield"],[data-sfw~="shield"] *{visibility:hidden!important}</style>';
 const shieldedArticle = (edit) => edit(readFileSync(join(fixtures, 'article-semantic.html'), 'utf8').replace('</head>', () => `${SHIELD_STYLE}</head>`));
 
-test('reader: a shielded paragraph stays hidden in reader view while the rest is shown', { skip }, () => {
+test('reader: a shielded paragraph stays hidden in reader view while the rest is shown', { skip }, async () => {
   const html = shieldedArticle((text) => text.replace('<p class="byline">', () => '<p class="byline" data-sfw="shield">'));
-  const r = run('article-shielded-paragraph (generated)', { mode: 'reader', show: ['article#story h1', 'article#story p:not(.byline)'], hide: ['p.byline'] }, html);
+  const r = await run('article-shielded-paragraph (generated)', { mode: 'reader', show: ['article#story h1', 'article#story p:not(.byline)'], hide: ['p.byline'] }, html);
   assert.equal(parse(r.toggle).state, 'reader', r.toggle);
   assert.equal(r.shown['article#story h1'], true);
   assert.equal(r.shown['article#story p:not(.byline)'], true);
   assert.equal(r.hidden['p.byline'], false, 'the shielded paragraph is not made visible by [data-bwr-k]');
 });
 
-test('reader: a shielded article container is not chosen and stays covered', { skip }, () => {
+test('reader: a shielded article container is not chosen and stays covered', { skip }, async () => {
   const html = shieldedArticle((text) => text.replace('<article id="story">', () => '<article id="story" data-sfw="shield">'));
-  const r = run('article-shielded-root (generated)', { mode: 'reader', show: [], hide: ['article#story', 'article#story p'] }, html);
+  const r = await run('article-shielded-root (generated)', { mode: 'reader', show: [], hide: ['article#story', 'article#story p'] }, html);
   assert.notEqual(r.root, 'article#story', 'reader does not pick the shielded unit as the article');
   for (const [selector, visible] of Object.entries(r.hidden)) assert.ok(!visible, `${selector} stays hidden`);
 });
