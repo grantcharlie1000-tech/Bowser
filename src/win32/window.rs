@@ -12409,6 +12409,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 unfilled
             });
             let split_drop_fallback = super::split_ui::drop_fallback(hwnd);
+            // The start page is the only page region with no background of its own.
+            let start_page_clear = split_view.is_none() && super::split_ui::start_page_shown(hwnd);
             // --- end split view ---
             let progress_target = App::tab_progress_percent(app, active);
             let can_back = App::tab_can_go_back(app, active);
@@ -12596,6 +12598,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 // dock, a split, the sidebar) repaints its old and new area here, or the old frame
                 // stays on the page as a stale line.
                 let dirty = s.surface.set_page_regions(page_regions).map_or(dirty, |moved| dirty.union(moved));
+                let dirty = if s.surface.set_page_clear(start_page_clear) { dirty.union(sidebar_viewport) } else { dirty };
                 // A tab with no page shows an opaque themed surface. When that appears or goes
                 // (a page took over) the whole viewport is repainted, not just the dirty part.
                 let empty_viewport = (!active_has_controller).then_some(sidebar_viewport);

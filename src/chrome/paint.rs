@@ -181,8 +181,12 @@ pub struct ChromeSurface {
     /// A skipped label still needs a full repaint even if a later label's allocation succeeds.
     paint_error: Option<SurfaceError>,
     page_regions: Option<(Rect, Option<layout::SplitPanes>)>,
-    /// The viewport of a tab that has no page (a new tab), painted as an opaque themed surface so
-    /// it never shows the desktop through the glass. `None` while a page is on screen.
+    /// The page region is the start page, which draws no background of its own: the window's glass
+    /// shows through it like behind the tabs, so only its edge is drawn and its corners are not masked.
+    page_clear: bool,
+    /// The viewport of a tab that has no page (a new tab). It shows what the chrome shows behind the
+    /// tabs: the glass on a translucent palette, the window colour on a solid one, inside the page's
+    /// rounded edge. `None` while a page is on screen.
     empty_viewport: Option<Rect>,
     /// Auto-hide has taken the top chrome out of the window (and not brought it back): the toolbar,
     /// tab row, captions and the chrome backdrop are not painted, and the page owns the space.
@@ -319,6 +323,7 @@ impl ChromeSurface {
             last_presented: None,
             paint_error: None,
             page_regions: None,
+            page_clear: false,
             empty_viewport: None,
             auto_hidden_top: false,
             float_band_hidden: true,
@@ -413,6 +418,12 @@ impl ChromeSurface {
     pub fn set_page_regions(&mut self, content: Option<(Rect, Option<layout::SplitPanes>)>) -> Option<Rect> {
         let previous = std::mem::replace(&mut self.page_regions, content);
         page_regions_damage(previous, content)
+    }
+
+    /// Whether the single page region is the start page, which is see-through (see `page_clear`).
+    /// Returns whether that changed, so the caller repaints the viewport.
+    pub fn set_page_clear(&mut self, clear: bool) -> bool {
+        std::mem::replace(&mut self.page_clear, clear) != clear
     }
 
     // --- split view ---
@@ -848,9 +859,10 @@ impl ChromeSurface {
         }
     }
 
-    /// The window colour made opaque (the glass tint alone would let the desktop through), inside
-    /// the same rounded edge a page gets. Nothing else is drawn: an empty page stays empty. Every
-    /// colour comes from the palette, composited down to opaque so it reads the same on glass.
+    /// The same see-through surface as the chrome behind the tabs, inside the rounded edge a page
+    /// gets: nothing is filled on a translucent palette (the chrome bands are not filled either, so
+    /// the window's glass shows through both alike), and the window colour on a solid palette, where
+    /// the chrome bands take that colour too. Nothing else is drawn: an empty page stays empty.
     fn paint_new_tab_surface(&mut self, view: &ChromeView<'_>, region: Rect, dirty: Rect) {
         if region.intersect(dirty).is_empty() {
             return;
@@ -858,8 +870,9 @@ impl ChromeSurface {
         let m = view.layout.metrics;
         let palette = view.palette;
         let radius = content_corner_radius(view.content_rounded, m.px(9));
-        let base = Rgba { a: 255, ..palette.window };
-        self.round(region, radius, base, dirty);
+        if !palette.translucent {
+            self.round(region, radius, Rgba { a: 255, ..palette.window }, dirty);
+        }
         self.border(region, radius, 1.0, palette.omnibox_border, dirty);
     }
 
@@ -895,7 +908,11 @@ impl ChromeSurface {
             self.paint_split_grips(view, &panes, dirty);
             // --- end split view ---
         } else {
-            self.mask_rounded(view.palette.window, content, radius, dirty, true, true);
+            // The start page is see-through: masking its corners would tint them darker than the
+            // glass round them.
+            if !self.page_clear {
+                self.mask_rounded(view.palette.window, content, radius, dirty, true, true);
+            }
             self.border(content, radius, 1.0, colour, dirty);
         }
     }
