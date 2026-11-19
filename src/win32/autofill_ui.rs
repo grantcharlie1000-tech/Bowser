@@ -57,6 +57,8 @@ pub(crate) fn handle_page_message(hwnd: HWND, app: &AppRef, tab_id: TabId, messa
             }
         }
         LoginMessageKind::AutofillSubmitted => offer_save_form(hwnd, message),
+        // The suggestion card's click: the same action as "Use a strong password" in the fill menu.
+        LoginMessageKind::GeneratePassword => fill_generated(app, tab_id, &message.origin),
     }
 }
 
@@ -237,7 +239,11 @@ fn offer_save_login(hwnd: HWND, mut message: LoginMessage) {
             return;
         }
     }
-    if DECLINED.with(|sites| sites.borrow().contains(&origin)) || PROMPT_OPEN.with(|open| open.replace(true)) {
+    // "Not now" quiets this one account on this site for the session. Another account, or the same site after
+    // the prompt was only dismissed, is still offered: a single click-away used to silence the whole site, so a
+    // later sign-in was never offered.
+    let declined_key = format!("login:{origin}\u{1f}{}", &*username);
+    if DECLINED.with(|sites| sites.borrow().contains(&declined_key)) || PROMPT_OPEN.with(|open| open.replace(true)) {
         return;
     }
     let guard = PromptGuard;
@@ -272,8 +278,8 @@ fn offer_save_login(hwnd: HWND, mut message: LoginMessage) {
                     let _ = vault.mark_never_for_site(&origin, true);
                 }
             }
-            Some(1) | None => {
-                DECLINED.with(|sites| { sites.borrow_mut().insert(origin.clone()); });
+            Some(1) => {
+                DECLINED.with(|sites| { sites.borrow_mut().insert(declined_key.clone()); });
             }
             _ => {}
         }

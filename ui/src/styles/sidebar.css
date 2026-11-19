@@ -564,20 +564,22 @@
    private row's edge while it is picked; the ring yields only to the focus ring. */
 #app .side-tab.picked { background: var(--bw-accent-soft); }
 #app .side-tab.picked:not(:focus-visible, .dragging) { box-shadow: inset 0 0 0 1px var(--bw-accent); }
-.side-unread { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--bw-accent); }
-.side-notify {
-  flex: none;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 var(--bw-space-1);
-  border-radius: var(--bw-r-pill);
+/* The one notification, as on the tab strip (tabs.css): a dot on the favicon's corner. It rides the favicon,
+   so rows, pinned tiles and the collapsed rail all keep it. */
+.side-face > .side-unread {
+  display: block;
+  position: absolute;
+  top: -3px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   background: var(--bw-accent);
-  color: var(--bw-on-accent);
-  font-size: var(--bw-text-caption);
-  line-height: 16px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--bw-dot-ring, var(--bw-window-opaque));
+  pointer-events: none;
 }
+.side-tab.is-active .side-face > .side-unread { --bw-dot-ring: var(--bw-tab-raised); }
+.side-tab.unread-tab .side-title { color: var(--bw-text); }
 
 @media (prefers-reduced-motion: reduce) {
   .side-tab,

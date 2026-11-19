@@ -450,19 +450,18 @@ test('a plain tab keeps its plain DOM; marks add their nodes and removing them t
   assert.equal(node.root.getAttribute('aria-label'), 'Tab 7');
 
   strip.updateTab(node, item(7, { unread: true, notify: 3, rl: 30, asleep: true, idle: true }), false, '', { indicator: 'spinner', picked: true, now: 1000 });
-  assert.ok(node.root.querySelector('.unread') && node.root.querySelector('.notify') && node.root.querySelector('.rl'));
-  assert.equal(node.root.querySelector('.notify').textContent, '3');
+  assert.ok(node.root.querySelector('.ico').querySelector('.unread'), 'the one notification is a dot on the favicon');
+  assert.equal(node.root.querySelector('.notify'), null, 'there is no count pill');
+  assert.ok(node.root.querySelector('.rl'));
   assert.equal(node.root.querySelector('.rl').textContent, '30s');
-  for (const cls of ['asleep', 'idle', 'picked']) assert.equal(node.root.classList.contains(cls), true, cls);
+  for (const cls of ['asleep', 'idle', 'picked', 'unread-tab']) assert.equal(node.root.classList.contains(cls), true, cls);
   assert.equal(node.root.getAttribute('aria-label'), 'Tab 7, 3 notifications, unread, reloads in 30s');
-  const order = node.root.children.map((c) => c.className.split(' ')[0]);
-  assert.ok(order.indexOf('notify') < order.indexOf('audio') && order.indexOf('unread') < order.indexOf('audio'), 'the marks sit before the buttons');
 
   strip.updateTab(node, item(7, { notify: 120 }), false, '');
-  assert.equal(node.root.querySelector('.notify').textContent, '99+');
-  assert.equal(node.root.querySelector('.unread'), null);
+  assert.equal(node.root.querySelector('.unread'), null, 'a count alone, with nothing unread, is no notification');
+  assert.equal(node.root.querySelector('.notify'), null);
   assert.equal(node.root.querySelector('.rl'), null);
-  for (const cls of ['asleep', 'idle', 'picked']) assert.equal(node.root.classList.contains(cls), false, cls);
+  for (const cls of ['asleep', 'idle', 'picked', 'unread-tab']) assert.equal(node.root.classList.contains(cls), false, cls);
   strip.updateTab(node, item(7), false, '');
   assert.deepEqual(node.root.children.map((c) => c.className), plainChildren);
 });
@@ -674,8 +673,8 @@ test('closing by mouse holds the tab width until the pointer leaves, when asked'
 
 test('tabs with marks show them in the strip and a reload countdown ticks once a second', () => {
   deliver(tabsMsg([item(1, { pinned: true }), item(2, { notify: 3, unread: true }), item(3, { rl: 45 })], 2));
-  assert.equal(tabNode(2).querySelector('.notify').textContent, '3');
-  assert.ok(tabNode(2).querySelector('.unread'));
+  assert.equal(tabNode(2).querySelector('.notify'), null, 'no count pill');
+  assert.ok(tabNode(2).querySelector('.unread'), 'the unread dot is the one notification');
   assert.equal(tabNode(3).querySelector('.rl').textContent, '45s');
   assert.equal(intervals.size, 1, 'one timer while a tab counts down');
   deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));

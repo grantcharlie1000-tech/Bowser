@@ -892,6 +892,8 @@ pub enum LoginMessageKind {
     AutofillRequest,
     /// A form with address, contact or card fields was submitted.
     AutofillSubmitted,
+    /// The user chose the strong-password suggestion shown under an empty new-password field.
+    GeneratePassword,
 }
 
 /// Most entries an `autofill-submitted` message may carry, and most bytes in one value.
@@ -1010,6 +1012,19 @@ fn parse_login_message(json: &str, origin: String) -> Option<LoginMessage> {
                 origin,
                 username: Some(SecretString::new(std::mem::take(&mut *username))),
                 password: Some(SecretString::new(std::mem::take(&mut *password))),
+                field: None,
+                values: Vec::new(),
+            })
+        }
+        "autofill-generate" => {
+            skip_json_space(json, &mut at);
+            expect_json_byte(json, &mut at, b'}')?;
+            skip_json_space(json, &mut at);
+            (at == json.len()).then_some(LoginMessage {
+                kind: LoginMessageKind::GeneratePassword,
+                origin,
+                username: None,
+                password: None,
                 field: None,
                 values: Vec::new(),
             })
@@ -2075,6 +2090,25 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn the_strong_password_suggestion_message_is_exact_and_origin_bound() {
+        let top = "https://signup.example.test/join";
+        let accepted = validate_login_message(r#"{"kind":"autofill-generate"}"#, top, top, true).unwrap();
+        assert_eq!(accepted.kind, LoginMessageKind::GeneratePassword);
+        assert_eq!(accepted.origin, "https://signup.example.test");
+        assert!(accepted.username.is_none() && accepted.password.is_none() && accepted.field.is_none());
+        for refused in [
+            r#"{"kind":"autofill-generate","extra":1}"#,
+            r#"{"kind":"autofill-generate","pass":"p"}"#,
+            r#"{"kind":"autofill-generate"} x"#,
+            r#"{"kind":"autofill-generate""#,
+        ] {
+            assert!(validate_login_message(refused, top, top, true).is_none(), "{refused}");
+        }
+        assert!(validate_login_message(r#"{"kind":"autofill-generate"}"#, "https://evil.example.test/", top, true).is_none());
+        assert!(validate_login_message(r#"{"kind":"autofill-generate"}"#, top, top, false).is_none());
     }
 
     #[cfg(windows)]
