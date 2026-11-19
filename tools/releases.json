@@ -1,5 +1,33 @@
 [
  {
+  "tag": "v0.0.38",
+  "date": "2026-11-19",
+  "prs": [
+   [
+    174,
+    "Pin Stable to v0.0.37"
+   ],
+   [
+    170,
+    "Downloads: let the user review files SmartScreen holds at 100%"
+   ],
+   [
+    175,
+    "Startup without the native chrome; in-page import, real default-browser button, pushing sidebar"
+   ],
+   [
+    176,
+    "Keep default-browser setup available when registration is stale"
+   ],
+   [
+    177,
+    "Bump Bowser to 0.0.38"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from cce11fa36fd533b4b3f08fdc59ed991b5606ff2f. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.37",
   "date": "2026-11-18",
   "prs": [
