@@ -19,10 +19,9 @@ export const PANEL_ITEMS = ['feeds'] as const;
 export const FIXED_ITEMS: Readonly<Record<BarId, readonly string[]>> = { address: ADDRESS_ITEMS, tabs: TAB_ITEMS, panel: PANEL_ITEMS };
 export const DEFAULTS: Readonly<Record<BarId, readonly string[]>> = { address: DEFAULT_ADDRESS, tabs: TAB_ITEMS, panel: [] };
 
-/** Most items in a bar, most command buttons in a bar, and most buttons sharing the end of the address bar with the menu. */
-export const MAX_ITEMS = 14;
-export const MAX_COMMAND_ITEMS = 4;
-export const MAX_RIGHT_STATIC = 5;
+/** Most items in a bar (Rust `MAX_ITEMS`, the wire's two-digit place). Command buttons and the end of the
+ *  address bar have no smaller cap: the address field and the tabs make room for them. */
+export const MAX_ITEMS = 99;
 /** CSS px one always-there button at the end of the address bar takes (a 28 px button, edge to edge). */
 export const SLOT_PX = 28;
 
@@ -56,8 +55,7 @@ export function rightStatic(items: readonly string[]): number {
 export function validItems(bar: BarId, items: readonly string[]): boolean {
   if (items.length > MAX_ITEMS || new Set(items).size !== items.length) return false;
   if (!items.every((id) => FIXED_ITEMS[bar].includes(id) || isCommandItem(id))) return false;
-  if (items.filter(isCommandItem).length > MAX_COMMAND_ITEMS) return false;
-  return bar !== 'address' || rightStatic(items) <= MAX_RIGHT_STATIC;
+  return true;
 }
 
 /** The list as the comma text that is saved. */
@@ -76,13 +74,9 @@ export function addable(bar: BarId, items: readonly string[]): string[] {
 }
 
 /** Why `id` cannot be added to `items` right now, or `null`. */
-export function whyNotAdd(bar: BarId, items: readonly string[], id: string): string | null {
+export function whyNotAdd(_bar: BarId, items: readonly string[], id: string): string | null {
   if (items.includes(id)) return 'It is already on this bar.';
   if (items.length >= MAX_ITEMS) return `A bar holds at most ${MAX_ITEMS} buttons.`;
-  if (isCommandItem(id) && items.filter(isCommandItem).length >= MAX_COMMAND_ITEMS) return `A bar holds at most ${MAX_COMMAND_ITEMS} command buttons.`;
-  if (bar === 'address' && zoneOf(id) === 'right' && id !== 'downloads' && id !== 'extensions' && rightStatic(items) >= MAX_RIGHT_STATIC) {
-    return `The end of the address bar holds at most ${MAX_RIGHT_STATIC} buttons.`;
-  }
   return null;
 }
 

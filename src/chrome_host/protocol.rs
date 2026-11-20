@@ -107,6 +107,11 @@ pub struct BarItems {
     pub feeds: u32,
 }
 
+/// Longest address-bar list sent with the toolbar state (`ui/src/protocol.ts` checks the same).
+pub const MAX_BAR_ITEMS_CHARS: usize = MAX_TEXT_CHARS;
+/// Most CSS px the always-there buttons may take: one 28 px slot per item a bar can hold.
+pub const MAX_BAR_EXTRA: u32 = (crate::toolbar_prefs::MAX_ITEMS as u32) * 28;
+
 /// Longest item id and button name accepted or sent.
 pub const MAX_TOOL_ITEM_CHARS: usize = 64;
 pub const MAX_TOOL_LABEL_CHARS: usize = 60;
@@ -123,7 +128,7 @@ pub fn glyph_ok(glyph: &str) -> bool {
 /// `[{"k":item,"l":label,"i":index,"g":glyph?},...]`.
 fn tools_json(tools: &[ToolButton]) -> String {
     let mut out = String::from("[");
-    for (index, tool) in tools.iter().take(crate::toolbar_prefs::MAX_COMMAND_ITEMS).enumerate() {
+    for (index, tool) in tools.iter().take(crate::toolbar_prefs::MAX_ITEMS).enumerate() {
         if index > 0 {
             out.push(',');
         }
@@ -1813,10 +1818,10 @@ impl ViewState {
         // --- toolbars and feeds (thread T13) ---
         if let Some(items) = &self.bar.items {
             out.push_str(",\"items\":");
-            out.push_str(&json_string(truncate_utf16(items, 512)));
+            out.push_str(&json_string(truncate_utf16(items, MAX_BAR_ITEMS_CHARS)));
             out.push_str(",\"tools\":");
             out.push_str(&tools_json(&self.bar.tools));
-            out.push_str(&format!(",\"extra\":{},\"feeds\":{}", self.bar.extra.min(400), self.bar.feeds.min(9)));
+            out.push_str(&format!(",\"extra\":{},\"feeds\":{}", self.bar.extra.min(MAX_BAR_EXTRA), self.bar.feeds.min(9)));
         }
         // --- end toolbars and feeds ---
         out.push_str(",\"theme\":{");
@@ -2021,7 +2026,7 @@ pub fn tabopts_json(options: &StripOptions) -> String {
         // --- toolbars and feeds (thread T13) ---
         out.bool("closedButton", options.closed_button);
         out.array("tools", |list| {
-            for tool in options.tools.iter().take(crate::toolbar_prefs::MAX_COMMAND_ITEMS) {
+            for tool in options.tools.iter().take(crate::toolbar_prefs::MAX_ITEMS) {
                 list.object(|o| {
                     o.string("k", truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS));
                     o.string("l", truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS));
@@ -5423,6 +5428,8 @@ mod toolbar_wire_tests {
     fn a_tool_command_names_its_bar_item_and_place_and_nothing_else() {
         let ok = parse_command(r#"{"v":1,"t":"tool","b":"address","k":"cmd:new-tab","i":2}"#).unwrap();
         assert_eq!(ok, Command::Tool { bar: ToolBar::Address, item: "cmd:new-tab".into(), index: 2 });
+        let far = parse_command(r#"{"v":1,"t":"tool","b":"address","k":"cmd:new-tab","i":98}"#).unwrap();
+        assert_eq!(far, Command::Tool { bar: ToolBar::Address, item: "cmd:new-tab".into(), index: 98 }, "a long bar's last button");
         let tabs = parse_command(r#"{"v":1,"t":"tool","b":"tabs","k":"chain:3","i":0}"#).unwrap();
         assert_eq!(tabs, Command::Tool { bar: ToolBar::Tabs, item: "chain:3".into(), index: 0 });
         for bad in [
@@ -5430,7 +5437,7 @@ mod toolbar_wire_tests {
             r#"{"v":1,"t":"tool","b":"address","k":"Cmd:A","i":0}"#,
             r#"{"v":1,"t":"tool","b":"address","k":"","i":0}"#,
             r#"{"v":1,"t":"tool","b":"address","k":"a b","i":0}"#,
-            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":14}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":99}"#,
             r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":-1}"#,
             r#"{"v":1,"t":"tool","b":"address","k":"cmd:a"}"#,
             r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":0,"x":1}"#,
@@ -5467,12 +5474,12 @@ mod toolbar_wire_tests {
 
     #[test]
     fn the_panel_bars_extra_buttons_are_rail_keys_of_their_own() {
-        for n in [0u8, 1, 13] {
+        for n in [0u8, 1, 13, 98] {
             let key = RailKeyWire::Tool(n);
             assert_eq!(key.to_wire(), format!("tool:{n}"));
             assert_eq!(RailKeyWire::parse(&key.to_wire()), Some(key));
         }
-        for bad in ["tool:", "tool:14", "tool:01", "tool:-1", "tool:x", "tool:100", "tools:1"] {
+        for bad in ["tool:", "tool:99", "tool:01", "tool:-1", "tool:x", "tool:100", "tools:1"] {
             assert_eq!(RailKeyWire::parse(bad), None, "{bad}");
         }
         // A tool can be clicked but never dragged: a rail move names only workspaces and apps.

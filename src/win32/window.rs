@@ -10114,6 +10114,25 @@ fn html_sync(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
+    // --- toolbars and feeds (thread T13) --- the address bar's list decides how much room its end needs
+    // (`Arrangement::bar_room`): a change there lays the chrome out again before anything is placed.
+    let bar_room = App::arrangement(&app).bar_room;
+    let relaid = with_chrome(hwnd, |s| {
+        let inputs = s.last_relayout.as_mut()?;
+        if inputs.arrangement.bar_room == bar_room {
+            return Some(false);
+        }
+        inputs.arrangement.bar_room = bar_room;
+        Some(s.relayout_sidebar(App::sidebar_width(&app)))
+    })
+    .flatten()
+    .unwrap_or(false);
+    if relaid {
+        sync_html_host_bounds(hwnd);
+        apply_sidebar_bounds(hwnd, &app);
+        repaint(hwnd);
+    }
+    // --- end toolbars and feeds ---
     let Some((_chrome_palette, dpi, layout)) = with_chrome(hwnd, |s| {
         if !(s.html_page_ready || s.html_tabs_page_ready || s.html_rail_page_ready || s.html_state_building.iter().any(|v| *v) || [&s.html, &s.html_tabs, &s.html_rail].iter().any(|host| host.as_ref().is_some_and(ChromeHost::awaiting_initial))) { return None; }
         Some((s.palette, s.dpi, s.layout))

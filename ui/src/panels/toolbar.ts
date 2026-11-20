@@ -18,7 +18,7 @@ import { sendPanel, type Inbound } from '../protocol';
 import { panelHeader, searchField, segmented } from './kit';
 import {
   BAR_KEYS, ITEM_LABELS, addItem, isCommandItem, itemIcon, itemLabel, itemsOf, moveItem, removeItem, whyNotAdd, zoneOf,
-  DEFAULTS, MAX_COMMAND_ITEMS, type BarId,
+  DEFAULTS, type BarId,
 } from '../bars-logic';
 
 /** `glyph`: the icon Rust names for the command (`toolbar_prefs::command_glyph`), when it does. */
@@ -308,8 +308,7 @@ export function startToolbarPanel(root: HTMLElement): (message: Inbound) => void
     // Commands that are off; the ones that are on sit in their group above.
     const used = items.filter(isCommandItem).length;
     commandsTitle.textContent = 'Commands';
-    commandsCount.textContent = `${used} of ${MAX_COMMAND_ITEMS} on ${bar === 'address' ? 'the bar' : 'the tab bar'}`;
-    commandsCount.classList.toggle('is-full', used >= MAX_COMMAND_ITEMS);
+    commandsCount.textContent = `${used} on ${bar === 'address' ? 'the bar' : 'the tab bar'}`;
     const offCommands = snapshot.commands.filter((command) => !items.includes(itemOf(command)));
     const shown = filter === '' ? offCommands : offCommands.filter((command) => command.label.toLocaleLowerCase().includes(filter));
     const rows = shown.map((command) => row(itemOf(command), command.chain ? `Chain: ${command.label}` : command.label, false, false));

@@ -56,7 +56,7 @@ test('each group lists the buttons that are on in bar order, then the ones that 
   assert.deepEqual(rows(right), [['cmd:history', true], ['bookmark', true], ['newtab', false], ['downloads', false], ['extensions', false]]);
   // Commands that are on sit in their group; the commands card lists the others.
   assert.deepEqual(rows(cards()[1]).map(([id]) => id), ['cmd:new-tab', 'cmd:capture-full', 'chain:2']);
-  assert.equal(cards()[1].querySelector('.tbp-count').textContent, '1 of 4 on the bar');
+  assert.equal(cards()[1].querySelector('.tbp-count').textContent, '1 on the bar');
   // A row is its glyph, its name and its switch: no line of explanation under the name.
   assert.equal(root.querySelectorAll('.tbp-text').every((text) => text.childElementCount === 1), true);
   // Only rows that are on and have a neighbour to swap with get a grip.
@@ -76,22 +76,18 @@ test('a switch sends the whole new list of its bar, and a command joins the end 
   assert.equal(toggleOf('cmd:history').getAttribute('aria-checked'), 'true');
 });
 
-test('a switch that cannot come on says why, sends nothing and stays off', () => {
-  // Four always-there buttons at the end: a fifth fits, a sixth does not.
-  receive(snap('cmd:new-tab,cmd:history,bookmark,newtab'));
-  sent.length = 0;
-  toggleOf('cmd:capture-full').click();
-  assert.equal(sent.length, 1, 'the fifth fits');
-  receive(snap('cmd:new-tab,cmd:history,cmd:capture-full,bookmark,newtab'));
+test('a bar takes as many buttons as anyone wants: the address field and the tabs make room', () => {
+  // Five always-there buttons at the end already: a sixth, and a fifth command button, still come on.
+  receive(snap('cmd:new-tab,cmd:history,cmd:capture-full,cmd:settings,bookmark,newtab'));
   sent.length = 0;
   toggleOf('chain:2').click();
-  assert.equal(sent.length, 0, 'the end of the address bar holds five always-there buttons');
-  assert.match(root.querySelector('.tbp-note').textContent, /at most 5/);
-  assert.equal(toggleOf('chain:2').getAttribute('aria-checked'), 'false');
+  assert.equal(sent.length, 1, 'no cap on the end of the address bar or on command buttons');
+  assert.equal(root.querySelector('.tbp-note').textContent, '');
+  assert.match(lastSet().text, /chain:2/);
   // Downloads and Extensions take no room until they have something to show, so they always fit.
+  sent.length = 0;
   toggleOf('downloads').click();
   assert.equal(sent.length, 1);
-  assert.equal(root.querySelector('.tbp-note').textContent, '', 'the note clears on the next change');
 });
 
 test('Alt+Up and Alt+Down move a button within its place', () => {
