@@ -437,11 +437,12 @@ mod tests {
         let tree = crate::bookmarks::BookmarkStore::load(&dir).unwrap();
         assert!(tree.is_bookmarked("https://a.example/"));
         assert!(tree.is_bookmarked("https://b.example/"), "{:?}", tree.items());
+        // The source's "Bookmarks bar" folder is Bowser's bar (the top level), not a folder on it.
         assert!(
             tree.flat_links().contains(&(
                 "B".into(),
                 "https://b.example/".into(),
-                "Bookmarks bar/Work".into()
+                "Work".into()
             )),
             "{:?}",
             tree.flat_links()

@@ -5,6 +5,7 @@ pub mod autofill; // addresses, cards and the in-page field detector for form au
 pub mod background_write; // small files replaced on a writer thread, never on the UI thread
 pub mod blocker;
 pub mod bookmark_extras;
+pub mod bookmark_icons; // site icons for bookmarks: the cache re-encoded small, and fetched when missing
 pub mod bookmarks;
 pub mod address_input;
 pub mod address_runtime;

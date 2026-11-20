@@ -51,6 +51,9 @@ impl Array<'_> {
     pub fn bool(&mut self, value: bool) { self.next(); self.out.push_str(if value { "true" } else { "false" }); }
     pub fn object(&mut self, build: impl FnOnce(&mut Object<'_>)) { self.next(); write_object(self.out, build); }
     pub fn array(&mut self, build: impl FnOnce(&mut Array<'_>)) { self.next(); write_array(self.out, build); }
+    /// An element already written by [`Json::object`] or [`Json::array`] (so its size could be
+    /// measured first). Only ever pass this writer's own output.
+    pub fn raw(&mut self, json: &str) { self.next(); self.out.push_str(json); }
 }
 
 fn comma(out: &mut String, first: &mut bool) {

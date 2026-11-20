@@ -167,6 +167,15 @@
   object-fit: contain;
 }
 
+/* A mostly dark icon (GitHub's, Rust's) on dark glass: a light backing, as for a tab's icon, so it
+   does not vanish. kit.ts measures each icon once (`.is-dark`). */
+:root[data-scheme="dark"] .pn-favicon.is-image.is-dark {
+  box-sizing: border-box;
+  padding: 1px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.88);
+}
+
 .pn-favicon {
   display: grid;
   flex: none;
@@ -344,6 +353,145 @@
 .pn-row.is-drop-into {
   background: var(--bw-accent-soft);
   box-shadow: inset 0 0 0 1px var(--bw-accent);
+}
+
+/* ---- Bookmarks panel (panels/bookmarks.ts): two roots, row menu, undo toast ---- */
+.bm-panel {
+  position: relative;
+}
+
+/* The roots ("Bookmarks bar", "Other bookmarks") read as headings of the tree. */
+.bm-row.is-root .pn-row-title {
+  font-weight: var(--bw-weight-strong);
+}
+
+.bm-row.is-root:not(:first-child) {
+  margin-top: var(--bw-space-1);
+}
+
+.bm-row .pn-favicon.is-image {
+  border-radius: 3px;
+}
+
+.bm-count {
+  margin: 0;
+  padding: var(--bw-space-1) var(--bw-space-2) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* A refused change: the reason, in the danger colour, above the list. */
+.bm-status:not(:empty) {
+  color: var(--bw-danger);
+}
+
+.bm-menu {
+  position: absolute;
+  top: var(--bm-menu-y, 0);
+  left: var(--bm-menu-x, 0);
+  z-index: 3;
+  min-width: 200px;
+  max-width: calc(100% - 8px);
+}
+
+.bm-menu .bw-menu-item {
+  min-height: 28px;
+  font-size: var(--bw-text-caption);
+}
+
+.bm-menu .bw-menu-item > svg,
+.bm-menu-gap {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.bm-menu .bw-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-menu .bw-menu-accel {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+}
+
+.bm-menu .bw-menu-item.is-danger:not(:disabled) {
+  color: var(--bw-danger);
+}
+
+/* "Deleted ... Undo": stays until the next change, as in Chrome's bookmark manager. */
+.bm-toast {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-2);
+  margin: 0 var(--bw-space-2) var(--bw-space-2);
+  padding: var(--bw-space-1) var(--bw-space-1) var(--bw-space-1) var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-tip);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.bm-toast[hidden] {
+  display: none;
+}
+
+.bm-toast-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-toast .bw-button {
+  flex: none;
+  color: var(--bw-accent);
+  font-weight: var(--bw-weight-strong);
+}
+
+/* The add / edit form: a card in the tree, at the depth of what it adds to. */
+.bm-form {
+  margin: var(--bw-space-1) 0 var(--bw-space-2) calc(var(--pn-form-depth, 0) * 16px);
+  padding: var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-fill);
+}
+
+.bm-form-title {
+  margin: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.bm-form-error {
+  margin: 0;
+  color: var(--bw-danger);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.bm-form-error[hidden] {
+  display: none;
+}
+
+@media (forced-colors: active) {
+  .bm-toast,
+  .bm-form {
+    border-color: CanvasText;
+  }
 }
 
 /* ---- Inline editor (bookmarks add/edit) ---- */
