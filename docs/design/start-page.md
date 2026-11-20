@@ -85,7 +85,7 @@ file (a value that does not parse is ignored; numbers are clamped).
 | `start_thumb_size` | 1 to 5 | tile width 96, 120, 148, 184, 232 px |
 | `start_drag_reorder` | bool | pointer and keyboard moves |
 | `homepage` | http(s) address or empty | the rail's Home button opens it in the current tab; empty keeps "new tab" |
-| `startup` | `start_page`, `last_session`, `homepage`, `specific_pages` | the first window |
+| `startup` | `last_session` (default), `homepage`, `specific_pages`; `start_page` is read as `last_session` | what opens in front of the restored tabs |
 | `startup_pages` | up to 8 http(s) addresses, space separated | `specific_pages` |
 | `start_widgets` | bool | the dashboard |
 | `start_widget_columns` | 1 to 4 | widgets per row |
@@ -94,13 +94,18 @@ file (a value that does not parse is ignored; numbers are clamped).
 | `start_widget_color` | `#rrggbb` | the `custom` fill |
 | `start_widget_drag` | bool | widget moves |
 
-Startup: `start_page` leaves the first tab blank; `homepage` and `specific_pages` navigate it (one tab per
-page, the first shown) unless the launch already has a target (a restored crash session, a command-line
-address or a benchmark URL); `last_session` restores a clean exit's tabs without the crash prompt
-(`SessionStore::open_with`). A launch that carries an address (a link opened while Bowser is closed)
-restores them too and opens the address in a new tab after them; the restored tab that was shown stays
-asleep until selected (`App::restore_pending_session`). The same holds for an accepted crash restore. An
-empty homepage or page list falls back to the start page.
+Startup: the saved tabs come back on every start whatever `startup` says (`App::init_session`), so the
+setting chooses what opens in front of them. `last_session` ("Your tabs") opens nothing more; `homepage`
+("Tabs + homepage") and `specific_pages` ("Tabs + pages") open their addresses: in the blank first tab
+when nothing was restored, otherwise each in a tab of its own, the first shown, and an address a restored
+tab already shows is shown instead of opened twice (`start_page::startup_opens`, `App::apply_startup_plan`).
+Nothing more opens when the launch already has a target: a command-line address, a benchmark URL, a further
+window reopened as it was (`--restore-window`) or a crash loop's safe restore (`App::launch_has_target`).
+A launch that carries an address (a link opened while Bowser is closed) restores the tabs and opens the
+address in a new tab after them; the restored tab that was shown stays asleep until selected
+(`App::restore_pending_session`). An empty homepage or page list opens nothing. The old `start_page`
+value (a blank start page instead of the tabs, from before tabs always came back) is read as
+`last_session` and never written.
 
 Which window's tabs are saved: the window that started first holds the profile's session. A second
 window of the profile (Ctrl+N, Move tab to new window, `--new-window`) writes neither `session.txt` nor

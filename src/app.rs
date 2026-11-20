@@ -6978,38 +6978,71 @@ impl App {
         app.borrow().settings.start.clone()
     }
 
-    /// Whether the launch already decided what the first window shows: a session to restore, an address
-    /// on the command line or a benchmark URL. Read before any of them is taken.
+    /// Whether the launch already decided what the first window shows: an address on the command
+    /// line, a benchmark URL, a further window reopened as it was left (`--restore-window`) or a crash
+    /// loop's safe restore (every tab asleep, nothing loads). Read before any of them is taken. Tabs
+    /// restored after an ordinary start do not decide: the `startup` setting opens its pages in front
+    /// of them ([`App::launch_restores`]).
     pub fn launch_has_target(app: &AppRef) -> bool {
         let state = app.borrow();
-        state.pending_restore.is_some() || state.initial_url.is_some() || state.benchmark_url.is_some()
+        state.initial_url.is_some()
+            || state.benchmark_url.is_some()
+            || state.launch_restore_window.is_some()
+            || (state.pending_restore.is_some() && state.pending_restore_safe)
+    }
+
+    /// Whether the first window is about to get saved tabs back. Read before they are restored.
+    pub fn launch_restores(app: &AppRef) -> bool {
+        app.borrow().pending_restore.as_ref().is_some_and(|session| !session.tabs.is_empty())
     }
 
     /// The `startup` setting's plan for the first window (docs/design/start-page.md): the homepage, or
-    /// the specific pages, one tab each. The start page itself needs nothing here (the first tab is
-    /// blank and shows it) and "continue where you left off" is the session restore.
-    pub fn apply_startup_plan(app: &AppRef, launch_decided: bool) {
-        use crate::start_page::StartupPlan;
+    /// the specific pages, in front of whatever tabs came back. With nothing restored the blank first
+    /// tab takes the first address; otherwise each opens in a tab of its own, except one a restored tab
+    /// already shows, which is shown instead. "Continue" (only the restored tabs) needs nothing here.
+    pub fn apply_startup_plan(app: &AppRef, launch_decided: bool, restored: bool) {
+        use crate::start_page::{StartupOpen, StartupPlan};
         let plan = crate::start_page::startup_plan(&app.borrow().settings.start, launch_decided);
-        match plan {
-            StartupPlan::ShowStartPage => {}
-            StartupPlan::Homepage(url) => Self::navigate_current(app, &url),
-            StartupPlan::Pages(urls) => {
-                let mut first = None;
-                for (index, url) in urls.iter().enumerate() {
-                    if index == 0 {
-                        Self::navigate_current(app, url);
-                        first = Some(Self::active_tab_id(app));
-                    } else {
-                        Self::new_tab(app);
-                        Self::navigate_current(app, url);
-                    }
+        let urls = match plan {
+            StartupPlan::ShowStartPage => return,
+            StartupPlan::Homepage(url) => vec![url],
+            StartupPlan::Pages(urls) => urls,
+        };
+        let open: Vec<(TabId, Option<String>)> = {
+            let state = app.borrow();
+            state
+                .tab_model
+                .iter()
+                .map(|model| (model.id, state.tabs.iter().find(|tab| tab.id == model.id).and_then(|tab| tab.url.as_ref().map(|url| url.as_str().to_owned()))))
+                .collect()
+        };
+        let blank_first = !restored && open.len() == 1 && open[0].1.is_none();
+        let addresses: Vec<Option<String>> = open.iter().map(|(_, url)| url.clone()).collect();
+        let mut ids: Vec<TabId> = open.iter().map(|(id, _)| *id).collect();
+        let mut first = None;
+        for (url, how) in urls.iter().zip(crate::start_page::startup_opens(&urls, &addresses, blank_first)) {
+            let id = match how {
+                StartupOpen::Existing(index) => match ids.get(index) {
+                    Some(id) => *id,
+                    None => continue,
+                },
+                StartupOpen::FirstTab => {
+                    let id = Self::active_tab_id(app);
+                    Self::navigate_current(app, url);
+                    id
                 }
-                // The first page stays the one shown.
-                if let Some(first) = first {
-                    let _ = Self::select_tab(app, first);
+                StartupOpen::NewTab => {
+                    let id = Self::new_tab(app);
+                    Self::navigate_current(app, url);
+                    ids.push(id);
+                    id
                 }
-            }
+            };
+            first.get_or_insert(id);
+        }
+        // The first address is the one shown.
+        if let Some(first) = first {
+            let _ = Self::select_tab(app, first);
         }
     }
     // --- end start page ---

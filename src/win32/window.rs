@@ -2700,6 +2700,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         }
         // Take the URL first so the app borrow ends before submit_url borrows it again.
         let launch_decided = App::launch_has_target(&app); // --- start page ---
+        let launch_restores = App::launch_restores(&app);
         App::restore_pending_session(&app);
         sync_split_ratio(hwnd, App::split_view(&app));
         if App::split_view(&app).is_some()
@@ -2708,7 +2709,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             App::update_split_bounds(&app, panes);
         }
         App::submit_initial_url(&app);
-        App::apply_startup_plan(&app, launch_decided); // --- start page --- homepage or specific pages
+        App::apply_startup_plan(&app, launch_decided, launch_restores); // --- start page --- homepage or specific pages, in front of restored tabs
         // A link that arrived while the window was being created opens now, after restore.
         App::release_external_urls(&app);
         // Further windows left open when Bowser last stopped come back as windows of their own.

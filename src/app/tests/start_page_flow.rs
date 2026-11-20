@@ -27,9 +27,9 @@ fn active_url(app: &AppRef) -> Option<String> {
 }
 
 #[test]
-fn the_start_page_mode_leaves_the_first_tab_blank_for_the_start_page() {
+fn continue_with_nothing_restored_leaves_the_first_tab_blank_for_the_start_page() {
     let app = app_with(StartSettings::default());
-    App::apply_startup_plan(&app, false);
+    App::apply_startup_plan(&app, false, false);
     assert_eq!(urls(&app), [None]);
     assert!(App::tab_is_blank(&app, App::active_tab_id(&app)), "a blank tab shows the start page");
 }
@@ -37,14 +37,14 @@ fn the_start_page_mode_leaves_the_first_tab_blank_for_the_start_page() {
 #[test]
 fn the_homepage_mode_opens_the_homepage_in_the_first_tab() {
     let app = app_with(StartSettings { startup: Startup::Homepage, homepage: "https://home.example/".to_owned(), ..StartSettings::default() });
-    App::apply_startup_plan(&app, false);
+    App::apply_startup_plan(&app, false, false);
     assert_eq!(urls(&app), [Some("https://home.example/".to_owned())]);
 }
 
 #[test]
 fn the_homepage_mode_without_a_homepage_shows_the_start_page() {
     let app = app_with(StartSettings { startup: Startup::Homepage, ..StartSettings::default() });
-    App::apply_startup_plan(&app, false);
+    App::apply_startup_plan(&app, false, false);
     assert_eq!(urls(&app), [None]);
 }
 
@@ -52,7 +52,7 @@ fn the_homepage_mode_without_a_homepage_shows_the_start_page() {
 fn the_specific_pages_mode_opens_one_tab_each_and_keeps_the_first_shown() {
     let pages = vec!["https://a.example/".to_owned(), "https://b.example/".to_owned(), "https://c.example/".to_owned()];
     let app = app_with(StartSettings { startup: Startup::SpecificPages, startup_pages: pages.clone(), ..StartSettings::default() });
-    App::apply_startup_plan(&app, false);
+    App::apply_startup_plan(&app, false, false);
     let mut opened: Vec<String> = urls(&app).into_iter().flatten().collect();
     assert_eq!(opened.len(), 3, "{opened:?}");
     opened.sort();
@@ -69,13 +69,13 @@ fn a_launch_that_already_has_a_target_is_left_alone() {
             startup_pages: vec!["https://a.example/".to_owned()],
             ..StartSettings::default()
         });
-        App::apply_startup_plan(&app, true);
-        assert_eq!(urls(&app), [None], "{startup:?}: a command-line address or a restored session decides");
+        App::apply_startup_plan(&app, true, false);
+        assert_eq!(urls(&app), [None], "{startup:?}: a command-line address or a safe restore decides");
     }
 }
 
 #[test]
-fn the_launch_target_is_a_restored_session_a_command_line_address_or_a_benchmark_url() {
+fn the_launch_target_is_a_command_line_address_a_benchmark_url_a_reopened_window_or_a_safe_restore() {
     let app = app_with(StartSettings::default());
     assert!(!App::launch_has_target(&app));
     app.borrow_mut().initial_url = Some(url::Url::parse("https://cli.example/").unwrap());
@@ -84,8 +84,57 @@ fn the_launch_target_is_a_restored_session_a_command_line_address_or_a_benchmark
     app.borrow_mut().benchmark_url = Some(url::Url::parse("https://bench.example/").unwrap());
     assert!(App::launch_has_target(&app));
     app.borrow_mut().benchmark_url = None;
-    app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: Vec::new(), active: 0, split: None, groups: Vec::new() });
-    assert!(App::launch_has_target(&app));
+    let tab = crate::session::SessionTab { url: "https://a.example/".into(), title: "A".into(), pinned: false, used: 0, group: None };
+    app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: vec![tab], active: 0, split: None, groups: Vec::new() });
+    assert!(!App::launch_has_target(&app), "restored tabs do not decide: the startup pages open in front of them");
+    assert!(App::launch_restores(&app));
+    app.borrow_mut().pending_restore_safe = true;
+    assert!(App::launch_has_target(&app), "a crash loop's safe restore opens nothing more");
+    app.borrow_mut().pending_restore_safe = false;
+    app.borrow_mut().launch_restore_window = Some("w1".into());
+    assert!(App::launch_has_target(&app), "a further window comes back as it was left");
+    app.borrow_mut().launch_restore_window = None;
+    app.borrow_mut().pending_restore = Some(crate::session::Session::empty());
+    assert!(!App::launch_restores(&app), "an empty saved session restores nothing");
+}
+
+/// Saved tabs and the `startup` choice: Homepage and Specific pages open in front of the tabs that
+/// came back, never in place of them, and a page already among them is shown, not opened again.
+#[test]
+fn the_homepage_and_specific_pages_open_in_front_of_restored_tabs() {
+    let restored = |app: &AppRef, list: &[&str], active: usize| {
+        let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0, group: None };
+        app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: list.iter().map(|url| tab(url)).collect(), active, split: None, groups: Vec::new() });
+        let (decided, restores) = (App::launch_has_target(app), App::launch_restores(app));
+        App::restore_pending_session(app);
+        (decided, restores)
+    };
+    let sorted = |app: &AppRef| { let mut list: Vec<String> = urls(app).into_iter().flatten().collect(); list.sort(); list };
+
+    let app = app_with(StartSettings { startup: Startup::Homepage, homepage: "https://home.example/".to_owned(), ..StartSettings::default() });
+    let (decided, restores) = restored(&app, &["https://a.example/", "https://b.example/"], 0);
+    App::apply_startup_plan(&app, decided, restores);
+    assert_eq!(sorted(&app), ["https://a.example/", "https://b.example/", "https://home.example/"], "the tabs stay and the homepage joins them");
+    assert_eq!(active_url(&app).as_deref(), Some("https://home.example/"), "the homepage is in front");
+
+    let app = app_with(StartSettings { startup: Startup::Homepage, homepage: "https://home.example/".to_owned(), ..StartSettings::default() });
+    let (decided, restores) = restored(&app, &["https://home.example/", "https://b.example/"], 1);
+    App::apply_startup_plan(&app, decided, restores);
+    assert_eq!(sorted(&app), ["https://b.example/", "https://home.example/"], "a homepage already open is not opened twice");
+    assert_eq!(active_url(&app).as_deref(), Some("https://home.example/"), "it is shown instead");
+
+    let pages = vec!["https://p.example/".to_owned(), "https://b.example/".to_owned()];
+    let app = app_with(StartSettings { startup: Startup::SpecificPages, startup_pages: pages, ..StartSettings::default() });
+    let (decided, restores) = restored(&app, &["https://a.example/", "https://b.example/"], 0);
+    App::apply_startup_plan(&app, decided, restores);
+    assert_eq!(sorted(&app), ["https://a.example/", "https://b.example/", "https://p.example/"]);
+    assert_eq!(active_url(&app).as_deref(), Some("https://p.example/"), "the first page is in front");
+
+    let app = app_with(StartSettings { startup: Startup::LastSession, homepage: "https://home.example/".to_owned(), ..StartSettings::default() });
+    let (decided, restores) = restored(&app, &["https://a.example/", "https://b.example/"], 1);
+    App::apply_startup_plan(&app, decided, restores);
+    assert_eq!(sorted(&app), ["https://a.example/", "https://b.example/"], "Continue opens nothing more");
+    assert_eq!(active_url(&app).as_deref(), Some("https://b.example/"), "the tab shown last is shown again");
 }
 
 /// "Continue where you left off" with a launch that carries an address (a link opened while Bowser
@@ -110,9 +159,10 @@ fn a_link_launch_restores_the_last_session_and_opens_the_link_beside_it() {
     assert!(app.borrow().pending_restore.is_some(), "the address does not skip the restore");
     // What the window does at startup (`win32::window::run`).
     let decided = App::launch_has_target(&app);
+    let restores = App::launch_restores(&app);
     App::restore_pending_session(&app);
     App::submit_initial_url(&app);
-    App::apply_startup_plan(&app, decided);
+    App::apply_startup_plan(&app, decided, restores);
     let mut opened: Vec<String> = urls(&app).into_iter().flatten().collect();
     opened.sort();
     assert_eq!(opened, ["https://a.example/", "https://b.example/", "https://link.example/"]);
