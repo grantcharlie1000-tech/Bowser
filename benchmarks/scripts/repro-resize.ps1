@@ -41,6 +41,9 @@ public static class RZ {
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool SystemParametersInfo(uint a, uint u, string v, uint w);
+  [DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint a, uint u, IntPtr v, uint w);
+  [DllImport("user32.dll")] public static extern bool SetSysColors(int n, int[] e, int[] c);
   // The frame's hit code at a screen point, and the class of the window a press there would reach.
   public static int Hit(IntPtr h, int x, int y) { return (int)SendMessage(h, 0x84, IntPtr.Zero, (IntPtr)((y << 16) | (x & 0xFFFF))); }
   public static string Under(int x, int y) { POINT p = new POINT(); p.X = x; p.Y = y; return Cls(WindowFromPoint(p)); }
@@ -73,6 +76,13 @@ function Note([string]$text) { $line = "{0:HH:mm:ss.fff} {1}" -f (Get-Date), $te
 
 try { Set-DisplayResolution -Width 1600 -Height 900 -Force -ErrorAction Stop; Note 'display 1600x900' } catch { Note "display unchanged: $($_.Exception.Message)" }
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+# Live resizing ("Show window contents while dragging"), as on a desktop PC: the window gets a stream of
+# WM_SIZE during the drag instead of one at the end. SPI_SETDRAGFULLWINDOWS = 0x25, SPIF_SENDCHANGE = 2.
+[RZ]::SystemParametersInfo(0x25, 1, [IntPtr]::Zero, 2) | Out-Null
+# A plain bright desktop, so the window's glass (and anything see-through) is easy to tell from a fill.
+[RZ]::SystemParametersInfo(0x14, 0, '', 3) | Out-Null   # SPI_SETDESKWALLPAPER: none
+[RZ]::SetSysColors(1, @(1), @(0x00C060E0)) | Out-Null    # COLOR_DESKTOP, BGR: a pink-violet
+Note 'drag full windows on, plain desktop'
 Note ("screen {0}x{1}" -f $screen.Width, $screen.Height)
 
 # ---- Bowser on a fresh profile with the Classic layout ----
