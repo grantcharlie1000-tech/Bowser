@@ -202,7 +202,9 @@ enum DeferredChromeCommand {
     // --- tab options --- the strip's Closed tabs button: the list of closed tabs at the point.
     ClosedTabs { x: i32, y: i32 },
     // --- end tab options ---
-    IslandMenu { id: TabId, x: i32, y: i32 },
+    /// The group editor for `id`'s island at (x, y). `edit`: opened by a command (not the ball), so
+    /// its name field takes the keyboard.
+    IslandMenu { id: TabId, x: i32, y: i32, edit: bool },
     BeginDrag,
     ToggleMaximize,
     SystemMenu,
@@ -4282,7 +4284,7 @@ unsafe extern "system" fn window_proc(
                                 .unwrap_or(false);
                                 if domain_group {
                                     if let Some(anchor) = ball_anchor(hwnd, id) {
-                                        island_menu::open_now(hwnd, app, id, anchor);
+                                        island_menu::open_now(hwnd, app, id, anchor, false);
                                     }
                                 } else {
                                     let app = app.clone();
@@ -4318,7 +4320,7 @@ unsafe extern "system" fn window_proc(
                         Hit::SidebarGroup(i) => {
                             card::cancel(hwnd);
                             if let Some((id, anchor)) = sidebar_group_ball(hwnd, i) {
-                                island_menu::open_now(hwnd, app, id, anchor);
+                                island_menu::open_now(hwnd, app, id, anchor, false);
                             }
                         }
                         Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => {
@@ -5270,7 +5272,7 @@ pub(super) fn open_stack_editor(hwnd: HWND, app: &AppRef, id: TabId) {
         .map(|ball| (ball.left + ball.width() / 2, ball.bottom))
         .or_else(|| cursor_client_point(hwnd));
     if let Some((x, y)) = anchor {
-        defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id, x, y });
+        defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id, x, y, edit: true });
     }
 }
 /// --- tab stacks (T10) --- the tab a native tab drag released now stacks onto: the one the held tab
@@ -11233,10 +11235,10 @@ fn run_deferred_html_command(hwnd: HWND) {
             show_closed_tabs_menu(hwnd, &app, x, y);
         }
         // --- end tab options ---
-        DeferredChromeCommand::IslandMenu { id, x, y } => {
+        DeferredChromeCommand::IslandMenu { id, x, y, edit } => {
             if App::tab_ids(&app).contains(&id) {
                 card::cancel(hwnd);
-                island_menu::open_now(hwnd, &app, id, Rect::new(x, y, x + 1, y + 1));
+                island_menu::open_now(hwnd, &app, id, Rect::new(x, y, x + 1, y + 1), edit);
             }
         }
         DeferredChromeCommand::BeginDrag => begin_html_drag(hwnd),
@@ -11409,7 +11411,7 @@ fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
             let Some((x, y)) = cursor_client_point(hwnd) else {
                 return;
             };
-            defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id: group.tab, x, y });
+            defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id: group.tab, x, y, edit: false });
         }
         // The handle was dragged (or moved by the keyboard): the whole island moves in front of
         // `before` (`0` = the end of the strip). An unknown `before` is ignored, like `tabmove`'s.
