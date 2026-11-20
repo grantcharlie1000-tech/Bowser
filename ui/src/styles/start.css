@@ -12,10 +12,19 @@
  * (--sp-widget-custom, set from TS through CSSOM, and --sp-widget-custom-fg, the text that reads on it).
  */
 
+/* See-through, like the chrome behind the tabs: the window's glass shows through (the host's default
+ * background is transparent, and the overlay draws only the page's edge over it). */
+/* The host's state is always `solid` (shared with the bookmarks bar and the private landing), which
+ * paints body.solid in the window colour; the start page leaves its body clear too. Without glass the
+ * window itself is that colour, so it still reads the same. */
+body:has(> #app.split-view.is-start) {
+  background: transparent;
+}
+
 #app.split-view.is-start {
   overflow-x: hidden;
   overflow-y: auto;
-  background: var(--bw-window-opaque);
+  background: transparent;
   scrollbar-width: thin;
 }
 
