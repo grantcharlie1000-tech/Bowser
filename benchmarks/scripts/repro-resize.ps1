@@ -40,6 +40,10 @@ public static class RZ {
   [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool f);
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  // The frame's hit code at a screen point, and the class of the window a press there would reach.
+  public static int Hit(IntPtr h, int x, int y) { return (int)SendMessage(h, 0x84, IntPtr.Zero, (IntPtr)((y << 16) | (x & 0xFFFF))); }
+  public static string Under(int x, int y) { POINT p = new POINT(); p.X = x; p.Y = y; return Cls(WindowFromPoint(p)); }
   public static string Cls(IntPtr h) { var s = new StringBuilder(128); GetClassName(h, s, 128); return s.ToString(); }
   public static IntPtr Find(uint pid) { IntPtr found = IntPtr.Zero; EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h) && Cls(h) == "BowserNativeWindow") { found = h; return false; } return true; }, IntPtr.Zero); return found; }
   public static void Force(IntPtr h) { IntPtr fg = GetForegroundWindow(); uint p; uint ft = GetWindowThreadProcessId(fg, out p); uint me = GetCurrentThreadId(); AttachThreadInput(me, ft, true); ShowWindow(h, 9); SetForegroundWindow(h); AttachThreadInput(me, ft, false); }
@@ -76,6 +80,13 @@ $data = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP 
 New-Item -ItemType Directory -Force $data | Out-Null
 $settings = "tab_layout=tabs-top`nbookmarks_bar=always`ncentred_address_bar=true`n"
 [IO.File]::WriteAllText((Join-Path $data 'settings.txt'), $settings, (New-Object Text.UTF8Encoding $false))
+# The first-run welcome is answered, so it never takes the new tab (profile.rs `import-offer.txt`).
+[IO.File]::WriteAllText((Join-Path $data 'import-offer.txt'), "answered`n", (New-Object Text.UTF8Encoding $false))
+# Dark apps, like the report's machine (a release build follows Windows).
+$personalize = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+New-Item -Path $personalize -Force | Out-Null
+Set-ItemProperty -Path $personalize -Name AppsUseLightTheme -Value 0 -Type DWord
+Set-ItemProperty -Path $personalize -Name SystemUsesLightTheme -Value 0 -Type DWord
 $env:BOWSER_UI = 'html'
 $env:BOWSER_PAINT_LOG = '1'
 $paintLog = Join-Path $env:TEMP 'bowser-paint.log'
@@ -93,8 +104,9 @@ function EnsureFg { for ($i = 0; $i -lt 8; $i++) { if (IsFg) { return $true }; [
 function WinRect { $r = New-Object RZ+RECT; [RZ]::GetWindowRect($h, [ref]$r) | Out-Null; return $r }
 
 $shot = 0
-function Snap([string]$name) {
+function Snap([string]$name, [switch]$Front) {
   $script:shot++
+  if ($Front) { EnsureFg | Out-Null; Start-Sleep -Milliseconds 300 }
   $r = WinRect
   $c = New-Object RZ+RECT; [RZ]::GetClientRect($h, [ref]$c) | Out-Null
   $o = New-Object RZ+POINT; [RZ]::ClientToScreen($h, [ref]$o) | Out-Null
@@ -127,9 +139,22 @@ function Glide([int]$x, [int]$y, [int]$ms = 600) {
 function DragCorner([string]$corner, [int]$dx, [int]$dy) {
   if (-not (EnsureFg)) { Note 'not in front; skipping drag'; return }
   $r = WinRect
-  $inset = 2
-  $sx = if ($corner -like '*left') { $r.L + $inset } else { $r.R - 1 - $inset }
-  $sy = if ($corner -like 'top*') { $r.T + $inset } else { $r.B - 1 - $inset }
+  # A point the frame answers with this corner's resize code (HTTOPLEFT 13, HTTOPRIGHT 14,
+  # HTBOTTOMLEFT 16, HTBOTTOMRIGHT 17) and where a press reaches Bowser's own window or a resize grip
+  # (`BowserFrameGrip`, 4 to 8 px in), never the page or a caption button.
+  $want = @{ 'top-left' = 13; 'top-right' = 14; 'bottom-left' = 16; 'bottom-right' = 17 }[$corner]
+  $found = $false
+  foreach ($iy in 0, 1, 2, 3, 5, 6, 7) {
+    foreach ($ix in 6, 5, 7, 2, 1, 0, 3) {
+      $sx = if ($corner -like '*left') { $r.L + $ix } else { $r.R - 1 - $ix }
+      $sy = if ($corner -like 'top*') { $r.T + $iy } else { $r.B - 1 - $iy }
+      $code = [RZ]::Hit($h, $sx, $sy); $under = [RZ]::Under($sx, $sy)
+      if ($code -eq $want -and ($under -eq 'BowserNativeWindow' -or $under -eq 'BowserFrameGrip')) { $found = $true; break }
+    }
+    if ($found) { break }
+  }
+  if (-not $found) { Note "no $corner resize point (last: hit $code under $under)"; return }
+  Note "grab $corner at ($sx,$sy): hit $code on $under"
   [RZ]::SetCursorPos($sx, $sy) | Out-Null
   Start-Sleep -Milliseconds 400
   [RZ]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero)
@@ -156,7 +181,7 @@ try {
   Start-Sleep -Seconds 5      # the HTML chrome comes up after the first native paint
   if (EnsureFg) { [Windows.Forms.SendKeys]::SendWait('^t'); Note 'new tab' }
   Start-Sleep -Seconds 3
-  Snap 'start'
+  Snap 'start' -Front
 
   # The report: a corner dragged in until the window is about 700 px wide.
   foreach ($case in @(
@@ -172,7 +197,7 @@ try {
   Reset
   [RZ]::MoveWindow($h, 120, 140, 700, 700, $true) | Out-Null
   Start-Sleep -Milliseconds 1500
-  Snap 'movewindow-700'
+  Snap 'movewindow-700' -Front
   Note 'finished'
 } catch {
   Note "stopped: $($_.Exception.Message)"
