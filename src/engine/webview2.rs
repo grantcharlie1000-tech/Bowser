@@ -8167,7 +8167,7 @@ mod tests {
             "create_private_controller(&environment, parent, &handler)",
             "verify_private_profile(&webview)?",
             // Always-on blocker, forced Strict tracking prevention, no stored permission allows.
-            "block_hit_private(&buffer, &site_host)",
+            "block_hit_private(&buffer, site_host)",
             "should_block_private(url.as_str(), &top_host)",
             "crate::private::tracking_level(private, state.tracking_policy.level)",
             "crate::private::permission_allowed(private, stored)",

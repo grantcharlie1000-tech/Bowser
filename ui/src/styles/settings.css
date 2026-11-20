@@ -656,6 +656,12 @@
   opacity: 0.6;
 }
 
+/* A row that tunes something switched off (the start page's dial and widget rows) leaves the page, so a
+   section reads as just its switches until one is on. A search still lists it (dimmed, above). A group
+   whose every row has left (the start page's rows under More) goes with them. */
+:where(#app.sp-root) .sp-row.is-na:not(:where(.is-searching) *) { display: none; }
+:where(#app.sp-root) .sp-group:has(.sp-row.is-na):not(:has(.sp-row:not(.is-na))):not(:where(.is-searching) *) { display: none; }
+
 @media (forced-colors: active) {
   :where(#app.sp-root) .sp-row.is-off > .sp-text > .sp-label {
     color: GrayText;

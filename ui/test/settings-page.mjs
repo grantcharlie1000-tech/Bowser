@@ -1231,7 +1231,7 @@ test('the Start page section: each control saves its own key, and a snapshot mov
   };
   assert.deepEqual(radios('startTitles').map((b) => b.textContent), ['Always', 'If no image', 'Never']);
   assert.match(radios('startTitles')[1].getAttribute('aria-label'), /without a chosen image/);
-  assert.deepEqual(radios('startGroupReopen').map((b) => b.textContent), ['Last used', 'First']);
+  assert.deepEqual(radios('startGroupReopen').map((b) => b.textContent), ['Last used', 'First group']);
   pick('startTitles', 1, 'start_titles', 'auto');
   pick('startTitles', 2, 'start_titles', 'never');
   pick('startGroupReopen', 1, 'start_group_reopen', 'first');
@@ -1322,6 +1322,9 @@ test('the Start page section: a row that cannot act rests (disabled, dimmed) unt
     const radios = node.querySelectorAll('[role="radio"]');
     const disabled = radios.length > 0 ? radios.every((b) => b.disabled) : control.disabled;
     assert.equal(node.classList.contains('is-off'), disabled, `${id}: dimmed exactly when disabled`);
+    // A dial or widget row that cannot act also leaves the page (search still shows it); the two switches never do.
+    const leaves = disabled && !['startDials', 'startWidgets'].includes(id);
+    assert.equal(node.classList.contains('is-na'), leaves, `${id}: hidden exactly when it cannot act`);
     return disabled;
   };
   const dialRows = ['startTitles', 'startThumbSize', 'startColumns', 'startAddButton', 'startGroupReopen', 'startDragReorder'];

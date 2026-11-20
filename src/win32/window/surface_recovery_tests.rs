@@ -111,8 +111,13 @@ fn recovery_presentation_switch_to_healthy_content_clears_old_fill_and_card() {
     f.paint();
     assert_eq!(unsafe { GetWindowLongPtrW(button, GWL_STYLE) } as u32 & WS_VISIBLE.0, 0);
     let viewport = split_viewport(f.hwnd).unwrap();
-    assert_eq!(pixel_alpha(f.hwnd, (viewport.left + viewport.right) / 2, (viewport.top + viewport.bottom) / 2), 255,
-        "a healthy blank tab must repaint the old card hole with its themed new-tab surface");
+    // A blank new tab is the window's glass on a translucent palette and the opaque window colour on a
+    // solid one; either way the old card's hole must be repainted to match the rest of it.
+    let centre = pixel_alpha(f.hwnd, (viewport.left + viewport.right) / 2, (viewport.top + viewport.bottom) / 2);
+    let edge = pixel_alpha(f.hwnd, viewport.left + 20, (viewport.top + viewport.bottom) / 2);
+    let solid = with_chrome(f.hwnd, |s| !s.palette.translucent).unwrap();
+    assert_eq!(edge, if solid { 255 } else { 0 }, "a healthy blank tab shows the new-tab surface");
+    assert_eq!(centre, edge, "a healthy blank tab must repaint the old card hole with its new-tab surface");
     crate::app::test_show_page(&f.app, healthy, "https://example.test/replacement-document");
     f.paint();
     assert_eq!(pixel_alpha(f.hwnd, (viewport.left + viewport.right) / 2, (viewport.top + viewport.bottom) / 2), 0,
