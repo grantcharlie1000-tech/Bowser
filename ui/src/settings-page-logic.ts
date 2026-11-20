@@ -787,16 +787,16 @@ export const AREAS: readonly AreaSpec[] = [
     group('panels', 'Panels', 'appearance', ['panelCloseButton', 'panelFolderCounts', 'panelAutoClose', 'panelReset']),
   ] },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split groups start page speed dial', parts: ['tabs', 'stacks', 'startpage'], groups: [
-    group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_active_min_width', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_title_notifications', 'tabs_unread_indicator', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
+    group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_active_min_width', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_unread_indicator', 'tabs_title_notifications', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
     group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_new_tab_in_group', 'tabs_focus_page']),
     // The start page is what "New tab page: Start" shows, so its two groups follow New tabs. The speed
     // dial rows and the widget rows are apart, each under its own switch, so a row behind More still
     // says which switch it belongs to.
     group('startPage', 'Start page', 'startpage', ['startDials', 'startThumbSize', 'startTitles', 'startColumns', 'startAddButton', 'startGroupReopen', 'startDragReorder']),
     group('startWidgets', 'Start page widgets', 'startpage', ['startWidgets', 'startWidgetColumns', 'startWidgetBg', 'startWidgetColor', 'startWidgetHeight', 'startWidgetDrag']),
-    group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']),
+    group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'tabs_workspace_scroll', 'tabs_workspace_counts', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight']),
     group('closing', 'Closing', 'tabs', ['tabs_close_related', 'tabs_close_activation', 'tabs_align_close_button', 'tabs_keep_window', 'tabs_confirm_close', 'tabs_double_click', 'tabs_close_left', 'tabs_close_always']),
-    group('pinned', 'Pinned and restored', 'tabs', ['tabs_pinned_close', 'tabs_pinned_separator', 'tabs_pinned_restrict', 'tabs_load_pinned', 'tabs_lazy_restore']),
+    group('pinned', 'Pinned and restored', 'tabs', ['tabs_pinned_close', 'tabs_pinned_separator', 'tabs_pinned_restrict', 'tabs_lazy_restore', 'tabs_load_pinned']),
     group('selecting', 'Selecting and audio', 'tabs', ['tabs_selection', 'tabs_selection_active', 'tabs_mute_mode']),
   ] },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy', lead: '', aliases: 'privacy and security', parts: ['privacy'], groups: [

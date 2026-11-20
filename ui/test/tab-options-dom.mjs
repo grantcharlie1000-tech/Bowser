@@ -296,6 +296,62 @@ test('the next snapshot is the truth: it moves every control, and the address fo
   assert.equal(rowOf('tabs_keep_window').querySelector('[role="switch"]').disabled, false);
 });
 
+test('a row that cannot act rests: disabled, dimmed and out of the page, back as soon as it can act', () => {
+  const base = settingsFixture.snap;
+  const snap = (d, tabOptions = {}) => ({ ...base, d: { ...base.d, ...d, tabOptions: { ...base.d.tabOptions, ...tabOptions } } });
+  const control = (key) => rowOf(key).querySelector('[role="switch"]') ?? rowOf(key).querySelector('input') ?? rowOf(key).querySelector('[role="radio"]');
+  const resting = (key) => {
+    const row = rowOf(key);
+    const off = control(key).disabled;
+    assert.equal(row.classList.contains('is-off'), off, `${key}: dimmed exactly when disabled`);
+    assert.equal(row.classList.contains('is-na'), off, `${key}: out of the page exactly when disabled`);
+    assert.equal(row.querySelector('.sp-flag'), null, `${key}: one line, no note`);
+    return off;
+  };
+  const stripOnly = ['tabs_scroll', 'tabs_active_min_width', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_align_close_button'];
+  deliver(base);
+  for (const key of stripOnly) assert.equal(resting(key), false, `${key} acts with tabs on top`);
+  // Tabs down the side: the tab bar's own options do nothing, so they leave; the rest stay.
+  deliver(snap({ tabLayout: 'vertical' }));
+  for (const key of stripOnly) assert.equal(resting(key), true, `${key} rests with tabs on the side`);
+  for (const key of ['tabs_close_left', 'tabs_load_indicator', 'tabs_pinned_separator', 'tabs_selection']) assert.equal(resting(key), false, key);
+  deliver(snap({ tabLayout: 'bottom' }));
+  for (const key of stripOnly) assert.equal(resting(key), false, `${key} acts with tabs along the bottom`);
+  // Switches that tune another switch rest while it is off.
+  deliver(snap({}, { tabs_unread_indicator: false, tabs_selection: false, tabs_lazy_restore: false, tabs_workspaces: false }));
+  for (const key of ['tabs_title_notifications', 'tabs_selection_active', 'tabs_load_pinned', 'tabs_workspace_scroll', 'tabs_workspace_counts']) assert.equal(resting(key), true, key);
+  const opener = page.querySelector('[data-opens="workspaceRules"]');
+  assert.ok(opener, 'the rules open from a row');
+  assert.ok(opener.classList.contains('is-na') && opener.querySelector('button').disabled, 'the rules wait while Workspaces is off');
+  assert.ok(page.querySelector('.sp-row[data-row="workspaceRules"]').querySelector('.sp-allow-input').disabled);
+  deliver(base);
+  for (const key of ['tabs_title_notifications', 'tabs_selection_active', 'tabs_load_pinned', 'tabs_workspace_scroll', 'tabs_workspace_counts']) assert.equal(resting(key), false, key);
+  assert.ok(!opener.classList.contains('is-na') && !opener.querySelector('button').disabled);
+  assert.equal(page.querySelector('.sp-row[data-row="workspaceRules"]').querySelector('.sp-allow-input').disabled, false);
+  // Focus page needs a new tab that opens a page.
+  assert.equal(resting('tabs_focus_page'), true, 'the start page has nothing to focus');
+  deliver(snap({}, { tabs_new_tab_page: 'url', tabs_new_tab_url: 'https://example.com/' }));
+  assert.equal(resting('tabs_focus_page'), false);
+  assert.equal(resting('tabs_new_tab_url'), false);
+  deliver(snap({}, { tabs_new_tab_page: 'homepage' }));
+  assert.equal(resting('tabs_focus_page'), true, 'no homepage set: a new tab shows the start page');
+  assert.equal(resting('tabs_new_tab_url'), true);
+  const homeChoice = rowOf('tabs_new_tab_page').querySelectorAll('[role="radio"]').find((r) => r.textContent === 'Homepage');
+  assert.equal(homeChoice.getAttribute('data-tip'), options.NO_HOMEPAGE_TIP, 'the choice says what it opens on hover');
+  deliver(snap({ start: { ...base.d.start, homepage: 'https://home.example/' } }, { tabs_new_tab_page: 'homepage' }));
+  assert.equal(resting('tabs_focus_page'), false);
+  assert.equal(homeChoice.getAttribute('data-tip'), null);
+  // An unreadable file greys every control but moves no row out of the page.
+  deliver(snap({ readable: false, tabLayout: 'vertical' }));
+  for (const key of stripOnly) assert.ok(!rowOf(key).classList.contains('is-na'), key);
+  deliver(base);
+});
+
+test('switches carry their full name for a screen reader; the visible label stays short', () => {
+  assert.equal(rowOf('tabs_scroll').querySelector('[role="switch"]').getAttribute('aria-label'), 'Keep tabs at a readable width and scroll the tab bar sooner');
+  assert.equal(rowOf('tabs_scroll').querySelector('.sp-label').textContent, 'Keep tabs wide');
+});
+
 // Groups have one look and one setting: no style, join, drag, delay, editor or compact-row rows.
 test('the group options are one switch; the retired stack options are not drawn', () => {
   for (const key of ['tabs_stack_style', 'tabs_stack_open_in_current', 'tabs_stack_editor', 'tabs_stack_drag', 'tabs_stack_drop_delay', 'tabs_stack_compact_row']) {

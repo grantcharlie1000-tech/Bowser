@@ -502,6 +502,13 @@ pub fn tab_may_play(mode: MuteMode, is_active: bool, active_audible: bool) -> bo
     }
 }
 
+/// Whether a restored tab loads as soon as Bowser reopens it, instead of when it is first selected.
+/// "Always load pinned tabs" only matters while restored tabs wait: with "Load restored tabs when first
+/// selected" off every tab loads at once anyway, so the settings page rests that row then.
+pub fn loads_at_restore(options: &TabOptions, pinned: bool) -> bool {
+    !options.lazy_restore || (options.load_pinned && pinned)
+}
+
 /// How closing a tab by the user's hand resolves.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CloseKind {
@@ -779,6 +786,22 @@ mod tests {
         assert!(!tab_may_play(MuteMode::Prioritise, false, true), "others wait while the active tab plays");
         assert!(tab_may_play(MuteMode::Prioritise, false, false), "others play when it is silent");
         assert!(tab_may_play(MuteMode::Prioritise, true, true));
+    }
+
+    #[test]
+    fn restored_tabs_load_at_once_only_when_lazy_restore_is_off_or_a_pinned_tab_is_asked_for() {
+        let mut options = TabOptions::default();
+        assert!(!loads_at_restore(&options, false), "they wait by default");
+        assert!(!loads_at_restore(&options, true), "pinned tabs wait too by default");
+        options.load_pinned = true;
+        assert!(loads_at_restore(&options, true));
+        assert!(!loads_at_restore(&options, false), "only pinned tabs");
+        options.lazy_restore = false;
+        options.load_pinned = false;
+        assert!(loads_at_restore(&options, false) && loads_at_restore(&options, true), "every tab loads at once");
+        options.load_pinned = true;
+        assert_eq!(loads_at_restore(&options, false), loads_at_restore(&TabOptions { load_pinned: false, ..options.clone() }, false), "load pinned changes nothing while lazy restore is off");
+        assert_eq!(loads_at_restore(&options, true), loads_at_restore(&TabOptions { load_pinned: false, ..options.clone() }, true));
     }
 
     #[test]
