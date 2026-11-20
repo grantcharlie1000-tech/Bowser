@@ -415,13 +415,16 @@ test('the hover view renders kinds, the kind mark, the keycap and one selection 
 test('the group editor: opened to edit it focuses the name; a colour picked after typing a name is not lost', async () => {
   const listeners = [];
   globalThis.window.chrome.webview.addEventListener = (type, cb) => { if (type === 'message') listeners.push(cb); };
+  let root = null;
   class Node2 extends FakeNode {
     constructor(tag) { super(tag); this.value = ''; this.parent = null; this.selected = false; }
     append(...nodes) { for (const n of nodes) if (n && typeof n === 'object') n.parent = this; super.append(...nodes); }
     get nextSibling() { const p = this.parent; if (!p) return null; return p.children[p.children.indexOf(this) + 1] ?? null; }
     remove() { const p = this.parent; if (p) p.children.splice(p.children.indexOf(this), 1); this.parent = null; }
     contains(node) { for (let n = node; n; n = n.parent) if (n === this) return true; return false; }
-    focus() { globalThis.document.activeElement = this; }
+    replaceChildren(...nodes) { for (const n of nodes) if (n && typeof n === 'object') n.parent = this; super.replaceChildren(...nodes); }
+    // As in a browser, focus() only takes on a field that is in the document.
+    focus() { for (let n = this; n; n = n.parent) if (n === root) { globalThis.document.activeElement = this; return; } }
     select() { this.selected = true; }
   }
   globalThis.Element = FakeNode;
@@ -434,7 +437,7 @@ test('the group editor: opened to edit it focuses the name; a colour picked afte
     createTextNode: (text) => ({ textContent: text }),
   };
   const { startHover } = await bundle('hover.ts');
-  const root = new Node2('div');
+  root = new Node2('div');
   startHover(root);
   const deliver = (msg) => { for (const cb of listeners) cb({ data: JSON.stringify(msg) }); };
   const island = { v: 1, t: 'hover', tok: 9, kind: 'island', name: '', hint: 'Group 1', slot: 0, swatches: ['#0090ff', '#e5484d', '#f76b15', '#ffc53d', '#30a46c', '#12a594'], rows: [{ title: 'Docs', active: false, fav: '' }], more: 0, close: 'Close Tab Island · 1 Tab' };

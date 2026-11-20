@@ -378,9 +378,6 @@ export function startHover(root: HTMLElement): void {
       const typing = island !== null && document.activeElement === island.input;
       if (!island || !typing) island = buildIsland(msg, act);
       fillIsland(island, msg, act, typing);
-      // Opened to edit ("Add tab to new group"): the name field has the keyboard as soon as Rust
-      // activates the popup, with the name selected, so typing names the group and Enter keeps it.
-      if (msg.edit === true) { island.input.focus(); island.input.select(); }
       content = island.menu;
     } else {
       island = null;
@@ -388,6 +385,10 @@ export function startHover(root: HTMLElement): void {
     }
     document.body.dataset.hoverKind = msg.kind;
     if (root.firstElementChild !== content || root.childElementCount !== 1) root.replaceChildren(content);
+    // Opened to edit ("Add tab to new group"): the name field has the keyboard as soon as Rust
+    // activates the popup, with the name selected, so typing names the group and Enter keeps it.
+    // Only once it is in the document: focus() on a detached field does nothing.
+    if (msg.kind === 'island' && msg.edit === true && island) { island.input.focus(); island.input.select(); }
     // Layout is synchronous: the popup is hidden, so no animation frame may run before Rust shows it.
     const box = content.getBoundingClientRect();
     sendPopupSize(msg.tok, Math.max(1, Math.min(4000, Math.ceil(box.width))), Math.max(1, Math.min(4000, Math.ceil(box.height))));
