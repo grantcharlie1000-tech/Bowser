@@ -21,9 +21,11 @@
 //! the toolbar row but has no tab row at all: the tabs are in the left sidebar and the viewport
 //! starts right under the toolbar.
 //!
-//! Tab overflow: tabs shrink evenly to favicon circles. The visible window onto the row shifts just
-//! enough to keep the active tab visible. The tab list button appears at the end of the tab zone
-//! once tabs overflow, so it never scrolls with the tabs.
+//! Tab overflow (the native fallback strip): tabs shrink evenly to favicon circles. The visible window
+//! onto the row shifts just enough to keep the active tab visible. The tab list button appears at the
+//! end of the tab zone once tabs overflow, so it never scrolls with the tabs. The HTML strip, used
+//! everywhere else, has no tab list button ([`Layout::without_overflow_picker`]): its tabs shrink to a
+//! favicon and the first letters of the title, then the strip scrolls sideways (`ui/src/tabs.ts`).
 
 use windows::Win32::Foundation::RECT;
 
