@@ -75,6 +75,22 @@ export function panelEdgeNote(saved: SidePanelPosition, tabLayout: TabLayout, ta
   return `Panels open on ${where}, opposite the vertical tabs. ${kept} is kept for when the tab bar is a row.`;
 }
 
+/** Whether the tab bar is a sidebar on screen: the sidebar width and its pin act only then. */
+export function sidebarShown(tabLayout: TabLayout, tabBarVisible: boolean): boolean {
+  return tabBarVisible && (tabLayout === 'vertical' || tabLayout === 'vertical-right');
+}
+
+/**
+ * Whether "Centre the address bar" can move it (src/chrome/layout.rs `compute_for_with`): only where the
+ * address field has a toolbar row of its own beside free room. Beside vertical tabs it sits in the
+ * sidebar, in "Tabs" (tabs above) and "One row" the row is already full, and with the tabs on top and
+ * the address bar along the bottom the row is laid out as "Tabs".
+ */
+export function centringApplies(tabLayout: TabLayout, tabBarVisible: boolean, addressBarPosition: BarPosition): boolean {
+  if (!tabBarVisible || tabLayout === 'bottom') return true;
+  return tabLayout === 'horizontal' && addressBarPosition === 'top';
+}
+
 /** Where the tab bar sits for a layout. */
 export function tabBarEdge(layout: TabLayout): TabBarEdge {
   switch (layout) {

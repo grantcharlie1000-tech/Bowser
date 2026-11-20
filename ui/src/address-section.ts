@@ -24,11 +24,20 @@ export interface AddressHost {
   readonly barCard: HTMLElement;
   readonly switchControl: (onChange: (on: boolean) => void) => { readonly root: HTMLElement; set(value: boolean): void; disable(off: boolean): void };
   readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
+  /** Called after each snapshot is drawn, so the page's rows that follow these options can follow them. */
+  readonly painted?: () => void;
 }
 
 export interface AddressSection {
   /** Applies an `address` snapshot. */
   receive(message: SnapshotMsg): void;
+  /** Whether "Show the full address" is on (false until the first snapshot). */
+  fullAddress(): boolean;
+  /**
+   * The bookmarks bar's own rows (folder, position, display) cannot act: `off` disables and dims them,
+   * `gone` takes them out of the page (`is-na`) while the bar is never shown. Kept across snapshots.
+   */
+  barRows(off: boolean, gone: boolean): void;
 }
 
 interface Painter { (snapshot: AddressSnapshot): void }
@@ -172,7 +181,7 @@ export function mountAddressSections(host: AddressHost): AddressSection {
   const folderHost = el('div', 'sp-select-host');
   let folderSelect: SelectField<string> | null = null;
   let folderKey = '';
-  host.row(host.barCard, 'bmBarFolder', folderHost);
+  const folderRow = host.row(host.barCard, 'bmBarFolder', folderHost).root;
   painters.push((s) => {
     const key = s.folders.map((f) => `${f.id}:${f.title}`).join('|');
     const value = String(s.folders.some((f) => f.id === s.s.bm_bar_folder) ? s.s.bm_bar_folder : 0);
@@ -188,16 +197,28 @@ export function mountAddressSections(host: AddressHost): AddressSection {
       });
       folderSelect.button.setAttribute('aria-labelledby', 'sp-l-bmBarFolder');
       folderHost.replaceChildren(folderSelect.root);
+      folderSelect.button.toggleAttribute('disabled', barOff);
     } else {
       folderSelect.set(value);
     }
   });
   const position = host.segmentedControl<BarPosition>('Bookmarks bar position', BAR_POSITIONS.map((p) => [p, p === 'top' ? 'Top' : 'Bottom'] as const), (value) => put('bm_bar_position', value));
-  host.row(host.barCard, 'bmBarPosition', position.root);
+  const positionRow = host.row(host.barCard, 'bmBarPosition', position.root).root;
   painters.push((s) => position.set(s.s.bm_bar_position));
   const display = host.segmentedControl<BarDisplay>('Bookmarks bar display', BAR_DISPLAYS.map((d) => [d, BAR_DISPLAY_LABELS[d]] as const), (value) => put('bm_bar_display', value));
-  host.row(host.barCard, 'bmBarDisplay', display.root);
+  const displayRow = host.row(host.barCard, 'bmBarDisplay', display.root).root;
   painters.push((s) => display.set(s.s.bm_bar_display));
+  let barOff = false;
+  let barGone = false;
+  const paintBarRows = (): void => {
+    folderSelect?.button.toggleAttribute('disabled', barOff);
+    position.disable(barOff);
+    display.disable(barOff);
+    for (const node of [folderRow, positionRow, displayRow]) {
+      node.classList.toggle('is-off', barOff && barGone);
+      node.classList.toggle('is-na', barGone);
+    }
+  };
 
   return {
     receive(message) {
@@ -205,7 +226,15 @@ export function mountAddressSections(host: AddressHost): AddressSection {
       if (!parsed) return;
       snapshot = parsed;
       for (const paint of painters) paint(parsed);
+      paintBarRows();
+      host.painted?.();
       // The answer to the change (Saved, or why not) comes with the settings snapshot's own toast.
+    },
+    fullAddress: () => snapshot?.s.address_show_full === true,
+    barRows(off, gone) {
+      barOff = off;
+      barGone = gone;
+      paintBarRows();
     },
   };
 }
