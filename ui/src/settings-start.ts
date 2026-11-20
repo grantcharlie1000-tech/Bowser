@@ -10,8 +10,8 @@
 import { el, icon } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
-  GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_MODES, WIDGET_BGS, WIDGET_HEIGHTS, normaliseAddress,
-  type GroupReopen, type StartSettings, type StartupMode, type TitleMode, type WidgetBg, type WidgetHeight,
+  GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_CHOICES, WIDGET_BGS, WIDGET_HEIGHTS, normaliseAddress, startupChoice,
+  type GroupReopen, type StartSettings, type StartupChoice, type StartupMode, type TitleMode, type WidgetBg, type WidgetHeight,
 } from './start-page-logic';
 import type { TabOptionValues } from './tab-options-logic';
 
@@ -39,11 +39,11 @@ export const TITLE_ARIA: Readonly<Record<TitleMode, string>> = {
 };
 /** Under the two switches while the new tab page is Blank: why the section does nothing. */
 export const START_OFF_NOTE = 'Not shown: New tab page is Blank';
-export const STARTUP_LABELS: Readonly<Record<StartupMode, string>> = {
-  start_page: 'Start page',
-  last_session: 'Continue',
-  homepage: 'Homepage',
-  specific_pages: 'Pages',
+// Tabs come back on every start, so each choice names what opens in front of them (src/start_page.rs).
+export const STARTUP_LABELS: Readonly<Record<StartupChoice, string>> = {
+  last_session: 'Your tabs',
+  homepage: 'Tabs + homepage',
+  specific_pages: 'Tabs + pages',
 };
 export const THUMB_LABELS: readonly string[] = ['Tiny', 'Small', 'Medium', 'Large', 'Huge'];
 export const HEIGHT_LABELS: Readonly<Record<WidgetHeight, string>> = { regular: 'Regular', tall: 'Tall' };
@@ -160,13 +160,14 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   host.row(home, 'startHomepage', homepage);
   const startupHost = el('div', 'sp-select-host');
   let startupSelect: SelectField<string> | null = null;
-  const paintStartup = (value: StartupMode): void => {
+  const paintStartup = (mode: StartupMode): void => {
+    const value = startupChoice(mode);
     if (startupSelect) {
       startupSelect.set(value);
       return;
     }
     startupSelect = selectField<string>({
-      options: STARTUP_MODES.map((key) => ({ value: key, label: STARTUP_LABELS[key] })),
+      options: STARTUP_CHOICES.map((key) => ({ value: key, label: STARTUP_LABELS[key] })),
       value,
       label: 'Startup',
       placeholder: 'Startup',
@@ -194,7 +195,7 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
     pages.value = list.join('\n');
     host.change((s) => { s.startupPages = list; });
   });
-  host.row(home, 'startupPages', pages, { stack: true });
+  const pagesRow = host.row(home, 'startupPages', pages, { stack: true }).root;
 
   // Widgets
   const widgets = host.card('startpage', 'Widgets');
@@ -272,7 +273,10 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       away(wcolorRow, readable && wcolor.disabled);
       homepage.disabled = !readable;
       startupSelect?.button.toggleAttribute('disabled', !readable);
+      // The page list only opens with "Tabs + pages": otherwise the row leaves the page like the others.
       pages.disabled = !readable || start.startup !== 'specific_pages';
+      rest(pagesRow, readable && pages.disabled);
+      away(pagesRow, readable && pages.disabled);
     },
   };
 }

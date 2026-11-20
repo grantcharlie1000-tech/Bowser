@@ -103,12 +103,13 @@ fn web_addresses_are_http_https_without_credentials_or_spaces() {
 #[test]
 fn startup_modes_decide_what_the_first_window_opens() {
     let mut settings = StartSettings::default();
+    assert_eq!(settings.startup, Startup::LastSession, "tabs come back on every start, so Continue is the default");
     assert_eq!(startup_plan(&settings, false), StartupPlan::ShowStartPage);
     settings.startup = Startup::Homepage;
-    assert_eq!(startup_plan(&settings, false), StartupPlan::ShowStartPage, "no homepage set: the start page");
+    assert_eq!(startup_plan(&settings, false), StartupPlan::ShowStartPage, "no homepage set: nothing opens");
     settings.homepage = "https://home.example/".to_owned();
     assert_eq!(startup_plan(&settings, false), StartupPlan::Homepage(url::Url::parse("https://home.example/").unwrap()));
-    assert_eq!(startup_plan(&settings, true), StartupPlan::ShowStartPage, "a command-line address or restored session wins");
+    assert_eq!(startup_plan(&settings, true), StartupPlan::ShowStartPage, "a command-line address or a safe restore wins");
     settings.startup = Startup::SpecificPages;
     assert_eq!(startup_plan(&settings, false), StartupPlan::ShowStartPage, "no pages listed");
     settings.startup_pages = vec!["https://a.example/".to_owned(), "https://b.example/".to_owned()];
@@ -121,6 +122,36 @@ fn startup_modes_decide_what_the_first_window_opens() {
     assert_eq!(settings.home_target(), Some(url::Url::parse("https://home.example/").unwrap()));
     settings.homepage.clear();
     assert_eq!(settings.home_target(), None);
+}
+
+#[test]
+fn the_old_start_page_startup_reads_as_continue_and_is_never_written() {
+    assert_eq!(Startup::parse("start_page"), Some(Startup::LastSession));
+    assert_eq!(Startup::parse(" Start_Page "), Some(Startup::LastSession));
+    assert!(Startup::ALL.iter().all(|mode| mode.key() != LEGACY_START_PAGE), "no choice writes the old value");
+    let mut settings = StartSettings::default();
+    settings.startup = Startup::Homepage;
+    assert!(settings.apply_strict("startup", "start_page").is_some(), "an older page's save is still taken");
+    assert_eq!(settings.startup, Startup::LastSession);
+    assert!(settings.apply_strict("startup", "Start_page").is_none(), "strict: the exact spelling only");
+}
+
+#[test]
+fn startup_pages_open_in_front_of_restored_tabs_without_opening_twice() {
+    let u = |s: &str| url::Url::parse(s).unwrap();
+    let a = u("https://a.example/");
+    let b = u("https://b.example/");
+    // Nothing restored: the blank first tab takes the first page, the rest get tabs of their own.
+    assert_eq!(startup_opens(&[a.clone(), b.clone()], &[None], true), [StartupOpen::FirstTab, StartupOpen::NewTab]);
+    // Restored tabs stay as they are: the pages open beside them, and one already open is shown instead.
+    let restored = [Some("https://x.example/".to_owned()), Some(b.as_str().to_owned())];
+    assert_eq!(startup_opens(&[a.clone(), b.clone()], &restored, false), [StartupOpen::NewTab, StartupOpen::Existing(1)]);
+    // A page listed twice opens once.
+    assert_eq!(startup_opens(&[a.clone(), a.clone()], &[None], true), [StartupOpen::FirstTab, StartupOpen::Existing(0)]);
+    assert_eq!(startup_opens(&[a.clone(), a.clone()], &restored, false), [StartupOpen::NewTab, StartupOpen::Existing(2)]);
+    // A restored first tab is never taken over, even when it has no address.
+    assert_eq!(startup_opens(&[a], &[None], false), [StartupOpen::NewTab]);
+    assert_eq!(startup_opens(&[b], &[], true), [StartupOpen::NewTab], "no tab at all: nothing to take over");
 }
 
 #[test]

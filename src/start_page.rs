@@ -53,22 +53,29 @@ pub const MAX_WIDGET_ROWS: usize = 12;
 
 // ----- settings -----
 
-/// `startup`: what a new Bowser window shows first.
+/// `startup`: what a new Bowser window shows in front of the tabs it restores. The saved tabs come
+/// back on every start whatever this says (`App::init_session`), so there is no "start page instead
+/// of my tabs" choice: the old `start_page` value reads as [`Startup::LastSession`], which is what it
+/// did once tabs always came back.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Startup {
+    /// Only the restored tabs (a window with none shows the start page).
     #[default]
-    StartPage,
     LastSession,
+    /// The restored tabs and the homepage in front of them.
     Homepage,
+    /// The restored tabs and `startup_pages`, the first in front.
     SpecificPages,
 }
 
+/// What `startup=start_page` meant before tabs always came back. Still read, never written.
+pub const LEGACY_START_PAGE: &str = "start_page";
+
 impl Startup {
-    pub const ALL: [Self; 4] = [Self::StartPage, Self::LastSession, Self::Homepage, Self::SpecificPages];
+    pub const ALL: [Self; 3] = [Self::LastSession, Self::Homepage, Self::SpecificPages];
 
     pub fn key(self) -> &'static str {
         match self {
-            Self::StartPage => "start_page",
             Self::LastSession => "last_session",
             Self::Homepage => "homepage",
             Self::SpecificPages => "specific_pages",
@@ -76,7 +83,11 @@ impl Startup {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|mode| mode.key() == value.trim().to_ascii_lowercase())
+        let value = value.trim().to_ascii_lowercase();
+        if value == LEGACY_START_PAGE {
+            return Some(Self::LastSession);
+        }
+        Self::ALL.into_iter().find(|mode| mode.key() == value)
     }
 }
 
@@ -207,7 +218,8 @@ pub struct StartSettings {
     pub drag_reorder: bool,
     /// `homepage`: an http(s) address, or empty for none. The rail Home button opens it.
     pub homepage: String,
-    /// `startup=start_page|last_session|homepage|specific_pages` (default start_page).
+    /// `startup=last_session|homepage|specific_pages` (default last_session; `start_page` reads as
+    /// last_session).
     pub startup: Startup,
     /// `startup_pages`: up to eight http(s) addresses separated by spaces.
     pub startup_pages: Vec<String>,
@@ -238,7 +250,7 @@ impl Default for StartSettings {
             thumb_size: DEFAULT_THUMB_SIZE,
             drag_reorder: true,
             homepage: String::new(),
-            startup: Startup::StartPage,
+            startup: Startup::LastSession,
             startup_pages: Vec::new(),
             widgets: false,
             widget_columns: DEFAULT_WIDGET_COLUMNS,
@@ -416,7 +428,7 @@ impl StartSettings {
             "start_thumb_size" => self.thumb_size = strict_range(value, MIN_THUMB_SIZE, MAX_THUMB_SIZE)?,
             "start_drag_reorder" => self.drag_reorder = strict_flag(value)?,
             "homepage" => self.homepage = if value.is_empty() { String::new() } else { web_address(value)? },
-            "startup" => self.startup = Startup::parse(value).filter(|m| m.key() == value)?,
+            "startup" => self.startup = Startup::parse(value).filter(|m| m.key() == value || value == LEGACY_START_PAGE)?,
             "startup_pages" => self.startup_pages = parse_pages(value)?,
             "start_widgets" => self.widgets = strict_flag(value)?,
             "start_widget_columns" => self.widget_columns = strict_range(value, MIN_WIDGET_COLUMNS, MAX_WIDGET_COLUMNS)?,
@@ -474,31 +486,68 @@ fn strict_range(value: &str, min: u8, max: u8) -> Option<u8> {
 /// What a new window does first, decided from the settings and what the launch already carries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartupPlan {
-    /// The blank first tab shows the start page (nothing to do).
+    /// Nothing to open: the restored tabs, or the blank first tab showing the start page.
     ShowStartPage,
-    /// Open this address in the first tab.
+    /// Open this address in front (in the blank first tab, or a tab of its own beside restored ones).
     Homepage(url::Url),
-    /// Open these addresses, one tab each, the first in the first tab.
+    /// Open these addresses, one tab each, the first in front.
     Pages(Vec<url::Url>),
 }
 
-/// The first-window plan. `launch_has_target` is true when a command-line address, a benchmark URL or a
-/// restored session already decided what the window shows: then the setting stays out of the way.
-/// The saved tabs are restored on every start (`SessionStore::open`), whatever this setting says, so
-/// the setting only decides what a window with nothing to restore shows. `last_session` is then the
-/// start page, which is what an empty session shows.
+/// The first-window plan. `launch_has_target` is true when a command-line address, a benchmark URL, a
+/// further window being reopened as it was, or a crash loop's safe restore already decided what the
+/// window shows: then the setting stays out of the way. The saved tabs are restored on every start
+/// (`SessionStore::open`) whatever this setting says; the homepage or the specific pages open in
+/// front of them ([`startup_opens`] keeps a page already among them from opening twice). An empty
+/// homepage or page list opens nothing.
 pub fn startup_plan(settings: &StartSettings, launch_has_target: bool) -> StartupPlan {
     if launch_has_target {
         return StartupPlan::ShowStartPage;
     }
     match settings.startup {
-        Startup::StartPage | Startup::LastSession => StartupPlan::ShowStartPage,
+        Startup::LastSession => StartupPlan::ShowStartPage,
         Startup::Homepage => settings.home_target().map_or(StartupPlan::ShowStartPage, StartupPlan::Homepage),
         Startup::SpecificPages => {
             let pages: Vec<url::Url> = settings.startup_pages.iter().filter_map(|page| url::Url::parse(page).ok()).collect();
             if pages.is_empty() { StartupPlan::ShowStartPage } else { StartupPlan::Pages(pages) }
         }
     }
+}
+
+/// How one address of a startup plan opens, given the tabs the window already holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartupOpen {
+    /// The tab at this strip index already shows the address: it is shown, nothing opens twice.
+    Existing(usize),
+    /// The blank first tab of a window with nothing restored takes it.
+    FirstTab,
+    /// A new tab.
+    NewTab,
+}
+
+/// Where each address of a plan opens: in a tab that already shows it (one restored, or one an
+/// earlier address of the same plan opened), in the blank first tab while that is still free
+/// (`blank_first`: nothing was restored), else in a new tab at the end of the strip. `open` is every
+/// tab's address, in strip order.
+pub fn startup_opens(urls: &[url::Url], open: &[Option<String>], blank_first: bool) -> Vec<StartupOpen> {
+    let mut seen: Vec<Option<String>> = open.to_vec();
+    let mut blank = blank_first && !seen.is_empty();
+    let mut out = Vec::with_capacity(urls.len());
+    for url in urls {
+        if let Some(index) = seen.iter().position(|page| page.as_deref() == Some(url.as_str())) {
+            out.push(StartupOpen::Existing(index));
+            continue;
+        }
+        if blank {
+            blank = false;
+            seen[0] = Some(url.as_str().to_owned());
+            out.push(StartupOpen::FirstTab);
+        } else {
+            seen.push(Some(url.as_str().to_owned()));
+            out.push(StartupOpen::NewTab);
+        }
+    }
+    out
 }
 
 // ----- speed-dial groups -----
