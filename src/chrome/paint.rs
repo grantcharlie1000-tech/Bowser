@@ -181,9 +181,16 @@ pub struct ChromeSurface {
     /// A skipped label still needs a full repaint even if a later label's allocation succeeds.
     paint_error: Option<SurfaceError>,
     page_regions: Option<(Rect, Option<layout::SplitPanes>)>,
-    /// The viewport of a tab that has no page (a new tab), painted as an opaque themed surface so
-    /// it never shows the desktop through the glass. `None` while a page is on screen.
+    /// The page region is the start page, which draws no background of its own: the window's glass
+    /// shows through it like behind the tabs, so only its edge is drawn and its corners are not masked.
+    page_clear: bool,
+    /// The viewport of a tab that has no page, painted as an opaque themed surface inside the page's
+    /// rounded edge so nothing behind it shows through (a crashed page's window, say). `None` while a
+    /// page is on screen.
     empty_viewport: Option<Rect>,
+    /// The page-less tab is a blank new tab: on a translucent palette it shows what the chrome shows
+    /// behind the tabs (the window's glass) instead of the opaque surface.
+    empty_clear: bool,
     /// Auto-hide has taken the top chrome out of the window (and not brought it back): the toolbar,
     /// tab row, captions and the chrome backdrop are not painted, and the page owns the space.
     auto_hidden_top: bool,
@@ -319,7 +326,9 @@ impl ChromeSurface {
             last_presented: None,
             paint_error: None,
             page_regions: None,
+            page_clear: false,
             empty_viewport: None,
+            empty_clear: false,
             auto_hidden_top: false,
             float_band_hidden: true,
             split_grip: SplitGrip::Idle,
@@ -413,6 +422,18 @@ impl ChromeSurface {
     pub fn set_page_regions(&mut self, content: Option<(Rect, Option<layout::SplitPanes>)>) -> Option<Rect> {
         let previous = std::mem::replace(&mut self.page_regions, content);
         page_regions_damage(previous, content)
+    }
+
+    /// Whether the page-less tab is a blank new tab (see `empty_clear`). Returns whether that changed,
+    /// so the caller repaints the viewport.
+    pub fn set_empty_clear(&mut self, clear: bool) -> bool {
+        std::mem::replace(&mut self.empty_clear, clear) != clear
+    }
+
+    /// Whether the single page region is the start page, which is see-through (see `page_clear`).
+    /// Returns whether that changed, so the caller repaints the viewport.
+    pub fn set_page_clear(&mut self, clear: bool) -> bool {
+        std::mem::replace(&mut self.page_clear, clear) != clear
     }
 
     // --- split view ---
@@ -848,9 +869,10 @@ impl ChromeSurface {
         }
     }
 
-    /// The window colour made opaque (the glass tint alone would let the desktop through), inside
-    /// the same rounded edge a page gets. Nothing else is drawn: an empty page stays empty. Every
-    /// colour comes from the palette, composited down to opaque so it reads the same on glass.
+    /// The window colour made opaque, inside the rounded edge a page gets, so nothing behind it shows
+    /// through. A blank new tab on a translucent palette is the exception: it is left unfilled, like
+    /// the chrome bands, so the window's glass shows through both alike (`empty_clear`). On a solid
+    /// palette the fill is the colour the chrome bands take anyway. Nothing else is drawn.
     fn paint_new_tab_surface(&mut self, view: &ChromeView<'_>, region: Rect, dirty: Rect) {
         if region.intersect(dirty).is_empty() {
             return;
@@ -858,8 +880,9 @@ impl ChromeSurface {
         let m = view.layout.metrics;
         let palette = view.palette;
         let radius = content_corner_radius(view.content_rounded, m.px(9));
-        let base = Rgba { a: 255, ..palette.window };
-        self.round(region, radius, base, dirty);
+        if !(palette.translucent && self.empty_clear) {
+            self.round(region, radius, Rgba { a: 255, ..palette.window }, dirty);
+        }
         self.border(region, radius, 1.0, palette.omnibox_border, dirty);
     }
 
@@ -895,7 +918,11 @@ impl ChromeSurface {
             self.paint_split_grips(view, &panes, dirty);
             // --- end split view ---
         } else {
-            self.mask_rounded(view.palette.window, content, radius, dirty, true, true);
+            // The start page is see-through: masking its corners would tint them darker than the
+            // glass round them.
+            if !self.page_clear {
+                self.mask_rounded(view.palette.window, content, radius, dirty, true, true);
+            }
             self.border(content, radius, 1.0, colour, dirty);
         }
     }
@@ -3765,6 +3792,25 @@ mod tests {
         assert_eq!(surface.set_empty_viewport(Some(full)), None);
         assert_eq!(surface.set_empty_viewport(Some(beside)), Some(full));
         assert_eq!(surface.set_empty_viewport(None), Some(beside));
+    }
+
+    /// A blank new tab on glass shows the glass, like the chrome behind the tabs; any other page-less
+    /// tab (a crashed page) and every tab on a solid palette keep the opaque window colour.
+    #[test]
+    fn a_blank_new_tab_on_glass_is_clear_and_other_page_less_tabs_stay_opaque() {
+        let layout = layout::compute(1000, 700, 96, 1, false);
+        let tabs: [TabView<'_>; 0] = [];
+        let dirty = Rect::new(0, 0, 1000, 700);
+        let v = layout.viewport;
+        let (x, y) = ((v.left + v.right) / 2, (v.top + v.bottom) / 2);
+        for (translucent, clear, alpha) in [(true, true, 0), (true, false, 255), (false, true, 255), (false, false, 255)] {
+            let mut surface = native_surface(1000, 700, 96);
+            let _ = surface.set_empty_viewport(Some(v));
+            assert!(surface.set_empty_clear(clear) == clear, "only a change is reported");
+            let palette = palette(Appearance::Dark, !translucent);
+            surface.paint(&test_view(&layout, &tabs, palette, omnibox("", (0, 0), "")), dirty);
+            assert_eq!(alpha_at(&surface, x, y), alpha, "translucent={translucent} clear={clear}");
+        }
     }
 
     /// The bug: the window's paint rectangle leaves out the page window, so a repaint after a side

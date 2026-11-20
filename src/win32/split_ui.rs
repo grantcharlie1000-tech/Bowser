@@ -442,6 +442,12 @@ pub(crate) fn private_page_shown(owner: HWND) -> bool {
     with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Private { .. } | Shown::Start { .. }))).unwrap_or(false)
 }
 
+/// Whether the start page covers the viewport right now. It is see-through (the window's glass shows
+/// through it), so the overlay draws its edge without masking its corners.
+pub(crate) fn start_page_shown(owner: HWND) -> bool {
+    with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Start { .. }))).unwrap_or(false)
+}
+
 /// The rectangle a dragged tab would land in, when the HTML card cannot show it (overlay fallback).
 pub(crate) fn drop_fallback(owner: HWND) -> Option<RECT> {
     let (tab, zone) = with(owner, |rt| {
