@@ -292,7 +292,15 @@ function buildIsland(msg: HoverIslandMsg, act: Act): IslandView {
   // The popup never activates on its own: the field asks Rust for the keyboard when clicked.
   input.addEventListener('pointerdown', () => act({ a: 'focus' }));
   input.addEventListener('input', syncClear);
-  input.addEventListener('blur', commit);
+  // Leaving the field for a control of this menu (a swatch, a member row, Close) commits at that
+  // control's click instead (below). Committing here, on the press, made Rust redraw the menu between
+  // the press and the release, so the control under the pointer was replaced and the click was lost:
+  // the first colour picked after typing a name did nothing.
+  input.addEventListener('blur', (ev) => {
+    const to = ev.relatedTarget;
+    if (to !== null && to !== undefined && menu.contains(to as Node)) return;
+    commit();
+  });
   input.addEventListener('keydown', (ev) => {
     if (ev.isComposing) return;
     if (ev.key === 'Enter') {

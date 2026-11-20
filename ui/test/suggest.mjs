@@ -409,3 +409,59 @@ test('the hover view renders kinds, the kind mark, the keycap and one selection 
   assert.equal(next.props.get('--suggest-sel'), '0');
 });
 // --- end omnibox suggest ---
+
+// ----- the island menu (group editor) against the same fake DOM -----
+
+test('the group editor: opened to edit it focuses the name; a colour picked after typing a name is not lost', async () => {
+  const listeners = [];
+  globalThis.window.chrome.webview.addEventListener = (type, cb) => { if (type === 'message') listeners.push(cb); };
+  class Node2 extends FakeNode {
+    constructor(tag) { super(tag); this.value = ''; this.parent = null; this.selected = false; }
+    append(...nodes) { for (const n of nodes) if (n && typeof n === 'object') n.parent = this; super.append(...nodes); }
+    get nextSibling() { const p = this.parent; if (!p) return null; return p.children[p.children.indexOf(this) + 1] ?? null; }
+    remove() { const p = this.parent; if (p) p.children.splice(p.children.indexOf(this), 1); this.parent = null; }
+    contains(node) { for (let n = node; n; n = n.parent) if (n === this) return true; return false; }
+    focus() { globalThis.document.activeElement = this; }
+    select() { this.selected = true; }
+  }
+  globalThis.Element = FakeNode;
+  globalThis.document = {
+    activeElement: null,
+    body: new Node2('body'),
+    documentElement: new Node2('html'),
+    createElement: (tag) => new Node2(tag),
+    createElementNS: (_ns, tag) => new Node2(tag),
+    createTextNode: (text) => ({ textContent: text }),
+  };
+  const { startHover } = await bundle('hover.ts');
+  const root = new Node2('div');
+  startHover(root);
+  const deliver = (msg) => { for (const cb of listeners) cb({ data: JSON.stringify(msg) }); };
+  const island = { v: 1, t: 'hover', tok: 9, kind: 'island', name: '', hint: 'Group 1', slot: 0, swatches: ['#0090ff', '#e5484d', '#f76b15', '#ffc53d', '#30a46c', '#12a594'], rows: [{ title: 'Docs', active: false, fav: '' }], more: 0, close: 'Close Tab Island · 1 Tab' };
+
+  // A hover's island leaves the keyboard alone.
+  deliver(island);
+  assert.equal(globalThis.document.activeElement, null);
+  // "Add tab to new group": the name field has the keyboard with the name selected.
+  deliver({ ...island, tok: 10, edit: true });
+  const menu = root.children[0];
+  const input = menu.all('bw-island-name')[0];
+  assert.equal(globalThis.document.activeElement, input);
+  assert.ok(input.selected);
+  take();
+
+  // A name typed, then a colour pressed: the field's blur (on the press) does not commit, so Rust does
+  // not redraw the menu under the pointer; the click commits the name, then picks the colour.
+  input.value = 'Research';
+  const teal = menu.all('bw-island-swatch')[5];
+  input.listeners.blur({ relatedTarget: teal });
+  assert.deepEqual(take(), [], 'nothing is sent on the press');
+  menu.listeners.click({ target: teal });
+  teal.listeners.click({});
+  assert.deepEqual(take().map((m) => [m.a, m.text ?? m.n]), [['name', 'Research'], ['swatch', 5]]);
+
+  // Leaving the menu altogether (focus goes elsewhere) still commits a changed name.
+  input.value = 'Reading';
+  input.listeners.blur({ relatedTarget: null });
+  assert.deepEqual(take().map((m) => [m.a, m.text]), [['name', 'Reading']]);
+});
