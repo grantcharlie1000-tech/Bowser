@@ -1176,6 +1176,12 @@ impl WindowChrome {
             self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
             self.slots.iter().map(|slot| slot.collapsed && !slot.marker_only),
         );
+        // The HTML strip scrolls sideways through tabs that do not fit, so it needs no overflow picker
+        // (the drop-down list of every tab). Only the native fallback, used once the HTML strip failed,
+        // keeps one.
+        if !self.html_failed[1] {
+            self.layout = self.layout.without_overflow_picker();
+        }
         // --- floating zen sidebar --- a floating column's window buttons have their own reveal, a strip
         // along the top edge: the top zone (the page keeps its rectangle; a Zen layout never takes a top band out).
         let plan = if self.layout.float_band.is_empty() { plan } else { crate::auto_hide::Plan { top: true, ..plan } };

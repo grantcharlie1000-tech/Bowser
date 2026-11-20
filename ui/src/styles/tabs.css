@@ -33,7 +33,9 @@
   align-items: center;
   gap: var(--bw-space-1);
   flex: 1 1 0;
-  min-width: 32px;
+  /* Room for the favicon and the first letters of the title: tabs never shrink to a bare icon. Past this,
+     the strip scrolls sideways (overflow-x above) instead of offering a drop-down of every tab. */
+  min-width: 52px;
   height: var(--bw-tab-h);
   padding: 0 var(--bw-space-0_5) 0 7px; /* 1px border + 7px = the 8px favicon inset */
   border: 1px solid transparent; /* the width stays, so private and flush geometry do not move */
@@ -297,17 +299,12 @@
   .strip .tab:not(.active) .audio { display: none; }
 }
 
-/* Very narrow inactive tabs (a crowded row or a small window) show only their favicon, centred; the
-   title is in the tooltip. The query measures the content box, ~11px less than the tab (border and
-   padding), so 52px here is a tab of about 63px. The active tab keeps its title (min-width above),
-   and the row stays full. */
+/* Very narrow inactive tabs (a crowded row or a small window) keep their favicon at the left and as
+   much of the title as fits: the title is cut, never hidden, and an ellipsis would take the last few
+   letters' room, so it is clipped instead. The query measures the content box, ~11px less than the tab
+   (border and padding), so 52px here is a tab of about 63px. */
 @container (max-width: 51.9px) {
-  /* A pinned tile has no padding and centres its icon itself (below), so it is left out. */
-  .strip .tab:not(.active, .pinned) .ico {
-    margin-inline: auto;
-    translate: -2.5px 0; /* the tab's padding is 7px / 2px: centre the icon in the box instead */
-  }
-  .strip .tab:not(.active) .title,
+  .strip .tab:not(.active) .title { text-overflow: clip; }
   .strip .tab:not(.active) .marker { display: none; }
 }
 

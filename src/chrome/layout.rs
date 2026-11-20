@@ -1087,6 +1087,18 @@ impl Layout {
             .is_some_and(|word| word >> (index % 64) & 1 == 1)
     }
 
+    /// For the HTML tab strip, which scrolls sideways when its tabs do not fit (`ui/src/tabs.ts`): no
+    /// overflow picker, and the tab zone runs to the end of the row it would have taken. The native
+    /// fallback strip keeps the picker (it cannot scroll).
+    pub fn without_overflow_picker(mut self) -> Self {
+        if self.tab_menu_button.is_empty() {
+            return self;
+        }
+        self.tab_menu_button = Rect::default();
+        self.tab_zone.right = self.tab_controls_right.max(self.tab_zone.left);
+        self
+    }
+
     /// Reserves space for group controls and redistributes remaining width among tabs. Slots past
     /// the first `GROUP_SLOT_WORDS * 64` keep full width.
     pub fn with_group_slots(
@@ -2797,6 +2809,25 @@ mod tests {
             720,
             "the omnibox is centred in the window"
         );
+    }
+
+    /// The HTML strip scrolls through tabs that do not fit: no overflow picker, and the tab zone takes the
+    /// picker's place, so the strip runs to the end of its row.
+    #[test]
+    fn a_scrolling_strip_has_no_overflow_picker_and_keeps_the_whole_row() {
+        for variant in [TabLayout::ToolbarTop, TabLayout::TabsTop, TabLayout::SingleRow, TabLayout::TabsBottom] {
+            let crowded = compute_for(variant, 1280, 800, 96, 200, 150, false);
+            assert!(!crowded.tab_menu_button.is_empty(), "{variant:?}: 200 tabs overflow the native strip");
+            let scrolling = crowded.without_overflow_picker();
+            assert!(scrolling.tab_menu_button.is_empty(), "{variant:?}");
+            assert_eq!(scrolling.tab_zone.right, crowded.tab_controls_right, "{variant:?}");
+            assert!(scrolling.tab_zone.width() > crowded.tab_zone.width(), "{variant:?}");
+            let bounds = crate::chrome_host::tab_row_bounds(&scrolling).expect("a row");
+            assert!(bounds.right > crowded.tab_menu_button.left, "{variant:?}: the HTML strip runs over where the picker was");
+            // Nothing to change when the tabs fit.
+            let roomy = compute_for(variant, 1280, 800, 96, 3, 0, false);
+            assert_eq!(roomy.without_overflow_picker(), roomy, "{variant:?}");
+        }
     }
 
     /// --- toolbars and feeds (thread T13) --- the address bar's extra buttons widen the omnibox group out

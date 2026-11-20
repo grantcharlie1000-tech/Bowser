@@ -179,12 +179,17 @@ test('pinned tiles always carry an outline, in both schemes, selected or not', (
   assert.doesNotMatch(tabs, /\.tab\.pinned\.active[^{]*\{[^}]*border-color: transparent/, 'selection does not drop the outline');
 });
 
-test('a pinned tile is a square with its icon centred, never nudged by the narrow-tab rule', () => {
+test('a pinned tile is a square with its icon centred; a narrow tab keeps its icon at the left and a cut title', () => {
   const tabs = readFileSync(join(stylesDir, 'tabs.css'), 'utf8');
   const tile = /\.strip \.tab\.pinned,\s*\.strip \.tab\.pinned\.active \{([^}]*)\}/.exec(tabs)?.[1] ?? '';
   for (const prop of ['flex: 0 0 var(--pin-size)', 'width: var(--pin-size)', 'height: var(--pin-size)', 'justify-content: center']) assert.ok(tile.includes(prop), prop);
   assert.match(tabs, /\.strip \.tab\.pinned \.ico \{ margin: 0; \}/);
-  assert.match(tabs, /\.strip \.tab:not\(\.active, \.pinned\) \.ico \{[^}]*translate: -2\.5px 0/, 'the narrow-tab nudge skips pinned tiles');
+  // A crowded strip never centres a tab's icon or hides its title: the title is cut short instead.
+  assert.doesNotMatch(tabs, /\.strip \.tab:not\([^)]*\) \.ico \{[^}]*margin-inline: auto/, 'no centred icon');
+  assert.doesNotMatch(tabs, /\.tab:not\(\.active\) \.title[^{]*\{[^}]*display: none/, 'the title never disappears');
+  assert.match(tabs, /\.strip \.tab:not\(\.active\) \.title \{ text-overflow: clip; \}/);
+  const tab = /\n\.strip \.tab \{([^}]*)\}/.exec(tabs)?.[1] ?? '';
+  assert.ok(Number(/min-width: (\d+)px/.exec(tab)?.[1]) >= 48, 'room for the icon and the first letters');
 });
 
 test('the tab strip is one row: no second row of two-level stacks is left in the styles', () => {
