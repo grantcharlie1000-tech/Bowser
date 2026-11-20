@@ -274,14 +274,17 @@ export interface StateMsg {
 /** `g`: the icon Rust names for the button (`toolbar_prefs::command_glyph`), when it does. */
 export interface ToolButtonMsg { readonly k: string; readonly l: string; readonly i: number; readonly g?: string }
 const GLYPH_RE = /^[a-z0-9-]{1,32}$/;
-/** Most command buttons on one bar (Rust `MAX_COMMAND_ITEMS`). */
-export const MAX_TOOLS = 4;
+/** Most command buttons on one bar: every item a bar can hold may be one (Rust `toolbar_prefs::MAX_ITEMS`). */
+export const MAX_TOOLS = 99;
+/** Longest address-bar list and most CSS px of end buttons in the toolbar state (Rust `MAX_BAR_ITEMS_CHARS`, `MAX_BAR_EXTRA`). */
+export const MAX_BAR_ITEMS_CHARS = 4096;
+export const MAX_BAR_EXTRA = MAX_TOOLS * 28;
 const TOOL_ITEM_RE = /^[a-z0-9:-]{1,64}$/;
 function parseTools(value: unknown): ToolButtonMsg[] | null {
   if (!Array.isArray(value) || value.length > MAX_TOOLS) return null;
   const out: ToolButtonMsg[] = [];
   for (const row of value) {
-    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i', 'g']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, 13)) return null;
+    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i', 'g']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, MAX_TOOLS - 1)) return null;
     if ('g' in row && (typeof row.g !== 'string' || !GLYPH_RE.test(row.g))) return null;
     out.push(typeof row.g === 'string' ? { k: row.k, l: row.l, i: row.i, g: row.g } : { k: row.k, l: row.l, i: row.i });
   }
@@ -594,7 +597,7 @@ export function sendGroupMove(key: number, before: number): boolean {
 // --- toolbars and feeds (thread T13) ---
 /** A command button of the address bar or the tab bar: Rust runs it only if `item` is at `index` in that bar's list. */
 export function sendTool(bar: 'address' | 'tabs', item: string, index: number): boolean {
-  if (!TOOL_ITEM_RE.test(item) || !isInt(index, 0, 13)) return false;
+  if (!TOOL_ITEM_RE.test(item) || !isInt(index, 0, MAX_TOOLS - 1)) return false;
   return send({ v: 1, t: 'tool', b: bar, k: item, i: index });
 }
 // --- end toolbars and feeds ---
@@ -1285,7 +1288,7 @@ export function parseInbound(data: unknown): Inbound | null {
       const barKeys = ['items', 'tools', 'extra', 'feeds'] as const;
       const barCount = barKeys.filter((key) => key in raw).length;
       if (barCount !== 0 && barCount !== barKeys.length) return null;
-      if (barCount !== 0 && (!isStr(raw.items, 512) || parseTools(raw.tools) === null || !isInt(raw.extra, 0, 400) || !isInt(raw.feeds, 0, 9))) return null;
+      if (barCount !== 0 && (!isStr(raw.items, MAX_BAR_ITEMS_CHARS) || parseTools(raw.tools) === null || !isInt(raw.extra, 0, MAX_BAR_EXTRA) || !isInt(raw.feeds, 0, 9))) return null;
       // --- end toolbars and feeds ---
       if ('showProgress' in raw && !isBool(raw.showProgress)) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;

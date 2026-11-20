@@ -1146,7 +1146,6 @@ export function buildStartPage(): {
     root.classList.toggle('has-widgets', s.settings.widgets);
     // Speed dials are opt-in (Settings > Start page): off, a new tab is blank apart from the widgets.
     dialsSection.hidden = !s.settings.dials;
-    root.dataset.labelss = s.settings.titles;
     paintGroups(s);
     paintCrumbs(s);
     paintGrid(s);

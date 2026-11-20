@@ -84,7 +84,7 @@ fn the_launch_target_is_a_restored_session_a_command_line_address_or_a_benchmark
     app.borrow_mut().benchmark_url = Some(url::Url::parse("https://bench.example/").unwrap());
     assert!(App::launch_has_target(&app));
     app.borrow_mut().benchmark_url = None;
-    app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: Vec::new(), active: 0, split: None });
+    app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: Vec::new(), active: 0, split: None, groups: Vec::new() });
     assert!(App::launch_has_target(&app));
 }
 
@@ -95,12 +95,12 @@ fn the_launch_target_is_a_restored_session_a_command_line_address_or_a_benchmark
 fn a_link_launch_restores_the_last_session_and_opens_the_link_beside_it() {
     let dir = std::env::temp_dir().join(format!("bowser-start-link-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0 };
+    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0, group: None };
     {
         let (mut store, _) = crate::session::SessionStore::open(&dir).unwrap();
         store.begin_run(None);
         store
-            .save(&crate::session::Session { tabs: vec![tab("https://a.example/"), tab("https://b.example/")], active: 1, split: None })
+            .save(&crate::session::Session { tabs: vec![tab("https://a.example/"), tab("https://b.example/")], active: 1, split: None, groups: Vec::new() })
             .unwrap();
         store.finish(None);
     }

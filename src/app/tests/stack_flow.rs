@@ -243,3 +243,131 @@ fn keep_window_off_counts_the_tabs_of_every_workspace() {
     assert!(App::tab_ids(&app).iter().all(|id| *id != only), "the tab itself closed");
     assert!(App::tab_count(&app) >= 1, "the window keeps the other workspace's tab");
 }
+
+// ----- manual tab groups (tab menu > Tab group) and new tabs in a group -----
+
+fn manual_of(app: &AppRef, id: TabId) -> Option<crate::tab_groups::ManualGroupId> {
+    match app.borrow().group_key_of(id)? {
+        TabGroupKey::Manual(group) => Some(group),
+        TabGroupKey::Domain(_) => None,
+    }
+}
+
+#[test]
+fn a_manual_group_holds_tabs_of_any_site_and_goes_when_its_last_tab_leaves() {
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://a.com/", "https://b.com/", "https://c.com/"]);
+    let group = App::add_tab_to_new_group(&app, ids[0]).expect("a new group");
+    assert_eq!(manual_of(&app, ids[0]), Some(group), "a group of one tab is a group");
+    assert_eq!(App::stack_name(&app, ids[0]).as_deref(), Some("Group 1"));
+    // The other tabs are offered that group to join; the grouped tab is offered none (it is in the only one).
+    let choices = App::group_choices(&app, ids[1]);
+    assert_eq!(choices, vec![(TabGroupKey::Manual(group), "Group 1".to_owned())]);
+    assert!(App::group_choices(&app, ids[0]).is_empty());
+    assert!(App::add_tab_to_group(&app, ids[1], &TabGroupKey::Manual(group)));
+    assert_eq!(App::stack_members(&app, ids[0]), [ids[0], ids[1]], "a.com and b.com share it");
+    // It is named and coloured like any island.
+    assert!(App::set_tab_group_name(&app, ids[1], "Holiday"));
+    assert!(App::set_tab_group_colour(&app, ids[1], Some(2)));
+    assert_eq!(App::stack_name(&app, ids[0]).as_deref(), Some("Holiday"));
+    assert!(App::set_tab_group_collapsed(&app, ids[0], true));
+    assert_eq!(App::tab_group_collapsed(&app, ids[1]), Some(true));
+    // Leaving one by one: the group goes with its last tab.
+    assert!(App::remove_tab_from_group(&app, ids[0]));
+    assert_eq!(manual_of(&app, ids[1]), Some(group));
+    assert!(App::remove_tab_from_group(&app, ids[1]));
+    assert!(App::tab_group_preferences(&app).manual_group(group).is_none(), "an empty group is forgotten");
+    // Undo brings it back, tab and all.
+    assert!(App::undo_tab_organisation(&app));
+    assert_eq!(manual_of(&app, ids[1]), Some(group));
+    assert_eq!(App::stack_name(&app, ids[1]).as_deref(), Some("Holiday"));
+}
+
+#[test]
+fn automatic_grouping_never_takes_a_tab_out_of_a_manual_group() {
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://a.com/1", "https://a.com/2", "https://a.com/3", "https://b.com/1", "https://b.com/2"]);
+    // Three a.com tabs: a site group.
+    assert_eq!(stacks_of(&app)[0], Some(TabGroupKey::Domain(key("a.com"))));
+    let group = App::add_tab_to_new_group(&app, ids[2]).expect("a new group");
+    assert_eq!(manual_of(&app, ids[2]), Some(group));
+    assert!(in_stack(&app, ids[0], "a.com"), "the other a.com tabs keep their site group");
+    // "Group all tabs by website" stacks a.com's two free tabs and b.com, and leaves ids[2] where it is.
+    assert_eq!(App::stack_all_by_site(&app), 2);
+    assert_eq!(manual_of(&app, ids[2]), Some(group));
+    assert!(in_stack(&app, ids[1], "a.com") && in_stack(&app, ids[3], "b.com"));
+    // So do "Group this website's tabs" and the "Always" rule for its site.
+    assert_eq!(App::stack_site(&app, ids[0]), 2);
+    assert!(App::set_tab_group_mode(&app, ids[0], crate::tab_groups::GroupMode::Always));
+    assert_eq!(manual_of(&app, ids[2]), Some(group));
+    // Only the person takes it out: moving it to a site group is explicit.
+    assert!(App::add_tab_to_group(&app, ids[2], &TabGroupKey::Domain(key("b.com"))));
+    assert!(in_stack(&app, ids[2], "b.com"));
+    assert!(App::tab_group_preferences(&app).manual_group(group).is_none());
+}
+
+#[test]
+fn ctrl_t_on_a_grouped_tab_opens_the_new_tab_in_that_group() {
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://a.com/", "https://b.com/", "https://c.com/"]);
+    let group = App::add_tab_to_new_group(&app, ids[0]).expect("a new group");
+    let _ = App::select_tab(&app, ids[0]);
+    // "As last" would put it at the far end; it joins the group and sits right after its last tab.
+    assert!(crate::tab_options::apply_assignment(&mut app.borrow_mut().settings, "tabs_new_tab_position=last"));
+    let fresh = App::open_new_tab(&app);
+    assert_eq!(manual_of(&app, fresh), Some(group));
+    assert_eq!(App::tab_ids(&app), [ids[0], fresh, ids[1], ids[2]]);
+    // A site group too: the new tab joins it whatever page it then opens.
+    let _ = App::select_tab(&app, ids[1]);
+    assert!(App::set_tab_group_mode(&app, ids[1], crate::tab_groups::GroupMode::Always));
+    let site = App::open_new_tab(&app);
+    assert!(in_stack(&app, site, "b.com"));
+    page(&app, site, "https://elsewhere.net/");
+    assert!(in_stack(&app, site, "b.com"), "it stays in the group it opened in");
+    // A tab in no group opens a tab in no group.
+    let _ = App::select_tab(&app, ids[2]);
+    let loose = App::open_new_tab(&app);
+    assert!(app.borrow().group_key_of(loose).is_none());
+    // The option off: Ctrl+T on a grouped tab opens a tab in no group.
+    set(&app, |o| o.new_tab_in_group = false);
+    let _ = App::select_tab(&app, ids[0]);
+    let off = App::open_new_tab(&app);
+    assert!(app.borrow().group_key_of(off).is_none());
+    // "New tab to the right" joins the right-clicked tab's group (window.rs calls join_group_of).
+    set(&app, |o| o.new_tab_in_group = true);
+    let right = App::new_tab(&app);
+    assert!(App::join_group_of(&app, right, ids[0]));
+    assert_eq!(manual_of(&app, right), Some(group));
+    // A private tab never joins.
+    let private = App::new_private_tab(&app);
+    assert!(!App::join_group_of(&app, private, ids[0]));
+}
+
+#[test]
+fn manual_groups_come_back_with_the_session() {
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://a.com/", "https://b.com/", "https://c.com/"]);
+    let group = App::add_tab_to_new_group(&app, ids[0]).expect("a new group");
+    assert!(App::add_tab_to_group(&app, ids[2], &TabGroupKey::Manual(group)));
+    assert!(App::set_tab_group_name(&app, ids[0], "Reading"));
+    assert!(App::set_tab_group_colour(&app, ids[0], Some(5)));
+    assert!(App::set_tab_group_collapsed(&app, ids[0], true));
+    let snapshot = App::session_snapshot(&app).expect("a snapshot");
+    assert_eq!(snapshot.tabs.iter().map(|tab| tab.group).collect::<Vec<_>>(), [Some(group.0), None, Some(group.0)]);
+    assert_eq!(snapshot.groups.len(), 1);
+    let text = snapshot.serialize();
+
+    let restored = fixture();
+    restored.borrow_mut().pending_restore = Some(crate::session::Session::parse(&text).expect("parses"));
+    App::restore_pending_session(&restored);
+
+    let tabs = App::tab_ids(&restored);
+    assert_eq!(tabs.len(), 3);
+    let back = manual_of(&restored, tabs[0]).expect("the group came back");
+    assert_eq!(manual_of(&restored, tabs[2]), Some(back));
+    assert_eq!(manual_of(&restored, tabs[1]), None);
+    assert_eq!(App::stack_name(&restored, tabs[0]).as_deref(), Some("Reading"));
+    let preferences = App::tab_group_preferences(&restored);
+    assert_eq!(preferences.group_colour(&TabGroupKey::Manual(back)), Some(5));
+    assert!(preferences.group_collapsed(&TabGroupKey::Manual(back)));
+}

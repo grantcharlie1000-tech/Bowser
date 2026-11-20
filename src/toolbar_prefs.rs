@@ -41,10 +41,11 @@ pub const LEGACY_DEFAULT_ADDRESS: [&str; 8] = ["back", "forward", "reload", "sit
 pub const TAB_ITEMS: [&str; 1] = ["closed-tabs"];
 pub const PANEL_ITEMS: [&str; 1] = ["feeds"];
 
-/// Most items in one bar.
-pub const MAX_ITEMS: usize = 14;
-/// Most command buttons in one bar.
-pub const MAX_COMMAND_ITEMS: usize = 4;
+/// Most items in one bar: as many as the wire's two-digit place allows, which is more than every fixed
+/// button and every built-in command together. There is no smaller cap on command buttons or on the
+/// buttons at the end of the address bar: the address field (and in `SingleRow` the tabs) give way to
+/// them instead (`chrome::layout::Arrangement::bar_room`).
+pub const MAX_ITEMS: usize = 99;
 /// Most chains: the same cap as `commands::chains` (64) bounds the id.
 const MAX_CHAIN_NUMBER: u32 = 9999;
 
@@ -130,8 +131,7 @@ pub fn command_glyph(command: &str) -> Option<&'static str> {
 }
 
 /// Parses a bar's list: each item one of the bar's fixed ids or a command button, no repeats, at most
-/// [`MAX_ITEMS`] items and [`MAX_COMMAND_ITEMS`] command buttons, and (for the address bar) at most
-/// [`MAX_RIGHT_STATIC`] buttons that share the end of the bar with the menu. `None` for anything else.
+/// [`MAX_ITEMS`] items. `None` for anything else.
 pub fn parse_list(bar: Bar, value: &str) -> Option<Vec<String>> {
     let mut seen = std::collections::HashSet::new();
     let mut list = Vec::new();
@@ -145,10 +145,7 @@ pub fn parse_list(bar: Bar, value: &str) -> Option<Vec<String>> {
         }
         list.push(id.to_owned());
     }
-    if list.len() > MAX_ITEMS || list.iter().filter(|id| command_of(id).is_some()).count() > MAX_COMMAND_ITEMS {
-        return None;
-    }
-    if bar == Bar::Address && right_static(&list) > MAX_RIGHT_STATIC {
+    if list.len() > MAX_ITEMS {
         return None;
     }
     if bar == Bar::Address && list.as_slice() == LEGACY_DEFAULT_ADDRESS {
@@ -194,11 +191,6 @@ pub fn zone_of(id: &str) -> Zone {
     }
 }
 
-/// Most buttons that take room from the address field at the end of the bar (everything in the right
-/// zone except the two that only appear when there is something to show). The field keeps its width
-/// for the rest: five 28 px slots leave a field of a usable size at the narrowest window.
-pub const MAX_RIGHT_STATIC: usize = 5;
-
 /// Items in the right zone that take their place whether or not anything is going on: everything
 /// there except Downloads and Extensions, whose slot Rust reserves only while they show (Downloads
 /// shows all the time when it is pinned, `downloads_ui`, and Extensions when an extension has a popup).
@@ -211,8 +203,10 @@ pub fn address_has(settings: &Settings, id: &str) -> bool {
     settings.toolbar_buttons.iter().any(|item| item == id)
 }
 
-/// CSS px the right zone's always-there buttons take from the address field: a 28 px button each, edge
-/// to edge, the same as the Downloads and Extensions slots.
+/// CSS px the right zone's always-there buttons need beside the address field: a 28 px button each, edge
+/// to edge, the same as the Downloads and Extensions slots. The layout widens the field's group by this
+/// much where there is room (`chrome::layout::Arrangement::bar_room`), so the field only gets narrower
+/// when the window has nothing else to give.
 pub fn right_static_px(settings: &Settings) -> i32 {
     right_static(&settings.toolbar_buttons) as i32 * crate::chrome_host::EXT_BUTTON_SLOT
 }
@@ -335,13 +329,21 @@ mod tests {
     }
 
     #[test]
-    fn a_bar_cannot_hold_more_than_its_limits() {
-        assert_eq!(parse_list(Bar::Tabs, "cmd:new-tab,cmd:new-window,cmd:history,cmd:downloads,cmd:settings"), None, "five command buttons");
-        assert!(parse_list(Bar::Tabs, "cmd:new-tab,cmd:new-window,cmd:history,cmd:downloads").is_some());
-        // The right zone: at most five buttons that always take room.
-        assert!(parse_list(Bar::Address, "bookmark,newtab,cmd:new-tab,cmd:history,chain:1").is_some());
-        assert_eq!(parse_list(Bar::Address, "bookmark,newtab,cmd:new-tab,cmd:history,chain:1,chain:2"), None);
-        assert!(parse_list(Bar::Address, "bookmark,newtab,cmd:new-tab,cmd:history,downloads,extensions").is_some(), "downloads and extensions only take room when shown");
+    fn a_bar_holds_as_many_buttons_as_anyone_wants() {
+        // No cap on command buttons or on the end of the address bar: the field and the tabs make room.
+        assert!(parse_list(Bar::Tabs, "cmd:new-tab,cmd:new-window,cmd:history,cmd:downloads,cmd:settings").is_some());
+        assert!(parse_list(Bar::Address, "bookmark,newtab,cmd:new-tab,cmd:history,chain:1,chain:2,chain:3,chain:4").is_some());
+        let every: Vec<String> = ADDRESS_ITEMS.iter().map(|&id| id.to_owned())
+            .chain(crate::commands::registry::BUILTINS.iter().map(|def| format!("cmd:{}", def.id)))
+            .filter(|id| is_command_item(id) || ADDRESS_ITEMS.contains(&id.as_str()))
+            .take(MAX_ITEMS)
+            .collect();
+        assert!(every.len() > 20, "every fixed button and plenty of commands");
+        assert_eq!(parse_list(Bar::Address, &every.join(",")).map(|list| list.len()), Some(every.len()));
+        // The only ceiling is the wire's: an item's place is two digits.
+        let too_many: Vec<String> = (1..=MAX_ITEMS + 1).map(|n| format!("chain:{n}")).collect();
+        assert_eq!(parse_list(Bar::Tabs, &too_many.join(",")), None);
+        assert!(MAX_ITEMS <= 99);
     }
 
     #[test]

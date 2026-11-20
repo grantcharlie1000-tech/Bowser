@@ -78,6 +78,7 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
   toggle('tabs_link_background', 'new', false, 'Background', '', 'link background new tab open Open links in new tabs in the background A link opened in a new tab loads without leaving the page you are reading.'),
   choice('tabs_duplicate_position', 'new', 'beside', [['beside', 'Beside', 'Next to the original'], ['last', 'Last']], 'Duplicate',
     '', 'duplicate tab position copy Duplicated tab position Where Duplicate tab puts the copy.'),
+  toggle('tabs_new_tab_in_group', 'new', true, 'Keep in group', '', 'new tab group tab group join keep ctrl+t plus button Open new tabs in the current tab group A new tab opened while you are on a tab in a group (Ctrl+T, the + button, New tab to the right) joins that group.'),
   toggle('tabs_focus_page', 'new', false, 'Focus page', '', 'focus page content new tab address bar keyboard Focus the page on a new tab A new tab with an address puts the keyboard in the page instead of the address bar.'),
 
   toggle('tabs_close_related', 'close', false, 'Related tab', '', 'close tab activation related opener Return to the related tab when closing Closing a tab activates the tab that opened it, when it is still open.'),

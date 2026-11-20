@@ -124,7 +124,7 @@ const fn def(
 /// group commands keep answering to "stack", the name they had before (their ids still say it).
 pub fn search_words(id: &str) -> Option<&'static str> {
     match id {
-        "stack-site-tabs" | "stack-tabs-by-site" => Some("stack stacking"),
+        "stack-site-tabs" | "stack-tabs-by-site" => Some("stack stacking site"),
         "unstack" => Some("unstack stack"),
         _ => None,
     }
@@ -241,8 +241,8 @@ pub static BUILTINS: &[CommandDef] = &[
     browser(def("toggle-fullscreen", "Full screen", "Fill the screen with the page; the bars come back when the pointer rests at the edge", C::Windows, &["F11"], Cmd, Run(crate::win32::run_toggle_fullscreen))),
     // --- end auto-hide ---
     // --- tab stacks, tiling and workspaces (T10; win32/stack_ui.rs) ---
-    def("stack-site-tabs", "Group tabs of this site", "Put every tab of this site in one group", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_site)),
-    def("stack-tabs-by-site", "Group all tabs by site", "One group for each site with two tabs or more", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_all_by_site)),
+    def("stack-site-tabs", "Group this website's tabs", "Put every tab of this website in one group", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_site)),
+    def("stack-tabs-by-site", "Group all tabs by website", "One group for each website with two or more tabs open; tabs in groups you made stay put", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_all_by_site)),
     def("unstack", "Ungroup", "Take the tabs out of this group", C::Tabs, &[], Cmd, Run(crate::win32::run_unstack)),
     browser(def("tile-vertical", "Tile vertically", "Show the selected tabs, or this group, side by side", C::Windows, &["Ctrl+F9"], Cmd, Run(crate::win32::run_tile_vertical))),
     browser(def("tile-horizontal", "Tile horizontally", "Show the selected tabs, or this group, one above another", C::Windows, &["Ctrl+F8"], Cmd, Run(crate::win32::run_tile_horizontal))),

@@ -1,13 +1,18 @@
-//! Automatic tab organisation policy: manual placement of tabs into or out of domain groups, the
-//! settle rule for navigations in flight, drop placement, suggested island names, and a bounded
-//! undo history.
+//! Automatic tab organisation policy: manual placement of tabs into or out of domain groups and
+//! into groups the user made, the settle rule for navigations in flight, drop placement, suggested
+//! island names, and a bounded undo history.
+//!
+//! How automatic and manual grouping meet: a tab the user put in a manual group
+//! ([`Membership::Manual`]) is out of reach of every automatic rule (site grouping, "Group all tabs
+//! by website", "New tab position: grouped with related"). Only the user takes it out again: by
+//! "Remove from group", "Ungroup", dragging it out, moving it to another group, or closing it.
 //!
 //! Pure Rust. Nothing here touches windows, WebViews, timers, or files. The app keeps the state and
 //! applies these rules whenever it projects its tab strip, so nothing in this module runs on its own.
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::tab_groups::{DomainKey, GroupMode, GroupPreferences, TabGroupInput, TabGroupKey};
+use crate::tab_groups::{DomainKey, GroupMode, GroupPreferences, ManualGroupId, TabGroupInput, TabGroupKey};
 use crate::tabs::TabId;
 
 /// Most undo steps kept. Pushing past the limit drops the oldest step.
@@ -23,6 +28,24 @@ pub enum Membership {
     Joined(DomainKey),
     /// Dragged out of its group. The automatic rules never regroup it.
     Ungrouped,
+    /// In a group the user made from the tab menu. Overrides the tab's site entirely.
+    Manual(ManualGroupId),
+}
+
+impl Membership {
+    /// The placement that puts a tab in the group `key`.
+    pub fn joining(key: &TabGroupKey) -> Self {
+        match key {
+            TabGroupKey::Domain(domain) => Self::Joined(domain.clone()),
+            TabGroupKey::Manual(id) => Self::Manual(*id),
+        }
+    }
+}
+
+/// Whether `id` still has a member among `memberships`. A manual group with none is forgotten
+/// ([`GroupPreferences::retain_manual_groups`]).
+pub fn manual_group_in_use(memberships: &HashMap<TabId, Membership>, id: ManualGroupId) -> bool {
+    memberships.values().any(|placement| *placement == Membership::Manual(id))
 }
 
 /// Everything an undo step restores: group preferences and manual placement.
@@ -37,6 +60,7 @@ pub struct Snapshot {
 /// - A `Joined` tab takes the joined domain and is marked manual, so it keeps the group formed even
 ///   below the mode's threshold.
 /// - An `Ungrouped` tab loses its domain, so no automatic group reaches it.
+/// - A `Manual` tab names its group and loses its domain, so no site group reaches it.
 /// - With `automatic` off, `Auto`-mode domains form nothing new. Explicit `Always` groups and manual
 ///   members are not automatic, so they still apply.
 /// - Pinned tabs are left alone, because grouping already excludes them.
@@ -56,6 +80,11 @@ pub fn apply_membership(
                 input.manual = true;
             }
             Membership::Ungrouped => input.domain = None,
+            Membership::Manual(group) => {
+                input.domain = None;
+                input.manual = false;
+                input.group = Some(group);
+            }
             Membership::Automatic => {
                 if !automatic
                     && input
@@ -73,8 +102,8 @@ pub fn apply_membership(
 /// Placement for a tab that was just dropped, from the group keys of the model tabs on either side
 /// of it after the move. `current` is the tab's group before the drag.
 ///
-/// - Dropped between two tabs of one domain group, the tab joins that group, unless it is already in
-///   that group.
+/// - Dropped between two tabs of one group (a site's or a manual one), the tab joins that group,
+///   unless it is already in that group.
 /// - Dropped between two tabs of the group it is already in, nothing changes.
 /// - Dropped anywhere else, a tab that was grouped leaves its group. Otherwise `None`: no change.
 pub fn drop_membership(
@@ -83,11 +112,9 @@ pub fn drop_membership(
     right: Option<&TabGroupKey>,
 ) -> Option<Membership> {
     let inside_one_group = left.is_some() && left == right;
-    match (left, right) {
+    match left {
         _ if inside_one_group && left == current => None,
-        (Some(TabGroupKey::Domain(left)), Some(TabGroupKey::Domain(right))) if left == right => {
-            Some(Membership::Joined(left.clone()))
-        }
+        Some(key) if inside_one_group => Some(Membership::joining(key)),
         _ if current.is_some() => Some(Membership::Ungrouped),
         _ => None,
     }
@@ -254,6 +281,7 @@ mod tests {
             }),
             pinned,
             manual: false,
+            group: None,
         }
     }
 
@@ -307,6 +335,57 @@ mod tests {
         assert_eq!(tabs[1].domain, Some(key("example.com")));
         assert!(tabs[1].manual);
         assert!(!tabs[0].manual);
+    }
+
+    #[test]
+    fn a_tab_in_a_manual_group_is_out_of_reach_of_site_grouping() {
+        let mut preferences = GroupPreferences::default();
+        let group = preferences.create_manual_group().unwrap();
+        // Two GitHub tabs would be a site group (and an `Always` site even more so).
+        preferences.set_mode(&key("github.com"), GroupMode::Always).unwrap();
+        let mut tabs = [input(1, Some("github.com"), false), input(2, Some("github.com"), false)];
+        let memberships = placed(&[(1, Membership::Manual(group))]);
+
+        apply_membership(&mut tabs, &memberships, &preferences, true);
+
+        assert_eq!((tabs[0].domain.clone(), tabs[0].group, tabs[0].manual), (None, Some(group), false));
+        let keys = crate::tab_groups::group_keys(&tabs, &preferences);
+        assert_eq!(keys[0], Some(TabGroupKey::Manual(group)));
+        assert_eq!(keys[1], Some(domain_key("github.com")), "the other tab keeps its own site group");
+    }
+
+    #[test]
+    fn manual_groups_survive_automatic_grouping_being_off() {
+        let mut preferences = GroupPreferences::default();
+        let group = preferences.create_manual_group().unwrap();
+        let mut tabs = [input(1, Some("github.com"), false)];
+        apply_membership(&mut tabs, &placed(&[(1, Membership::Manual(group))]), &preferences, false);
+        assert_eq!(crate::tab_groups::group_keys(&tabs, &preferences), vec![Some(TabGroupKey::Manual(group))]);
+    }
+
+    #[test]
+    fn dropping_between_two_members_of_a_manual_group_joins_it() {
+        let group = TabGroupKey::Manual(ManualGroupId(2));
+        assert_eq!(drop_membership(None, Some(&group), Some(&group)), Some(Membership::Manual(ManualGroupId(2))));
+        assert_eq!(drop_membership(Some(&group), Some(&group), Some(&group)), None);
+        // Out of a manual group onto open strip: it leaves the group.
+        assert_eq!(drop_membership(Some(&group), None, None), Some(Membership::Ungrouped));
+        // From a site group into a manual group.
+        assert_eq!(
+            drop_membership(Some(&domain_key("x.com")), Some(&group), Some(&group)),
+            Some(Membership::Manual(ManualGroupId(2)))
+        );
+        // Between a manual group and a site group: neither.
+        assert_eq!(drop_membership(None, Some(&group), Some(&domain_key("x.com"))), None);
+    }
+
+    #[test]
+    fn joining_maps_each_kind_of_group_to_its_placement() {
+        assert_eq!(Membership::joining(&domain_key("x.com")), Membership::Joined(key("x.com")));
+        assert_eq!(Membership::joining(&TabGroupKey::Manual(ManualGroupId(4))), Membership::Manual(ManualGroupId(4)));
+        let memberships = placed(&[(1, Membership::Manual(ManualGroupId(4))), (2, Membership::Ungrouped)]);
+        assert!(manual_group_in_use(&memberships, ManualGroupId(4)));
+        assert!(!manual_group_in_use(&memberships, ManualGroupId(5)));
     }
 
     #[test]

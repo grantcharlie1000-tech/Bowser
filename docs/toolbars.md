@@ -13,8 +13,9 @@ other writer), and `panel` `dismiss` (its close button, Esc) closes the panel.
 
 The page: an Address bar | Tab bar switch, then one row per button with a switch, grouped by where it sits. Buttons
 that are on lead their group in bar order and can be dragged by their grip, or moved with Alt+Up / Alt+Down;
-buttons that are off follow. Commands that are off are listed last with a filter and an "n of 4" count. A switch that
-cannot come on (a limit below) shakes and says why. Rows glide to their new place on every change; none of the
+buttons that are off follow. Commands that are off are listed last with a filter and a count of how many are on. There
+is no cap on how many buttons a bar holds beyond the wire's (`MAX_ITEMS`, 99, more than every button and command
+together). Rows glide to their new place on every change; none of the
 motion runs under reduced motion.
 
 While a docked side panel opens or closes, the page follows its edge on every frame (`side_panel::docked_motion`,
@@ -38,15 +39,18 @@ does, while a download is running or a finished one has not been looked at.
 | Panel bar | `toolbar_panel` | feeds (after Bookmarks and History on the rail). **Not offered in the editor:** the rail was removed, so nothing on this list can show. The setting is still read and kept. |
 
 Every bar also takes command buttons: `cmd:<command id>` (any built-in command) and `chain:<n>` (a T4 command chain),
-at most 4 per bar, run through `win32::window::run_registered` like Quick Commands and shortcuts. Rust runs a button
+as many as wanted, run through `win32::window::run_registered` like Quick Commands and shortcuts. Rust runs a button
 only if the item is at the sent place of that bar's list.
 
 Defaults are today's look; the old default list (`...,bookmark,newtab,...`, which did nothing) is read as the new
 default so nobody gets two new buttons. Extensions still appears only when there is something to show; taking it off
 the list removes it and gives its room back. Downloads takes its 28 px slot whenever its button shows (pinned, or a
 download needs it; `downloads_ui::button`). Always-there buttons at the end of the address bar
-(bookmark, new tab, command buttons, at most 5) take 28 px each (buttons edge to edge) from the address field (`right_static_px`; the toolbar
-page moves the group by `--tb-extra`). Back, forward and reload work the other way: the layout keeps room for all
+(bookmark, new tab, command buttons, any number) need 28 px each (buttons edge to edge, `right_static_px`; the toolbar page
+moves the group by `--tb-extra`). The layout makes that room (`Arrangement::bar_room`, `LayoutOptions::bar_room`): the
+omnibox group widens out of the toolbar's spare space first, and in `SingleRow` out of the tabs' room (down to their
+minimum), so the address field keeps its width; only when the window has nothing left to give does the field get
+narrower. A change of the list lays the window out again (`html_sync`). Back, forward and reload work the other way: the layout keeps room for all
 three, and whatever the list leaves empty goes to the address field, which grows left over it and keeps its right
 end (`left_free_px`, `chrome_host::toolbar_css_placement_with_room`). With none of them, the field starts at the
 toolbar's edge.

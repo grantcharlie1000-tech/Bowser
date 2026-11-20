@@ -25,7 +25,8 @@
 //!   so one crash long after a restore is not a crash loop.
 //!
 //! Only committed `http`/`https` URLs without embedded credentials are stored, together with the
-//! title, pinned flag and active tab. Per-tab back/forward history is not stored. Bowser has no
+//! title, pinned flag, active tab and the manual tab group each tab is in (with the group's name,
+//! colour and fold). Per-tab back/forward history is not stored. Bowser has no
 //! private/incognito mode, so there is nothing to exclude on that account. Page contents, form
 //! data and cookies are never written. A corrupt or partial file is ignored (and left in place
 //! until the next successful save, which first backs it up to `session.prev`).
@@ -82,13 +83,33 @@ pub struct SessionTab {
     pub pinned: bool,
     /// Unix seconds the tab was last used (0 when unknown); saved as an optional `used` line.
     pub used: u64,
+    /// The manual tab group the tab is in: an id of [`Session::groups`]. Saved as an optional
+    /// `group` line after the tab, which older builds skip.
+    pub group: Option<u32>,
 }
+
+/// A manual tab group (`tab_groups::TabGroupKey::Manual`) and how it looks. Saved as a
+/// `tabgroup <id> <colour|-> <0|1 collapsed> [name]` line (tab separated), which older builds skip.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionGroup {
+    /// Non-zero, unique in the file. Only links tabs to the group; a restore gives it a new id.
+    pub id: u32,
+    pub name: Option<String>,
+    /// Island colour index (below `tab_groups::COLOUR_COUNT`), or `None` for the accent.
+    pub colour: Option<u8>,
+    pub collapsed: bool,
+}
+
+/// Most manual groups one session file keeps (as many as a window may have).
+pub const MAX_GROUPS: usize = crate::tab_groups::MAX_MANUAL_GROUPS;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Session {
     pub tabs: Vec<SessionTab>,
     pub active: usize,
     pub split: Option<SessionSplit>,
+    /// Manual tab groups that at least one saved tab is in.
+    pub groups: Vec<SessionGroup>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,7 +179,7 @@ impl Session {
     /// No tabs worth keeping (every tab was closed, or only New Tab pages are open). Saved so the
     /// next start does not bring back tabs that were closed on purpose.
     pub fn empty() -> Self {
-        Self { tabs: Vec::new(), active: 0, split: None }
+        Self { tabs: Vec::new(), active: 0, split: None, groups: Vec::new() }
     }
 
     /// Builds a snapshot from `(url, title, pinned)` in strip order. Tabs without a persistable
@@ -185,12 +206,14 @@ impl Session {
                 title: title.chars().take(MAX_TITLE_CHARS).collect(),
                 pinned,
                 used: 0,
+                group: None,
             });
         }
         (!kept.is_empty()).then_some(Self {
             tabs: kept,
             active: kept_active,
             split: None,
+            groups: Vec::new(),
         })
     }
 
@@ -216,6 +239,23 @@ impl Session {
             if tab.used != 0 {
                 text.push_str(&format!("used\t{}\n", tab.used));
             }
+            if let Some(group) = tab.group.filter(|id| self.groups.iter().any(|group| group.id == *id)) {
+                text.push_str(&format!("group\t{group}\n"));
+            }
+        }
+        for group in self.groups.iter().filter(|group| self.tabs.iter().any(|tab| tab.group == Some(group.id))).take(MAX_GROUPS) {
+            text.push_str(&format!(
+                "tabgroup\t{}\t{}\t{}",
+                group.id,
+                group.colour.map_or_else(|| "-".to_owned(), |colour| colour.to_string()),
+                u8::from(group.collapsed)
+            ));
+            // A cleaned name holds no control characters, so no tab or line break can reach the file.
+            if let Some(name) = group.name.as_deref().and_then(crate::tab_groups::clean_name) {
+                text.push('\t');
+                text.push_str(&name);
+            }
+            text.push('\n');
         }
         if let Some(split) = self.split.filter(|split| split.valid(self.tabs.len())) {
             // A layout of three or four panes appends `<h|v> <trail1|-> <trail2|-> <cross> <focused
@@ -261,6 +301,7 @@ impl Session {
         let mut active = 0usize;
         let mut tabs = Vec::<SessionTab>::new();
         let mut split = None;
+        let mut groups = Vec::<SessionGroup>::new();
         for line in lines {
             if let Some(value) = line.strip_prefix("active ") {
                 active = value.trim().parse().unwrap_or(0);
@@ -324,6 +365,21 @@ impl Session {
                 }
                 continue;
             }
+            if let Some(group) = line.strip_prefix("group\t") {
+                if let (Some(tab), Ok(group)) = (tabs.last_mut(), group.trim().parse::<u32>()) {
+                    tab.group = (group != 0).then_some(group);
+                }
+                continue;
+            }
+            if let Some(fields) = line.strip_prefix("tabgroup\t") {
+                if let Some(group) = parse_group(fields)
+                    && groups.len() < MAX_GROUPS
+                    && !groups.iter().any(|known| known.id == group.id)
+                {
+                    groups.push(group);
+                }
+                continue;
+            }
             let mut fields = line.splitn(4, '\t');
             if fields.next() != Some("tab") {
                 continue;
@@ -349,11 +405,20 @@ impl Session {
                 title: unescape(title).chars().take(MAX_TITLE_CHARS).collect(),
                 pinned,
                 used: 0,
+                group: None,
             });
         }
         if tabs.is_empty() {
             return None;
         }
+        // A tab naming a group the file does not define is in no group; a group no tab is in is
+        // dropped.
+        for tab in &mut tabs {
+            if tab.group.is_some_and(|id| !groups.iter().any(|group| group.id == id)) {
+                tab.group = None;
+            }
+        }
+        groups.retain(|group| tabs.iter().any(|tab| tab.group == Some(group.id)));
         if active >= tabs.len() {
             active = 0;
         }
@@ -364,8 +429,27 @@ impl Session {
             tabs,
             active,
             split,
+            groups,
         })
     }
+}
+
+/// The fields of a `tabgroup` line after its keyword: `id colour collapsed [name]`, tab separated.
+/// `None` for anything malformed.
+fn parse_group(fields: &str) -> Option<SessionGroup> {
+    let mut fields = fields.splitn(4, '\t');
+    let id = fields.next()?.parse::<u32>().ok().filter(|id| *id != 0)?;
+    let colour = match fields.next()? {
+        "-" => None,
+        token => Some(token.parse::<u8>().ok().filter(|colour| usize::from(*colour) < crate::tab_groups::COLOUR_COUNT)?),
+    };
+    let collapsed = match fields.next()? {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
+    let name = fields.next().and_then(crate::tab_groups::clean_name);
+    Some(SessionGroup { id, name, colour, collapsed })
 }
 
 /// Reads a session file's text. `Ok(None)` is a valid file that records no tabs (every tab was
@@ -1135,9 +1219,62 @@ mod tests {
     }
 
     #[test]
+    fn manual_tab_groups_round_trip_with_their_name_colour_and_fold() {
+        let mut session = sample();
+        session.tabs[0].group = Some(3);
+        session.tabs[1].group = Some(3);
+        session.groups = vec![
+            SessionGroup { id: 3, name: Some("Trip planning".into()), colour: Some(4), collapsed: true },
+            // No tab is in this one, so it is not written.
+            SessionGroup { id: 8, name: None, colour: None, collapsed: false },
+        ];
+        let text = session.serialize();
+        assert!(text.contains("group\t3\n"));
+        assert!(text.contains("tabgroup\t3\t4\t1\tTrip planning\n"));
+        assert!(!text.contains("tabgroup\t8"));
+
+        let parsed = Session::parse(&text).unwrap();
+
+        assert_eq!(parsed.tabs.iter().map(|tab| tab.group).collect::<Vec<_>>(), [Some(3), Some(3)]);
+        assert_eq!(parsed.groups, vec![SessionGroup { id: 3, name: Some("Trip planning".into()), colour: Some(4), collapsed: true }]);
+        // Older text (no group lines) still reads, with every tab in no group.
+        let plain = Session::parse(&sample().serialize()).unwrap();
+        assert!(plain.groups.is_empty() && plain.tabs.iter().all(|tab| tab.group.is_none()));
+    }
+
+    #[test]
+    fn bad_group_lines_are_skipped_without_losing_the_tabs() {
+        let text = "bowser-session 2\nactive 0\n\
+            tab\t0\thttps://a.example/\tA\ngroup\t5\n\
+            tab\t0\thttps://b.example/\tB\ngroup\t6\n\
+            tab\t0\thttps://c.example/\tC\ngroup\tnope\n\
+            tabgroup\t6\t9\t0\tBad colour\n\
+            tabgroup\t0\t-\t0\tZero id\n\
+            tabgroup\t5\t-\t2\tBad fold\n\
+            tabgroup\t5\t-\t0\n\
+            tabgroup\t5\t1\t1\tDuplicate\n";
+
+        let parsed = Session::parse(text).unwrap();
+
+        assert_eq!(parsed.tabs.len(), 3);
+        assert_eq!(parsed.tabs.iter().map(|tab| tab.group).collect::<Vec<_>>(), [Some(5), None, None]);
+        assert_eq!(parsed.groups, vec![SessionGroup { id: 5, name: None, colour: None, collapsed: false }]);
+    }
+
+    #[test]
+    fn a_group_name_cannot_break_the_file() {
+        let mut session = sample();
+        session.tabs[0].group = Some(1);
+        session.groups = vec![SessionGroup { id: 1, name: Some("a\tb\nc".into()), colour: None, collapsed: false }];
+        let text = session.serialize();
+        assert!(text.contains("tabgroup\t1\t-\t0\tabc\n"));
+        assert_eq!(Session::parse(&text).unwrap().groups[0].name.as_deref(), Some("abc"));
+    }
+
+    #[test]
     fn layouts_of_three_and_four_panes_round_trip_and_bad_lines_drop_the_layout() {
         let mut session = sample();
-        let tab = |n: usize| SessionTab { url: format!("https://t{n}.test/"), title: format!("T{n}"), pinned: false, used: 0 };
+        let tab = |n: usize| SessionTab { url: format!("https://t{n}.test/"), title: format!("T{n}"), pinned: false, used: 0, group: None };
         session.tabs = (0..5).map(tab).collect();
         let quad = SessionSplit {
             left: 0,

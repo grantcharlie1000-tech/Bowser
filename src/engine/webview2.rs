@@ -865,10 +865,114 @@ struct TabBlockState {
     /// The `WebResourceRequested` filters this tab registered and the rule generation they came
     /// from; `None` until the webview is configured. A newer build registers them again.
     request_filters: RefCell<Option<(u32, Vec<RequestFilter>)>>,
+    /// The tab's controller is alive (false once it is closed or replaced). The worker filter
+    /// election (`elect_worker_filter`) reads it to know whether the holder is still there.
+    lifetime: Rc<Cell<bool>>,
+    /// The tab is in the private profile, which has its own service and shared workers.
+    private: bool,
+    /// This tab holds its profile's service and shared worker filter (see `WORKER_FILTER_HOLDERS`).
+    worker_filter: Cell<bool>,
 }
 
 /// One registered `WebResourceRequested` filter URI with its request source kinds.
 type RequestFilter = (String, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS);
+
+thread_local! {
+    /// The controller lifetime of the one tab per profile (normal, private) that registers the
+    /// service and shared worker filter. A worker belongs to no tab, and WebView2 may raise its
+    /// `WebResourceRequested` on any CoreWebView2 of the profile that filters for workers; Microsoft's
+    /// ICoreWebView2_22 reference says to add that filter on one CoreWebView2 per profile "to avoid
+    /// handling the same WebResourceRequested event multiple times". Every tab used to add it, so a
+    /// request a service worker made could wait on the UI thread once per open tab, and was judged
+    /// against whichever tab's page it reached. Gmail runs its whole app through a service worker
+    /// (`/mail/u/0/sw.js`), so each of its hundreds of start-up requests paid that.
+    static WORKER_FILTER_HOLDERS: RefCell<[Option<Rc<Cell<bool>>>; 2]> = const { RefCell::new([None, None]) };
+}
+
+/// Whether the tab with controller lifetime `tab` holds the worker filter of the profile whose
+/// holder is `holder`, taking it when no live tab does. A closed tab never takes it.
+fn claim_worker_filter(holder: &mut Option<Rc<Cell<bool>>>, tab: &Rc<Cell<bool>>) -> bool {
+    if !tab.get() {
+        return false;
+    }
+    match holder {
+        Some(current) if Rc::ptr_eq(current, tab) => true,
+        Some(current) if current.get() => false,
+        _ => {
+            *holder = Some(tab.clone());
+            true
+        }
+    }
+}
+
+/// Elects `block`'s tab as its profile's worker filter holder if no live tab is, and records the
+/// answer in `block.worker_filter`. True when the answer changed, so the filters must be synced.
+fn elect_worker_filter(block: &TabBlockState) -> bool {
+    let holds = WORKER_FILTER_HOLDERS
+        .with(|holders| claim_worker_filter(&mut holders.borrow_mut()[usize::from(block.private)], &block.lifetime));
+    block.worker_filter.replace(holds) != holds
+}
+
+/// Gives up the worker filter of whichever profile the tab with controller lifetime `tab` holds, so
+/// the next tab to refresh takes it.
+fn release_worker_filter(tab: &Rc<Cell<bool>>) {
+    WORKER_FILTER_HOLDERS.with(|holders| {
+        for holder in holders.borrow_mut().iter_mut() {
+            if holder.as_ref().is_some_and(|current| Rc::ptr_eq(current, tab)) {
+                *holder = None;
+            }
+        }
+    });
+}
+
+/// Re-registers `block`'s filters when the worker filter election changed its part. Only for a tab
+/// whose filters are already registered (the webview is configured).
+fn sync_worker_filter(webview: &ICoreWebView2, block: &TabBlockState, blocker: &super::BlockerHandle) {
+    if !elect_worker_filter(block) || block.request_filters.borrow().is_none() {
+        return;
+    }
+    let (filters, generation) = {
+        let state = blocker.borrow();
+        (state.request_filters(), state.generation())
+    };
+    let _ = sync_request_filters(webview, block, generation, filters);
+}
+
+/// What a tab needs to take over its profile's worker filter when the tab holding it closes.
+struct WorkerFilterHandover {
+    block: Rc<TabBlockState>,
+    blocker: super::BlockerHandle,
+}
+
+/// True for a request a service or shared worker made, rather than a page or one of its frames.
+fn worker_request_source(kind: COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS) -> bool {
+    kind.0
+        & (COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER.0
+            | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER.0)
+        != 0
+}
+
+/// The site a worker request is judged for. A worker belongs to no tab, so the page of the tab whose
+/// handler happened to receive it says nothing about it: its `Origin`, else its `Referer`, names the
+/// site that made it. Neither (or an opaque `null` origin) leaves it empty, which is judged like a
+/// request from a page not yet known: every listed host is third-party.
+fn worker_request_site(origin: Option<&str>, referer: Option<&str>) -> String {
+    [origin, referer]
+        .into_iter()
+        .flatten()
+        .map(top_host_for_source)
+        .find(|host| !host.is_empty())
+        .unwrap_or_default()
+}
+
+/// One request header's value, or `None` when the request does not carry it.
+fn request_header(request: &ICoreWebView2WebResourceRequest, name: &str) -> Option<String> {
+    let headers = unsafe { request.Headers() }.ok()?;
+    let name = HSTRING::from(name);
+    let mut value = PWSTR::null();
+    unsafe { headers.GetHeader(PCWSTR(name.as_ptr()), &mut value) }.ok()?;
+    Some(CoTaskMemPWSTR::from(value).to_string())
+}
 
 /// The filters to remove and to add so a tab that registered `registered` has `wanted`.
 fn request_filter_changes(registered: &[RequestFilter], wanted: &[RequestFilter]) -> (Vec<RequestFilter>, Vec<RequestFilter>) {
@@ -890,7 +994,7 @@ fn sync_request_filters(
 ) -> windows::core::Result<u64> {
     let webview22 = webview.cast::<ICoreWebView2_22>().ok();
     let wanted: Vec<RequestFilter> = match webview22 {
-        Some(_) => request_filter_uris(request_filters),
+        Some(_) => request_filter_uris(request_filters, block.worker_filter.get()),
         // The older call has no source kinds; the kinds are only kept to compare.
         None => request_filters.into_iter().map(|uri| (uri, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)).collect(),
     };
@@ -1503,6 +1607,8 @@ fn refresh_blocked_urls(
     private: bool,
     page_host: Option<&str>,
 ) {
+    // The tab that held the profile's worker filter may have closed: this one takes it over.
+    sync_worker_filter(webview, block, blocker);
     blocker_detail(block, "blocker_pattern_preparation_started", 0);
     let stored_host = block.top_host.borrow().clone();
     let top_host = page_host.unwrap_or(&stored_host);
@@ -1611,22 +1717,33 @@ thread_local! {
 /// filters: host rules and plain path rules already fail in DevTools `setBlockedURLs`, so the
 /// other requests never wait on the UI thread. Shared and service worker requests keep `*`: the
 /// tab's DevTools session does not block for them, so the in-process matcher still sees them all.
-/// A `*` from the blocker (a rule that can match any URL) keeps every request, as before.
+/// Only `workers` (the one tab per profile that holds the worker filter, `WORKER_FILTER_HOLDERS`)
+/// registers that `*`: WebView2 may raise a worker request on any CoreWebView2 of the profile that
+/// filters for workers. A `*` from the blocker (a rule that can match any URL) keeps every page
+/// request, and every worker request on the holder, as before.
 fn request_filter_uris(
     filters: Vec<String>,
+    workers: bool,
 ) -> Vec<(String, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS)> {
     if filters.iter().any(|filter| filter == "*") {
-        return vec![("*".to_owned(), COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)];
+        let kinds = if workers {
+            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL
+        } else {
+            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT
+        };
+        return vec![("*".to_owned(), kinds)];
     }
     let mut uris: Vec<_> = filters
         .into_iter()
         .map(|filter| (filter, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT))
         .collect();
-    uris.push((
-        "*".to_owned(),
-        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER
-            | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER,
-    ));
+    if workers {
+        uris.push((
+            "*".to_owned(),
+            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER
+                | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER,
+        ));
+    }
     uris
 }
 
@@ -1662,6 +1779,9 @@ struct WebView2Tab {
     /// Native OCR for the Spoiler Firewall (`ocr.rs`): this tab's hooks, pump and cache access.
     ocr: Rc<ocr::TabOcr>,
     private: bool,
+    /// Lets this tab take over its profile's worker filter when the tab holding it closes. `None`
+    /// without a blocker.
+    worker_handover: Option<WorkerFilterHandover>,
 }
 
 /// The Spoiler Firewall registration of one tab: the id WebView2 returned, an epoch that settles
@@ -2412,6 +2532,28 @@ fn take_next_waiting_controller(
 }
 
 impl WebView2Engine {
+    /// After a tab of the `private` (or normal) profile closed: if it held the profile's worker
+    /// filter, another open tab of that profile takes it now rather than at its next navigation, so
+    /// worker requests are not left unfiltered while the remaining tabs sit on their pages.
+    fn hand_over_worker_filter(core: &Rc<RefCell<EngineCore>>, private: bool) {
+        let candidate = {
+            let state = core.borrow();
+            state.tabs.values().filter(|tab| tab.private == private).find_map(|tab| {
+                let handover = tab.worker_handover.as_ref()?;
+                let webview = tab.webview.clone()?;
+                handover
+                    .block
+                    .lifetime
+                    .get()
+                    .then(|| (webview, handover.block.clone(), handover.blocker.clone()))
+            })
+        };
+        // Registration is a COM call: no core borrow is held across it.
+        if let Some((webview, block, blocker)) = candidate {
+            sync_worker_filter(&webview, &block, &blocker);
+        }
+    }
+
     fn start_waiting_prewarm(core: &Rc<RefCell<EngineCore>>) {
         let (next, prewarm) = {
             let mut state = core.borrow_mut();
@@ -2647,6 +2789,8 @@ impl WebView2Engine {
                     Ok(tab) => tab,
                     Err(error) => {
                         let _ = unsafe { cleanup.Close() };
+                        // A tab that never came up must not keep its profile's worker filter.
+                        release_worker_filter(&lifetime);
                         if let Some(core) = weak_core.upgrade() {
                             {
                                 let mut state = core.borrow_mut();
@@ -4988,10 +5132,14 @@ impl EngineAdapter for WebView2Engine {
             state.tabs.remove(&tab_id)
         };
         // Controller teardown can raise events, so it runs without the core borrow.
+        let closed_private = removed.as_ref().map(|tab| tab.private);
         let closed = match removed {
             Some(mut tab) => EngineAdapter::close(&mut tab),
             None => Ok(()),
         };
+        if let Some(private) = closed_private {
+            Self::hand_over_worker_filter(&self.core, private);
+        }
         // Downloads cannot outlive their webview: they are cancelled and listed as interrupted.
         super::download::interrupt_owner(super::download::tab_owner(tab_id.0));
         Self::start_waiting_prewarm(&self.core);
@@ -6076,6 +6224,8 @@ unsafe fn configure_controller(
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
         let block_tab = Rc::new(TabBlockState {
             diagnostic: events.diagnostic_detail.clone().map(|log| (tab_id, log)),
+            lifetime: lifetime.clone(),
+            private,
             ..Default::default()
         });
         let diagnostic_navigation_id = Rc::new(Cell::new(0u64));
@@ -7042,7 +7192,9 @@ unsafe fn configure_controller(
 
         detail("configure_handlers_finished", 0);
         detail("configure_blocker_started", 0);
+        let mut worker_handover = None;
         if let Some(blocker) = blocker {
+            let handover_blocker = blocker.clone();
             let blocked_callback = events.blocked_changed.clone();
             let policy_log = events.policy_event.clone();
             // Listeners exist before Fetch.enable and Network.enable, which refresh sends.
@@ -7076,6 +7228,22 @@ unsafe fn configure_controller(
                     let mut uri = PWSTR::null();
                     request.Uri(&mut uri)?;
                     let guard = CoTaskMemPWSTR::from(uri);
+                    // A worker request reaches this tab only because it holds the profile's worker
+                    // filter: it is judged for the site that made it, never for this tab's page.
+                    let worker_site = args
+                        .cast::<ICoreWebView2WebResourceRequestedEventArgs2>()
+                        .ok()
+                        .and_then(|args2| {
+                            let mut kind = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS::default();
+                            args2.RequestedSourceKind(&mut kind).ok().map(|()| kind)
+                        })
+                        .filter(|kind| worker_request_source(*kind))
+                        .map(|_| {
+                            worker_request_site(
+                                request_header(&request, "Origin").as_deref(),
+                                request_header(&request, "Referer").as_deref(),
+                            )
+                        });
                     let (hit, site_host) = REQUEST_URL.with(|buffer| {
                         let mut buffer = buffer.borrow_mut();
                         buffer.clear();
@@ -7084,11 +7252,12 @@ unsafe fn configure_controller(
                                 .map(|unit| unit.unwrap_or('\u{FFFD}')),
                         );
                         let hit = {
-                            let site_host = request_tab.top_host.borrow();
+                            let tab_host = request_tab.top_host.borrow();
+                            let site_host = worker_site.as_deref().unwrap_or(&tab_host);
                             if private {
-                                blocker.borrow().block_hit_private(&buffer, &site_host)
+                                blocker.borrow().block_hit_private(&buffer, site_host)
                             } else {
-                                blocker.borrow().block_hit(&buffer, &site_host)
+                                blocker.borrow().block_hit(&buffer, site_host)
                             }
                         };
                         let site_host = if hit != crate::blocker::BlockHit::None {
@@ -7111,10 +7280,13 @@ unsafe fn configure_controller(
                             w!(""),
                         )?;
                         args.SetResponse(&response)?;
-                        let count = request_tab.count.get().saturating_add(1);
-                        request_tab.count.set(count);
-                        if let Some(callback) = blocked_callback.as_ref() {
-                            callback(tab_id, count, site_host);
+                        // A worker's block is not this tab's: its page did not make the request.
+                        if worker_site.is_none() {
+                            let count = request_tab.count.get().saturating_add(1);
+                            request_tab.count.set(count);
+                            if let Some(callback) = blocked_callback.as_ref() {
+                                callback(tab_id, count, site_host);
+                            }
                         }
                         if let Some(log) = policy_log.as_ref() {
                             log("request_blocked");
@@ -7129,9 +7301,11 @@ unsafe fn configure_controller(
             // is what excludes documents; the source-kind filter adds requests made by workers,
             // which the older call does not see. The URIs are narrow (`request_filter_uris`): no
             // filter at all means no page request is routed through the UI thread.
+            // Only the tab elected in `refresh_blocked_urls` above adds the worker `*`.
             detail("configure_filter_registration_started", 0);
             let registered_filters = sync_request_filters(&webview, &block_tab, filter_generation, request_filters)?;
             detail("configure_filter_registration_finished", registered_filters);
+            worker_handover = Some(WorkerFilterHandover { block: block_tab.clone(), blocker: handover_blocker });
         }
 
         detail("configure_blocker_finished", 0);
@@ -7259,6 +7433,7 @@ unsafe fn configure_controller(
             spoiler,
             ocr,
             private,
+            worker_handover,
         })
     }
 }
@@ -7992,7 +8167,7 @@ mod tests {
             "create_private_controller(&environment, parent, &handler)",
             "verify_private_profile(&webview)?",
             // Always-on blocker, forced Strict tracking prevention, no stored permission allows.
-            "block_hit_private(&buffer, &site_host)",
+            "block_hit_private(&buffer, site_host)",
             "should_block_private(url.as_str(), &top_host)",
             "crate::private::tracking_level(private, state.tracking_policy.level)",
             "crate::private::permission_allowed(private, stored)",
@@ -8367,11 +8542,11 @@ mod tests {
     fn page_requests_reach_the_matcher_only_through_narrow_filters() {
         let workers = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER
             | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER;
-        // No leftover rule: no page filter at all, only the worker requests.
-        assert_eq!(request_filter_uris(Vec::new()), vec![("*".to_owned(), workers)]);
+        // No leftover rule: no page filter at all, only the worker requests on the holder.
+        assert_eq!(request_filter_uris(Vec::new(), true), vec![("*".to_owned(), workers)]);
         // Leftover rules: their filters for the page, `*` for workers only.
         assert_eq!(
-            request_filter_uris(vec!["*://*google.com/??????/*".to_owned()]),
+            request_filter_uris(vec!["*://*google.com/??????/*".to_owned()], true),
             vec![
                 (
                     "*://*google.com/??????/*".to_owned(),
@@ -8382,17 +8557,99 @@ mod tests {
         );
         // A rule that can match anything keeps every request, as before.
         assert_eq!(
-            request_filter_uris(vec!["*".to_owned()]),
+            request_filter_uris(vec!["*".to_owned()], true),
             vec![("*".to_owned(), COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)]
         );
         // The built-in list needs no page-wide `*`.
         let builtin = crate::blocker::BlockerState::new(crate::blocker::Blocker::from_lists(None), &[]);
-        let uris = request_filter_uris(builtin.request_filters());
+        let uris = request_filter_uris(builtin.request_filters(), true);
         assert!(
             uris.iter()
                 .filter(|(_, kinds)| kinds.contains(COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT))
                 .all(|(uri, _)| uri != "*")
         );
+    }
+
+    #[test]
+    fn only_the_holder_tab_filters_worker_requests() {
+        let workers = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER
+            | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER;
+        let has_worker_kind = |uris: &[(String, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS)]| {
+            uris.iter().any(|(_, kinds)| kinds.0 & workers.0 != 0)
+        };
+        // Every other tab: no worker filter at all, whatever the rules.
+        assert!(request_filter_uris(Vec::new(), false).is_empty());
+        let page = request_filter_uris(vec!["*://*google.com/??????/*".to_owned()], false);
+        assert_eq!(
+            page,
+            vec![("*://*google.com/??????/*".to_owned(), COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT)]
+        );
+        assert!(!has_worker_kind(&page));
+        // A rule that can match anything still sees every page request, but no worker's.
+        assert_eq!(
+            request_filter_uris(vec!["*".to_owned()], false),
+            vec![("*".to_owned(), COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT)]
+        );
+        let builtin = crate::blocker::BlockerState::new(crate::blocker::Blocker::from_lists(None), &[]);
+        assert!(!has_worker_kind(&request_filter_uris(builtin.request_filters(), false)));
+        assert!(has_worker_kind(&request_filter_uris(builtin.request_filters(), true)));
+    }
+
+    #[test]
+    fn one_live_tab_per_profile_holds_the_worker_filter() {
+        let mut holder = None;
+        let first = Rc::new(Cell::new(true));
+        let second = Rc::new(Cell::new(true));
+        assert!(claim_worker_filter(&mut holder, &first), "the first tab takes it");
+        assert!(claim_worker_filter(&mut holder, &first), "and keeps it");
+        assert!(!claim_worker_filter(&mut holder, &second), "a second tab never adds a second worker filter");
+        first.set(false);
+        assert!(claim_worker_filter(&mut holder, &second), "the next tab takes over once the holder closed");
+        assert!(!claim_worker_filter(&mut holder, &first), "a closed tab never takes it back");
+        let closed = Rc::new(Cell::new(false));
+        let mut empty = None;
+        assert!(!claim_worker_filter(&mut empty, &closed), "a closed tab never takes it");
+        assert!(empty.is_none());
+    }
+
+    #[test]
+    fn electing_and_releasing_the_worker_filter_follow_the_profile() {
+        let normal = TabBlockState { lifetime: Rc::new(Cell::new(true)), ..Default::default() };
+        let other = TabBlockState { lifetime: Rc::new(Cell::new(true)), ..Default::default() };
+        let private = TabBlockState { lifetime: Rc::new(Cell::new(true)), private: true, ..Default::default() };
+        WORKER_FILTER_HOLDERS.with(|holders| *holders.borrow_mut() = [None, None]);
+        assert!(elect_worker_filter(&normal), "the first normal tab is elected: its filters change");
+        assert!(normal.worker_filter.get());
+        assert!(!elect_worker_filter(&normal), "electing again changes nothing");
+        assert!(!elect_worker_filter(&other) && !other.worker_filter.get(), "one holder per profile");
+        assert!(elect_worker_filter(&private) && private.worker_filter.get(), "the private profile has its own");
+        release_worker_filter(&normal.lifetime);
+        assert!(elect_worker_filter(&other) && other.worker_filter.get(), "a released filter is taken by the next tab");
+        assert!(elect_worker_filter(&normal) && !normal.worker_filter.get(), "the old holder learns it no longer holds it");
+        WORKER_FILTER_HOLDERS.with(|holders| *holders.borrow_mut() = [None, None]);
+    }
+
+    #[test]
+    fn a_worker_request_is_judged_for_the_site_that_made_it() {
+        assert!(worker_request_source(COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER));
+        assert!(worker_request_source(COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER));
+        assert!(!worker_request_source(COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT));
+        // Gmail's service worker: its requests belong to mail.google.com, not to the holder's page.
+        assert_eq!(worker_request_site(Some("https://mail.google.com"), None), "mail.google.com");
+        assert_eq!(
+            worker_request_site(None, Some("https://mail.google.com/mail/u/0/sw.js?x=1")),
+            "mail.google.com"
+        );
+        assert_eq!(worker_request_site(Some("null"), Some("https://news.example./a")), "news.example");
+        assert_eq!(worker_request_site(None, None), "");
+        assert_eq!(worker_request_site(Some("chrome-extension://abc"), None), "");
+        // Judged for Gmail, Google's own logging is first-party; judged for an unrelated page (what
+        // the receiving tab's host used to decide) it was blocked.
+        let blocker = crate::blocker::BlockerState::new(crate::blocker::Blocker::from_lists(None), &[]);
+        let log = "https://play.google.com/log?format=json&hasfast=true&authuser=0";
+        let site = worker_request_site(Some("https://mail.google.com"), None);
+        assert_eq!(blocker.block_hit(log, &site), crate::blocker::BlockHit::None);
+        assert_ne!(blocker.block_hit(log, "news.example"), crate::blocker::BlockHit::None);
     }
 
     #[test]
@@ -8403,7 +8660,7 @@ mod tests {
         std::fs::write(dir.join(crate::blocker::USER_LIST_NAME), "/my-own-ad-path/\nadserv\n").unwrap();
         let mut state = crate::blocker::BlockerState::load_deferred(&dir, &[], || {});
         // What the startup tab registers when it is configured.
-        let at_creation = (state.generation(), request_filter_uris(state.request_filters()));
+        let at_creation = (state.generation(), request_filter_uris(state.request_filters(), true));
         let start = std::time::Instant::now();
         while state.building() && start.elapsed().as_secs() < 60 {
             state.take_built();
@@ -8412,7 +8669,7 @@ mod tests {
         assert!(state.should_block("https://news.example/my-own-ad-path/x.js", "news.example"), "the rule is live");
         // Its next refresh sees a newer generation and registers the difference.
         assert_ne!(state.generation(), at_creation.0, "a refresh registers the filters again");
-        let wanted = request_filter_uris(state.request_filters());
+        let wanted = request_filter_uris(state.request_filters(), true);
         let (remove, add) = request_filter_changes(&at_creation.1, &wanted);
         assert!(!add.is_empty(), "the build's filters were never registered on the tab");
         let mut registered: Vec<RequestFilter> = at_creation.1.into_iter().filter(|filter| !remove.contains(filter)).collect();
@@ -8444,9 +8701,15 @@ mod tests {
         let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
         for needle in [
             "(state.request_filters(), state.generation())",
-            "Some(_) => request_filter_uris(request_filters),",
+            "Some(_) => request_filter_uris(request_filters, block.worker_filter.get()),",
             "sync_request_filters(&webview, &block_tab, filter_generation, request_filters)?",
             "let _ = sync_request_filters(webview, block, generation, request_filters);",
+            "let _ = sync_request_filters(webview, block, generation, filters);",
+            // The worker election runs on every refresh, before the unchanged-signature return.
+            "    sync_worker_filter(webview, block, blocker);\n    blocker_detail(block, \"blocker_pattern_preparation_started\", 0);",
+            "Self::hand_over_worker_filter(&self.core, private);",
+            "release_worker_filter(&lifetime);",
+            "let site_host = worker_site.as_deref().unwrap_or(&tab_host);",
             "let legacy = blocked_urls_legacy_params(&rejected);",
             "state.response_patterns(top_host, private)",
             "cosmetic_script(css.as_deref(), installed)",
@@ -9623,6 +9886,7 @@ mod tests {
             spoiler: Rc::default(),
             ocr: ocr::TabOcr::new(false, Rc::new(Cell::new(true)), None),
             private: false,
+            worker_handover: None,
         });
         engine.close().unwrap();
         assert!(owned.cancelled());
@@ -9894,6 +10158,7 @@ mod tests {
             spoiler: Rc::default(),
             ocr: ocr::TabOcr::new(false, Rc::new(Cell::new(false)), None),
             private: false,
+            worker_handover: None,
         });
         assert!(state.automatic_suspend_current(id, hidden, &gate, proof));
         state.active_tab = Some(id);

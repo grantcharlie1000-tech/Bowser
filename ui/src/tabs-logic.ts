@@ -44,8 +44,11 @@ export function revealKey(items: readonly Pick<TabItem, 'id'>[], active: number)
   return `${active}:${items.findIndex((item) => item.id === active)}`;
 }
 
-export function scrollDeltaForWheel(deltaX: number, deltaY: number, shiftKey: boolean): number {
-  return shiftKey && deltaX === 0 ? deltaY : deltaX;
+/** How far a wheel over the tab strip scrolls it sideways. The strip only scrolls one way, so an ordinary
+ *  (vertical) mouse wheel scrolls it too, not just Shift+wheel or a sideways trackpad swipe; a sideways
+ *  movement wins when there is one. */
+export function scrollDeltaForWheel(deltaX: number, deltaY: number, _shiftKey: boolean): number {
+  return deltaX !== 0 ? deltaX : deltaY;
 }
 
 export function dragScrollDelta(x: number, left: number, right: number, edge = DRAG_EDGE_PX): number {

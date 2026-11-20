@@ -54,13 +54,15 @@ Rename `edit` | Change icon `workspace` (submenu of the twelve workspace glyphs)
 Rail web app (`rail-app:*`): Open `app-tile` | Edit `edit` | Remove `trash`.
 
 ## Tab context (`tab:*`)
-New tab to the right `plus` | New private tab `private` | New split view `split` | Tab group `tab-group` (submenu: Group tabs of this
-site / Group all tabs by site `tab-group`, or for a grouped tab Name and colour… `edit`, Pin all tabs in the
+New tab to the right `plus` | New private tab `private` | New split view `split` | Tab group `tab-group` (submenu: Add tab
+to new group `plus`, Add tab to group / Move tab to another group `tab-group` (submenu of the groups, `tab-group`),
+Remove from group `caption-minimize` (a dash); for a grouped tab Name and colour… `edit`, Pin all tabs in the
 group `pin`, Hibernate the group `clock`, Tile the group `split`, Save the group as a session… `save`, Bookmark
 all tabs in the group `bookmark`, Copy all links `link`, Move the group to workspace `workspace`, Move the group
-to a new window `window`, Ungroup `caption-minimize`; then Always / automatically / Never group this site, check
-on the standing mode, no icons) | Collapse/Expand group `chevron-up`/`chevron-down` | Remove from group
-`caption-minimize` (a dash) | Undo tab organisation `reset` | Copy URL `link` | Reload `reload` |
+to a new window `window`, Ungroup `caption-minimize`; then the heading "Group by website" with its one-line
+explanation, Group this website's tabs / Group all tabs by website `tab-group`, Always / automatically / Never
+group this site, check on the standing mode, no icons) | Collapse/Expand group `chevron-up`/`chevron-down` |
+Undo tab organisation `reset` | Copy URL `link` | Reload `reload` |
 Duplicate tab `copy` | Pin tab `pin` (check) | Mute tab `mute` / Unmute tab `volume` | Mute/Unmute site
 `workspace-globe` | Hibernate tab `clock` | Move tab to new window `external` | Picture in picture `pip` |
 Close tab `close` | Close other tabs `trash` | Close tabs to the left `back` | Close tabs to the right

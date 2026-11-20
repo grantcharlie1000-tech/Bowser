@@ -12,11 +12,12 @@ impl App {
         Self::island_menu(app, id).map(|(_, ids)| ids).unwrap_or_default()
     }
 
-    /// The stack's name: the one given, else the one Bowser suggests for its site.
+    /// The stack's name: the one given, else the one Bowser suggests for its site ("Group 2" for a
+    /// manual group).
     pub fn stack_name(app: &AppRef, id: TabId) -> Option<String> {
         let state = app.borrow();
-        let key = state.domain_island_of(id)?;
-        Some(state.group_preferences.name(&key).map_or_else(|| tab_organisation::suggested_name(&key), str::to_owned))
+        let key = state.group_key_of(id)?;
+        Some(state.group_display_name(&key))
     }
 
     /// The active workspace's tabs as the stacking commands see them, in strip order.
@@ -33,21 +34,26 @@ impl App {
                     .as_ref()
                     .filter(|url| !tab_groups::is_search_results(url))
                     .and_then(tab_groups::DomainKey::from_url);
-                Some(StackInput { id: *id, domain, pinned: tab.pinned, private: mirror.private })
+                let manual = matches!(self.memberships.get(id), Some(Membership::Manual(_)));
+                Some(StackInput { id: *id, domain, pinned: tab.pinned, private: mirror.private, manual })
             })
             .collect()
     }
 
-    /// Places every tab of `ids` in `domain`'s stack as one undo step. Whether anything changed.
-    fn join_stack(&mut self, ids: &[TabId], domain: &tab_groups::DomainKey) -> bool {
+    /// Places every tab of `ids` in the group `key` (a site's stack or a manual group) as one undo
+    /// step. Whether anything changed.
+    fn join_stack(&mut self, ids: &[TabId], key: &TabGroupKey) -> bool {
         let before = self.organisation_snapshot();
         let mut changed = false;
         for id in ids {
-            let placement = Membership::Joined(domain.clone());
+            let placement = Membership::joining(key);
             if self.memberships.get(id) != Some(&placement) {
                 self.memberships.insert(*id, placement);
                 changed = true;
             }
+        }
+        if changed {
+            self.prune_manual_groups();
         }
         self.record_organisation_step(before, changed);
         changed
@@ -59,7 +65,7 @@ impl App {
                 let state = app.borrow();
                 (state.hwnd, state.tab_model.active())
             };
-            Self::post_tab_changed_kind(hwnd, active, true, false);
+            Self::post_tab_changed_kind(hwnd, active, true, true);
         }
     }
 
@@ -76,13 +82,14 @@ impl App {
             if members.len() < 2 {
                 return 0;
             }
-            (state.join_stack(&members, &domain), members.len())
+            (state.join_stack(&members, &TabGroupKey::Domain(domain)), members.len())
         };
         Self::after_stack_change(app, changed);
         count
     }
 
-    /// "Group all tabs by site": one stack per site with two tabs or more. Returns how many stacks.
+    /// "Group all tabs by website": one stack per site with two tabs or more. Returns how many
+    /// stacks. Tabs in a manual group stay where they are (`stacks::sites_to_stack`).
     pub fn stack_all_by_site(app: &AppRef) -> usize {
         let (changed, count) = {
             let mut state = app.borrow_mut();
@@ -117,6 +124,8 @@ impl App {
             for member in &members {
                 state.memberships.insert(*member, Membership::Ungrouped);
             }
+            // A manual group with no tab left is gone.
+            state.prune_manual_groups();
             state.record_organisation_step(before, true);
             true
         };
@@ -125,8 +134,9 @@ impl App {
     }
 
     /// A tab dragged onto `target` and held there ("Group tabs by dragging one onto another"): both
-    /// join `target`'s stack, or a new stack of `target`'s site, and the dragged tab moves next to it.
-    /// Refused when either tab is pinned, private or has no site.
+    /// join `target`'s stack (a site's or a manual group), or a new stack of `target`'s site, and the
+    /// dragged tab moves next to it. Refused when either tab is pinned or private, or `target` is in no
+    /// group and has no site.
     pub fn stack_onto(app: &AppRef, dragged: TabId, target: TabId) -> bool {
         if dragged == target {
             return false;
@@ -138,10 +148,10 @@ impl App {
             let (Some(_), Some(target_input)) = (usable(dragged), usable(target)) else {
                 return false;
             };
-            let Some(domain) = state.domain_island_of(target).or_else(|| target_input.domain.clone()) else {
+            let Some(key) = state.group_key_of(target).or_else(|| target_input.domain.clone().map(TabGroupKey::Domain)) else {
                 return false;
             };
-            state.join_stack(&[target, dragged], &domain)
+            state.join_stack(&[target, dragged], &key)
         };
         Self::place_after(app, dragged, target);
         Self::after_stack_change(app, changed);
@@ -149,7 +159,8 @@ impl App {
     }
 
     /// "New tab position: grouped with related": a new tab joins the stack of `anchor` (the tab that
-    /// opened it), or starts one of `anchor`'s site with it. Whether the new tab joined.
+    /// opened it, a site's stack or a manual group), or starts one of `anchor`'s site with it. Whether
+    /// the new tab joined.
     fn join_new_tab_to_stack(app: &AppRef, new: TabId, anchor: TabId) -> bool {
         let changed = {
             let mut state = app.borrow_mut();
@@ -160,17 +171,18 @@ impl App {
             if private(new) || private(anchor) || state.tab_model.get(anchor).is_none_or(|tab| tab.pinned) {
                 return false;
             }
-            let island = state.domain_island_of(anchor).or_else(|| {
+            let island = state.group_key_of(anchor).or_else(|| {
                 state
                     .mirror(anchor)
                     .and_then(|tab| tab.url.as_ref())
                     .filter(|url| !tab_groups::is_search_results(url))
                     .and_then(tab_groups::DomainKey::from_url)
+                    .map(TabGroupKey::Domain)
             });
-            let Some(domain) = island else {
+            let Some(key) = island else {
                 return false;
             };
-            state.join_stack(&[anchor, new], &domain)
+            state.join_stack(&[anchor, new], &key)
         };
         Self::after_stack_change(app, changed);
         changed
@@ -290,7 +302,7 @@ impl App {
     pub fn move_island(app: &AppRef, id: TabId, before: Option<TabId>) -> bool {
         let (island, slots) = {
             let state = app.borrow();
-            let Some(island) = state.domain_island_of(id) else {
+            let Some(island) = state.group_key_of(id) else {
                 return false;
             };
             let inputs = state.group_inputs();
@@ -299,7 +311,7 @@ impl App {
                 .into_iter()
                 .map(|(tab, key)| stacks::StripSlot {
                     id: tab,
-                    island: key.map(|TabGroupKey::Domain(domain)| domain),
+                    island: key,
                     pinned: inputs.iter().any(|input| input.id == tab && input.pinned),
                 })
                 .collect();
@@ -432,8 +444,11 @@ impl App {
         };
         let moved = Self::move_tabs_to_workspace(app, &[tab], target, follow) == 1;
         if moved {
-            // A stack it joined on the way stays behind: the tab starts afresh in its workspace.
-            app.borrow_mut().memberships.remove(&tab);
+            // A stack it joined on the way stays behind: the tab starts afresh in its workspace (and
+            // a group made by hand that only it was in goes).
+            let mut state = app.borrow_mut();
+            state.memberships.remove(&tab);
+            state.prune_manual_groups();
         }
         moved
     }

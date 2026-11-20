@@ -298,6 +298,14 @@ fn tracking_prevention_request(
     })
 }
 
+/// The name a group shows when the user has not named it: the site's suggested name, or "Group N".
+fn default_group_name(key: &TabGroupKey) -> String {
+    match key {
+        TabGroupKey::Domain(domain) => tab_organisation::suggested_name(domain),
+        TabGroupKey::Manual(id) => tab_groups::default_manual_name(*id),
+    }
+}
+
 /// Marker a tab shows. A grouped tab uses only its group's entry, so every member agrees; a tab in
 /// no group uses its own entry. A tab that leaves a group shows its own entry again.
 fn resolve_marker(
@@ -695,8 +703,9 @@ pub struct App {
     group_markers: HashMap<TabGroupKey, Marker>,
     /// Marker per tab that is in no group. In memory only, and dropped when the tab closes.
     tab_markers: HashMap<crate::tabs::TabId, Marker>,
-    /// Manual placement of tabs into or out of domain groups. In memory only: tab ids do not
-    /// survive a restart, and the per-domain preferences above are what persist.
+    /// Manual placement of tabs into or out of domain groups, and into manual groups. Tab ids do
+    /// not survive a restart, so site placement is in memory only; manual group membership is saved
+    /// with the session (`session_snapshot`) and rebuilt on restore.
     memberships: HashMap<TabId, Membership>,
     /// Pre-navigation domain of tabs whose navigation is in flight; see `InFlightDomains`.
     in_flight_domains: InFlightDomains,
@@ -1918,6 +1927,8 @@ impl App {
             };
             state.tab_markers.remove(&id);
             state.memberships.remove(&id);
+            // A manual group whose last tab this was goes with it.
+            state.prune_manual_groups();
             state.in_flight_domains.finish(id);
             // --- split view ---
             state.remember_closed_tab(index);
@@ -2549,34 +2560,30 @@ impl App {
         };
         if changed {
             Self::save_group_preferences(app);
-            Self::post_tab_changed_kind(hwnd, active, true, false);
+            Self::post_tab_changed_kind(hwnd, active, true, true);
         }
         changed
     }
 
+    /// Folds or unfolds the group tab `id` is in (a site's or a manual one). A tab in no group folds
+    /// its own site's group, so the choice is there when that group forms.
     pub fn set_tab_group_collapsed(app: &AppRef, id: TabId, collapsed: bool) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
             if state.mirror(id).is_some_and(|tab| tab.private) {
                 return false;
             }
-            let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
+            let Some(key) = state.group_key_of(id).or_else(|| state.own_site_key(id)) else {
                 return false;
             };
-            let Some(key) = url::Url::parse(url)
-                .ok()
-                .and_then(|url| crate::tab_groups::DomainKey::from_url(&url))
-            else {
-                return false;
-            };
-            let Ok(changed) = state.group_preferences.set_collapsed(&key, collapsed) else {
+            let Ok(changed) = state.group_preferences.set_group_collapsed(&key, collapsed) else {
                 return false;
             };
             (state.hwnd, state.tab_model.active(), changed)
         };
         if changed {
             Self::save_group_preferences(app);
-            Self::post_tab_changed_kind(hwnd, active, true, false);
+            Self::post_tab_changed_kind(hwnd, active, true, true);
         }
         changed
     }
@@ -2624,7 +2631,7 @@ impl App {
                 (state.hwnd, state.tab_model.active(), changed)
             };
             if changed {
-                Self::post_tab_changed_kind(hwnd, active, true, false);
+                Self::post_tab_changed_kind(hwnd, active, true, true);
             }
         }
         true
@@ -2641,13 +2648,13 @@ impl App {
             (state.hwnd, state.tab_model.active(), changed)
         };
         if changed {
-            Self::post_tab_changed_kind(hwnd, active, true, false);
+            Self::post_tab_changed_kind(hwnd, active, true, true);
         }
         changed
     }
 
-    /// The site group tab `id` is in: its name (the one given, else the site's) and its tabs, in
-    /// strip order. `None` when the tab is in no group.
+    /// The group tab `id` is in (a site's or a manual one): its name (the one given, else the default)
+    /// and its tabs, in strip order. `None` when the tab is in no group.
     pub fn site_group_tabs(app: &AppRef, id: TabId) -> Option<(String, Vec<TabId>)> {
         let state = app.borrow();
         let inputs = state.group_inputs();
@@ -2655,14 +2662,156 @@ impl App {
         let index = inputs.iter().position(|input| input.id == id)?;
         let key = keys.get(index).cloned().flatten()?;
         let members = tab_groups::group_members(&keys, &key).into_iter().filter_map(|n| inputs.get(n).map(|input| input.id)).collect();
-        let TabGroupKey::Domain(domain) = &key;
-        let name = state.group_preferences.name(domain).map_or_else(|| crate::tab_organisation::suggested_name(domain), str::to_owned);
-        Some((name, members))
+        Some((state.group_display_name(&key), members))
+    }
+
+    // ----- manual tab groups (tab menu > Tab group) -----
+
+    /// "Add tab to new group": a new manual group holding `id`, taken out of whatever group it was
+    /// in. One undo step. `None` for a pinned or private tab (never grouped) or when the window
+    /// already has the most manual groups it keeps.
+    pub fn add_tab_to_new_group(app: &AppRef, id: TabId) -> Option<tab_groups::ManualGroupId> {
+        let (hwnd, active, group) = {
+            let mut state = app.borrow_mut();
+            if !state.groupable(id) {
+                return None;
+            }
+            let before = state.organisation_snapshot();
+            let group = state.group_preferences.create_manual_group()?;
+            // A marker left by an earlier group with the same id does not carry over.
+            state.group_markers.remove(&TabGroupKey::Manual(group));
+            state.memberships.insert(id, Membership::Manual(group));
+            state.prune_manual_groups();
+            state.record_organisation_step(before, true);
+            (state.hwnd, state.tab_model.active(), group)
+        };
+        Self::post_tab_changed_kind(hwnd, active, true, true);
+        Some(group)
+    }
+
+    /// "Add tab to group > ...": `id` joins the existing group `key` (a manual group, or a site's).
+    /// One undo step. Whether it changed.
+    pub fn add_tab_to_group(app: &AppRef, id: TabId, key: &TabGroupKey) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            if !state.groupable(id) {
+                return false;
+            }
+            if let TabGroupKey::Manual(group) = key
+                && state.group_preferences.manual_group(*group).is_none()
+            {
+                return false;
+            }
+            let changed = state.place_tab(id, Membership::joining(key));
+            (state.hwnd, state.tab_model.active(), changed)
+        };
+        if changed {
+            Self::post_tab_changed_kind(hwnd, active, true, true);
+        }
+        changed
+    }
+
+    /// The groups of the active workspace tab `id` could move to, in strip order, each with the name
+    /// it shows: every group but its own. Empty for a pinned or private tab.
+    pub fn group_choices(app: &AppRef, id: TabId) -> Vec<(TabGroupKey, String)> {
+        let state = app.borrow();
+        if !state.groupable(id) {
+            return Vec::new();
+        }
+        let inputs = state.group_inputs();
+        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        let own = inputs
+            .iter()
+            .position(|input| input.id == id)
+            .and_then(|index| keys.get(index).cloned().flatten());
+        let mut seen = Vec::new();
+        for (_, key) in tab_groups::strip_order(&inputs, &keys) {
+            if let Some(key) = key
+                && Some(&key) != own.as_ref()
+                && !seen.contains(&key)
+            {
+                seen.push(key);
+            }
+        }
+        seen.into_iter()
+            .map(|key| {
+                let name = state.group_display_name(&key);
+                (key, name)
+            })
+            .collect()
+    }
+
+    /// A new tab opened from `anchor` (Ctrl+T or the new tab button while `anchor` is shown, or
+    /// "New tab to the right" on it) joins `anchor`'s group, when it has one and "Open new tabs in the
+    /// current tab group" is on. Not an undo step: it is where the tab opened, not a reorganisation.
+    /// Whether the new tab joined.
+    pub fn join_group_of(app: &AppRef, new: TabId, anchor: TabId) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            if new == anchor || !state.settings.tabs.new_tab_in_group || !state.groupable(new) {
+                return false;
+            }
+            let Some(key) = state.group_key_of(anchor) else {
+                return false;
+            };
+            let placement = Membership::joining(&key);
+            if state.memberships.get(&new) == Some(&placement) {
+                return false;
+            }
+            state.memberships.insert(new, placement);
+            (state.hwnd, state.tab_model.active(), true)
+        };
+        if changed {
+            Self::keep_with_group(app, new);
+            Self::post_tab_changed_kind(hwnd, active, true, true);
+        }
+        changed
+    }
+
+    /// Keeps a tab that just joined a group next to the other members in the strip ("New tab
+    /// position: as last" would otherwise leave it at the far end): unless it already sits right
+    /// after a member, it moves right after the group's last member.
+    fn keep_with_group(app: &AppRef, id: TabId) {
+        let last = {
+            let state = app.borrow();
+            let Some(key) = state.group_key_of(id) else {
+                return;
+            };
+            let inputs = state.group_inputs();
+            let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+            let members: Vec<TabId> = tab_groups::group_members(&keys, &key)
+                .into_iter()
+                .map(|index| inputs[index].id)
+                .filter(|member| *member != id)
+                .collect();
+            let order = state.workspaces.active().tabs();
+            let after_member = order
+                .iter()
+                .position(|tab| *tab == id)
+                .and_then(|at| at.checked_sub(1))
+                .is_some_and(|before| members.contains(&order[before]));
+            if after_member {
+                return;
+            }
+            let Some(&last) = members.last() else {
+                return;
+            };
+            last
+        };
+        Self::place_after(app, id, last);
     }
 
     /// Whether the tab is in any group, so "Remove from group" has something to remove.
     pub fn tab_is_grouped(app: &AppRef, id: TabId) -> bool {
         app.borrow().group_key_of(id).is_some()
+    }
+
+    /// Whether the group tab `id` is in (a site's or a manual one) is folded; `None` when the tab is
+    /// in no group.
+    pub fn tab_group_collapsed(app: &AppRef, id: TabId) -> Option<bool> {
+        let state = app.borrow();
+        let key = state.group_key_of(id)?;
+        Some(state.group_preferences.group_collapsed(&key))
     }
 
     pub fn can_undo_tab_organisation(app: &AppRef) -> bool {
@@ -2680,28 +2829,32 @@ impl App {
             state.group_preferences = snapshot
                 .preferences
                 .with_collapse_from(&state.group_preferences);
-            state.memberships = snapshot.memberships;
+            // Tabs closed since the step was recorded do not come back, and neither does a manual
+            // group they alone kept.
+            let open: std::collections::HashSet<TabId> = state.tab_model.iter().map(|tab| tab.id).collect();
+            state.memberships = snapshot.memberships.into_iter().filter(|(id, _)| open.contains(id)).collect();
+            state.prune_manual_groups();
             (state.hwnd, state.tab_model.active())
         };
         Self::save_group_preferences(app);
-        Self::post_tab_changed_kind(hwnd, active, true, false);
+        Self::post_tab_changed_kind(hwnd, active, true, true);
         // The snapshot may predate the site's last tab closing, so release its rule again.
         Self::release_unused_site_rules(app);
         true
     }
 
-    /// Island menu for the domain island that `id` belongs to: its name, colour and member rows in
-    /// model order, with the member tab ids in the same order. `None` for a tab that is not in a
-    /// domain island, so opener-only islands have no menu.
+    /// Island menu for the island (site or manual group) that `id` belongs to: its name, colour and
+    /// member rows in model order, with the member tab ids in the same order. `None` for a tab that is
+    /// in no group.
     pub fn island_menu(app: &AppRef, id: TabId) -> Option<(IslandModel, Vec<TabId>)> {
         let state = app.borrow();
-        let key = state.domain_island_of(id)?;
+        let key = state.group_key_of(id)?;
         let inputs = state.group_inputs();
         let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
         let active = state.tab_model.active();
         let mut rows = Vec::new();
         let mut ids = Vec::new();
-        for index in tab_groups::group_members(&keys, &TabGroupKey::Domain(key.clone())) {
+        for index in tab_groups::group_members(&keys, &key) {
             let tab = inputs[index].id;
             let mirror = state.mirror(tab);
             let title = mirror.map_or("", |tab| tab.title.as_str());
@@ -2717,25 +2870,26 @@ impl App {
             ids.push(tab);
         }
         let model = IslandModel {
-            name: state.group_preferences.name(&key).map(str::to_owned),
-            suggested_name: Some(tab_organisation::suggested_name(&key)),
-            colour: state.group_preferences.colour(&key),
+            name: state.group_preferences.group_name(&key).map(str::to_owned),
+            suggested_name: Some(default_group_name(&key)),
+            colour: state.group_preferences.group_colour(&key),
             rows,
         };
         Some((model, ids))
     }
 
-    /// Renames the domain island that `id` belongs to. Returns whether the stored name changed.
+    /// Renames the island (site or manual group) that `id` belongs to. Returns whether the stored
+    /// name changed.
     pub fn set_tab_group_name(app: &AppRef, id: TabId, name: &str) -> bool {
-        Self::change_island(app, id, |prefs, key| prefs.set_name(key, name))
+        Self::change_island(app, id, |prefs, key| prefs.set_group_name(key, name))
     }
 
-    /// Recolours the domain island that `id` belongs to; `None` restores the theme accent.
+    /// Recolours the island that `id` belongs to; `None` restores the theme accent.
     pub fn set_tab_group_colour(app: &AppRef, id: TabId, colour: Option<u8>) -> bool {
-        Self::change_island(app, id, |prefs, key| prefs.set_colour(key, colour))
+        Self::change_island(app, id, |prefs, key| prefs.set_group_colour(key, colour))
     }
 
-    /// Closes every tab in the domain island that `id` belongs to, and returns how many closed.
+    /// Closes every tab in the island that `id` belongs to, and returns how many closed.
     pub fn close_tab_island(app: &AppRef, id: TabId) -> usize {
         let Some((_, members)) = Self::island_menu(app, id) else {
             return 0;
@@ -2751,12 +2905,12 @@ impl App {
         id: TabId,
         change: impl FnOnce(
             &mut crate::tab_groups::GroupPreferences,
-            &crate::tab_groups::DomainKey,
+            &TabGroupKey,
         ) -> std::result::Result<bool, crate::tab_groups::PreferencesError>,
     ) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
-            let Some(key) = state.domain_island_of(id) else {
+            let Some(key) = state.group_key_of(id) else {
                 return false;
             };
             let before = state.organisation_snapshot();
@@ -2768,7 +2922,7 @@ impl App {
         };
         if changed {
             Self::save_group_preferences(app);
-            Self::post_tab_changed_kind(hwnd, active, true, false);
+            Self::post_tab_changed_kind(hwnd, active, true, true);
         }
         changed
     }
@@ -2779,27 +2933,21 @@ impl App {
             if state.tab_model.active() == id {
                 return false;
             }
-            let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
+            let Some(key) = state.group_key_of(id).or_else(|| state.own_site_key(id)) else {
                 return false;
             };
-            let Some(key) = url::Url::parse(url)
-                .ok()
-                .and_then(|url| crate::tab_groups::DomainKey::from_url(&url))
-            else {
-                return false;
-            };
-            if !state.group_preferences.is_collapsed(&key) {
+            if !state.group_preferences.group_collapsed(&key) {
                 return false;
             }
             let changed = state
                 .group_preferences
-                .set_collapsed(&key, false)
+                .set_group_collapsed(&key, false)
                 .unwrap_or(false);
             (state.hwnd, state.tab_model.active(), changed)
         };
         if changed {
             Self::save_group_preferences(app);
-            Self::post_tab_changed_kind(hwnd, active, true, false);
+            Self::post_tab_changed_kind(hwnd, active, true, true);
         }
         changed
     }
@@ -2871,6 +3019,7 @@ impl App {
                     domain: self.in_flight_domains.domain_for(tab.id, committed),
                     pinned: tab.pinned,
                     manual: false,
+                    group: None,
                 }
             })
             .collect();
@@ -2886,6 +3035,7 @@ impl App {
             if mirrors.get(&input.id).is_some_and(|tab| tab.private) {
                 input.domain = None;
                 input.manual = false;
+                input.group = None;
             }
         }
         inputs
@@ -2916,9 +3066,38 @@ impl App {
             } else {
                 self.memberships.insert(id, placement);
             }
+            self.prune_manual_groups();
         }
         self.record_organisation_step(before, changed);
         changed
+    }
+
+    /// Forgets manual groups no tab is placed in any more (their last tab closed, left or moved on).
+    fn prune_manual_groups(&mut self) {
+        let memberships = &self.memberships;
+        self.group_preferences
+            .retain_manual_groups(|id| tab_organisation::manual_group_in_use(memberships, id));
+    }
+
+    /// Whether `id` may be in a group at all: an open tab that is neither pinned nor private.
+    fn groupable(&self, id: TabId) -> bool {
+        self.tab_model.get(id).is_some_and(|tab| !tab.pinned)
+            && self.mirror(id).is_some_and(|tab| !tab.private)
+    }
+
+    /// The site group a tab's own committed page would belong to, whether or not it formed.
+    fn own_site_key(&self, id: TabId) -> Option<TabGroupKey> {
+        let url = self.tab_model.get(id).and_then(|tab| tab.url.as_deref())?;
+        let url = url::Url::parse(url).ok()?;
+        tab_groups::DomainKey::from_url(&url).map(TabGroupKey::Domain)
+    }
+
+    /// The name a group shows: the one the user gave, else the site's suggested name, else
+    /// "Group N" for a manual group.
+    fn group_display_name(&self, key: &TabGroupKey) -> String {
+        self.group_preferences
+            .group_name(key)
+            .map_or_else(|| default_group_name(key), str::to_owned)
     }
 
     /// Keeps a tab grouped by the domain it had before a navigation that is about to start.
@@ -2935,13 +3114,17 @@ impl App {
         self.tabs.iter().find(|tab| tab.id == id)
     }
 
-    /// Group identity of one tab under the current projection, or `None` when it is in no group.
-    /// Registrable domain of the island `id` belongs to. `None` when the tab is in no group.
+    /// Registrable domain of the site group `id` belongs to. `None` when the tab is in no group or in
+    /// a manual one.
+    #[cfg(test)]
     fn domain_island_of(&self, id: TabId) -> Option<tab_groups::DomainKey> {
-        let TabGroupKey::Domain(key) = self.group_key_of(id)?;
-        Some(key)
+        match self.group_key_of(id)? {
+            TabGroupKey::Domain(key) => Some(key),
+            TabGroupKey::Manual(_) => None,
+        }
     }
 
+    /// Group identity of one tab under the current projection, or `None` when it is in no group.
     fn group_key_of(&self, id: TabId) -> Option<TabGroupKey> {
         let inputs = self.group_inputs();
         let index = inputs.iter().position(|input| input.id == id)?;
@@ -5797,6 +5980,25 @@ impl App {
                     .find(|tab| tab.id == split.focused_tab())
                     .and_then(|tab| tab.url.clone());
             }
+            // Manual tab groups come back with their tabs, under ids of this window.
+            let mut group_ids = HashMap::new();
+            for saved_group in &session.groups {
+                let Some(id) = state.group_preferences.create_manual_group() else {
+                    break;
+                };
+                let key = TabGroupKey::Manual(id);
+                let preferences = &mut state.group_preferences;
+                let _ = preferences.set_group_name(&key, saved_group.name.as_deref().unwrap_or_default());
+                let _ = preferences.set_group_colour(&key, saved_group.colour);
+                let _ = preferences.set_group_collapsed(&key, saved_group.collapsed);
+                group_ids.insert(saved_group.id, id);
+            }
+            for (saved, restored) in session.tabs.iter().zip(&restored_ids) {
+                if let (Some(group), Some(id), false) = (saved.group.and_then(|group| group_ids.get(&group)), restored, saved.pinned) {
+                    state.memberships.insert(*id, Membership::Manual(*group));
+                }
+            }
+            state.prune_manual_groups();
             let ids = state.tab_model.iter().map(|tab| tab.id).collect::<Vec<_>>();
             let active = state.tab_model.active();
             // `restored_ids` lines up with the saved session (and so with `order=`) by position.
@@ -5942,6 +6144,27 @@ impl App {
             }
         }
         // --- end tab options ---
+        // Manual tab groups: each saved tab in one names it, and every such group is saved once.
+        // Pinned and private tabs are never in a group (a private tab is not saved at all).
+        for model in state.tab_model.iter().filter(|model| !model.pinned) {
+            let (Some(&saved), Some(Membership::Manual(group))) = (saved_indexes.get(&model.id), state.memberships.get(&model.id)) else {
+                continue;
+            };
+            let Some(manual) = state.group_preferences.manual_group(*group) else {
+                continue;
+            };
+            if let Some(saved_tab) = session.tabs.get_mut(saved) {
+                saved_tab.group = Some(group.0);
+            }
+            if !session.groups.iter().any(|known| known.id == group.0) {
+                session.groups.push(crate::session::SessionGroup {
+                    id: group.0,
+                    name: manual.name.clone(),
+                    colour: manual.colour,
+                    collapsed: manual.collapsed,
+                });
+            }
+        }
         Some(session)
     }
 
@@ -9719,6 +9942,7 @@ mod tests {
             title: title.to_owned(),
             pinned,
             used: 0,
+            group: None,
         };
         app.borrow_mut().pending_restore = Some(crate::session::Session {
             tabs: vec![
@@ -9736,6 +9960,7 @@ mod tests {
                 stacked: true,
                 ..Default::default()
             }),
+            groups: Vec::new(),
         });
         App::restore_pending_session(&app);
         let state = app.borrow();
@@ -11433,13 +11658,15 @@ mod tests {
                     url: "https://example.test/pinned".into(),
                     title: "Pinned title".into(),
                     pinned: true,
-                    used: 202
+                    used: 202,
+                    group: None,
                 },
                 crate::session::SessionTab {
                     url: "https://example.test/first".into(),
                     title: "First title".into(),
                     pinned: false,
-                    used: 101
+                    used: 101,
+                    group: None,
                 },
             ]
         );

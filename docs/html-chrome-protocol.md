@@ -119,7 +119,7 @@ The tab row is a second chrome host (same shared environment and private chrome 
 
 The Tabs host is active in either layout after its current document has acknowledged the complete initial state and the native reveal operations succeed. Horizontal mode covers the full tab row. Vertical mode covers the sidebar up to (but not including) the native resize handle; native sidebar paint and hits are skipped only inside that region. If the page fails or the region is too narrow, native painting and hits resume.
 
-Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before = 0` means the end of the strip). Group keys are a stable non-zero FNV-1a hash of the group's name (domain or opener).
+Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before = 0` means the end of the strip). Group keys are a stable non-zero FNV-1a hash of the group's canonical name (`d:<domain>` for a site group, `m:<id>` for a group made by hand).
 
 ### JS -> Rust additions (flat objects, ids are unsigned ints that must exist or are ignored)
 

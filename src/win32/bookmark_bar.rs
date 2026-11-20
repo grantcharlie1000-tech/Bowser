@@ -267,7 +267,11 @@ fn live_groups(app: &AppRef) -> Vec<(String, Vec<TabId>)> {
     let mut seen: Vec<TabGroupKey> = Vec::new();
     let mut out = Vec::new();
     for key in keys.iter().flatten() {
-        let TabGroupKey::Domain(domain) = key;
+        // The bar's group chips are kept per site (`bar_groups` in settings.txt), so a group the
+        // user made by hand, which has no site, has no chip.
+        let TabGroupKey::Domain(domain) = key else {
+            continue;
+        };
         if seen.contains(key) {
             continue;
         }

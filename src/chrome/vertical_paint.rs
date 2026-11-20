@@ -7,7 +7,7 @@ use crate::{
         group_ui::{self, GroupFrame, GroupGeometry},
         layout::{Metrics, Rect},
     },
-    tab_groups::{self, DomainKey, GroupPreferences, TabGroupInput, TabGroupKey},
+    tab_groups::{self, GroupPreferences, TabGroupInput, TabGroupKey},
     tabs::TabId,
     vertical_tabs::{self, SidebarHit, SidebarLayout},
 };
@@ -23,7 +23,7 @@ const HEADER_LABEL_GAP: i32 = 7;
 pub enum SidebarRow {
     Group {
         representative: TabId,
-        key: DomainKey,
+        key: TabGroupKey,
         name: String,
         colour: Option<u8>,
         collapsed: bool,
@@ -54,22 +54,24 @@ pub fn rows(
     let mut rows = Vec::with_capacity(tabs.len());
     for (index, (id, title, pinned, loading)) in tabs.iter().enumerate() {
         let key = keys.get(index).and_then(Option::as_ref);
-        if let Some(TabGroupKey::Domain(domain)) = key {
-            if emitted.insert(TabGroupKey::Domain(domain.clone())) {
-                let collapsed = preferences.is_collapsed(domain);
+        if let Some(group) = key {
+            if emitted.insert(group.clone()) {
+                let collapsed = preferences.group_collapsed(group);
                 let members = keys.iter().filter(|other| other.as_ref() == key).count();
                 let selected = tabs
                     .iter()
                     .zip(&keys)
                     .any(|((tab, ..), other)| *tab == active && other.as_ref() == key);
+                let name = match (preferences.group_name(group), group) {
+                    (Some(name), _) => name.to_owned(),
+                    (None, TabGroupKey::Domain(domain)) => domain.as_str().to_owned(),
+                    (None, TabGroupKey::Manual(id)) => tab_groups::default_manual_name(*id),
+                };
                 rows.push(SidebarRow::Group {
                     representative: *id,
-                    key: domain.clone(),
-                    name: preferences
-                        .name(domain)
-                        .unwrap_or(domain.as_str())
-                        .to_owned(),
-                    colour: preferences.colour(domain),
+                    key: group.clone(),
+                    name,
+                    colour: preferences.group_colour(group),
                     collapsed,
                     members,
                     selected,
@@ -207,7 +209,7 @@ mod tests {
         chrome::group_ui::{
             GroupState, MAX_VISIBLE_STACK_BALLS, MIN_HIT_GAP_LOGICAL, MIN_HIT_LOGICAL,
         },
-        tab_groups::{GroupPreferences, TabGroupInput},
+        tab_groups::{DomainKey, GroupPreferences, TabGroupInput},
         tabs::TabId,
     };
 
@@ -216,7 +218,7 @@ mod tests {
     fn header(members: usize, collapsed: bool, selected: bool) -> SidebarRow {
         SidebarRow::Group {
             representative: TabId(1),
-            key: DomainKey::from_url(&Url::parse("https://example.com/").unwrap()).unwrap(),
+            key: TabGroupKey::Domain(DomainKey::from_url(&Url::parse("https://example.com/").unwrap()).unwrap()),
             name: "example.com".to_owned(),
             colour: None,
             collapsed,
@@ -431,6 +433,7 @@ mod tests {
             }),
             pinned: false,
             manual: true,
+            group: None,
         };
         let inputs = [
             member(1, Some("alpha.example.com")),
@@ -502,5 +505,34 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_manual_group_gets_a_header_named_after_it() {
+        let mut preferences = GroupPreferences::default();
+        let group = preferences.create_manual_group().unwrap();
+        let member = |id: u32, host: &str, in_group: bool| TabGroupInput {
+            id: TabId(id),
+            domain: DomainKey::from_url(&Url::parse(&format!("https://{host}/")).unwrap()),
+            pinned: false,
+            manual: false,
+            group: in_group.then_some(group),
+        };
+        let inputs = [member(1, "github.com", true), member(2, "example.org", false), member(3, "bbc.co.uk", true)];
+        let tabs = [
+            (TabId(1), "one".to_owned(), false, false),
+            (TabId(2), "two".to_owned(), false, false),
+            (TabId(3), "three".to_owned(), false, false),
+        ];
+
+        let unnamed = rows(&tabs, &inputs, &preferences, TabId(2));
+        assert_eq!(unnamed.len(), 4, "header, two members, loose tab");
+        assert!(matches!(&unnamed[0], SidebarRow::Group { key: TabGroupKey::Manual(id), name, members: 2, selected: false, .. } if *id == group && name == "Group 1"));
+
+        preferences.set_group_name(&TabGroupKey::Manual(group), "Reading").unwrap();
+        preferences.set_group_collapsed(&TabGroupKey::Manual(group), true).unwrap();
+        let named = rows(&tabs, &inputs, &preferences, TabId(3));
+        assert_eq!(named.len(), 2, "folded header and the loose tab");
+        assert!(matches!(&named[0], SidebarRow::Group { name, collapsed: true, selected: true, .. } if name == "Reading"));
     }
 }

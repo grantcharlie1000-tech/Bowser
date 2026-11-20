@@ -29,8 +29,7 @@ test('the lists, defaults and limits match toolbar_prefs.rs', () => {
   assert.deepEqual([...bars.TAB_ITEMS], rustList('TAB_ITEMS'));
   assert.deepEqual([...bars.PANEL_ITEMS], rustList('PANEL_ITEMS'));
   assert.equal(bars.MAX_ITEMS, Number(/pub const MAX_ITEMS: usize = (\d+);/.exec(rust)[1]));
-  assert.equal(bars.MAX_COMMAND_ITEMS, Number(/pub const MAX_COMMAND_ITEMS: usize = (\d+);/.exec(rust)[1]));
-  assert.equal(bars.MAX_RIGHT_STATIC, Number(/pub const MAX_RIGHT_STATIC: usize = (\d+);/.exec(rust)[1]));
+  assert.ok(!/MAX_COMMAND_ITEMS|MAX_RIGHT_STATIC/.test(rust), 'no smaller cap than MAX_ITEMS in Rust either');
   assert.deepEqual(bars.BAR_KEYS, { address: 'toolbar_buttons', tabs: 'toolbar_tabs', panel: 'toolbar_panel' });
   for (const [bar, key] of Object.entries(bars.BAR_KEYS)) assert.match(rust, new RegExp(`Self::${bar[0].toUpperCase()}${bar.slice(1)} => "${key}"`), bar);
   // The slot of one always-there button: the extensions button's, 28 px.
@@ -61,10 +60,9 @@ test('a list is valid only with a bar’s own buttons or command buttons, no rep
   for (const [bar, items] of [
     ['address', ['back', 'back']], ['address', ['menu']], ['address', ['feeds']], ['tabs', ['back']], ['panel', ['closed-tabs']], ['address', ['cmd:']],
     ['address', ['cmd:UPPER']], ['address', ['chain:0']], ['address', ['chain:01']], ['address', ['chain:12345']], ['address', ['cmd:' + 'a'.repeat(33)]],
-    ['tabs', ['cmd:a', 'cmd:b', 'cmd:c', 'cmd:d', 'cmd:e']],
-    ['address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b', 'chain:1', 'chain:2']],
   ]) assert.equal(bars.validItems(bar, items), false, `${bar} ${items}`);
-  assert.equal(bars.validItems('address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b', 'chain:1']), true, 'five always-there buttons are allowed');
+  assert.equal(bars.validItems('tabs', ['cmd:a', 'cmd:b', 'cmd:c', 'cmd:d', 'cmd:e']), true, 'any number of command buttons');
+  assert.equal(bars.validItems('address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b', 'chain:1', 'chain:2', 'chain:3', 'cmd:c']), true, 'any number of buttons at the end of the bar');
   assert.equal(bars.validItems('address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b', 'downloads', 'extensions']), true, 'downloads and extensions take room only when shown');
   assert.equal(bars.validItems('address', Array.from({ length: bars.MAX_ITEMS + 1 }, (_, i) => `cmd:x${i}`)), false);
 });
@@ -94,8 +92,9 @@ test('adding puts a button at the end of its zone, and says why when it cannot',
   assert.deepEqual(bars.addItem('panel', ['feeds'], 'cmd:history'), ['feeds', 'cmd:history']);
   assert.equal(bars.addItem('address', ['back'], 'back'), null);
   assert.match(bars.whyNotAdd('address', ['back'], 'back'), /already/);
-  assert.match(bars.whyNotAdd('tabs', ['cmd:a', 'cmd:b', 'cmd:c', 'cmd:d'], 'cmd:e'), /at most 4 command buttons/);
-  assert.match(bars.whyNotAdd('address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b', 'chain:1'], 'chain:2'), /at most 4 command buttons|at most 5 buttons/);
+  assert.equal(bars.whyNotAdd('tabs', ['cmd:a', 'cmd:b', 'cmd:c', 'cmd:d'], 'cmd:e'), null, 'no cap on command buttons');
+  assert.equal(bars.whyNotAdd('address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b', 'chain:1'], 'chain:2'), null, 'no cap on the end of the bar');
+  assert.match(bars.whyNotAdd('tabs', Array.from({ length: bars.MAX_ITEMS }, (_, i) => `chain:${i + 1}`), 'cmd:e'), /at most 99 buttons/);
   assert.match(bars.whyNotAdd('address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b'], 'newtab'), /already/);
   assert.equal(bars.whyNotAdd('address', ['bookmark', 'newtab', 'cmd:a', 'cmd:b'], 'downloads'), null);
   assert.deepEqual(bars.removeItem(['a', 'b', 'c'], 'b'), ['a', 'c']);
@@ -128,15 +127,20 @@ const parse = (extra) => parseInbound(JSON.stringify({ ...stateBase, ...extra })
 test('the state message carries the address bar’s buttons, all four fields or none', () => {
   const ok = parse({ items: 'back,reload,cmd:new-tab', tools: [{ k: 'cmd:new-tab', l: 'New tab', i: 2 }], extra: 32, feeds: 1 });
   assert.deepEqual([ok.items, ok.tools, ok.extra, ok.feeds], ['back,reload,cmd:new-tab', [{ k: 'cmd:new-tab', l: 'New tab', i: 2 }], 32, 1]);
+  // A long bar: many command buttons, far along the list, a lot of room at the end.
+  const tools = Array.from({ length: 30 }, (_, n) => ({ k: `chain:${n + 1}`, l: `C${n}`, i: n + 60 }));
+  const long = parse({ items: tools.map((tool) => tool.k).join(','), tools, extra: 30 * 28, feeds: 0 });
+  assert.equal(long.tools.length, 30);
+  assert.equal(long.extra, 840);
   const older = parse({});
   assert.equal(older.items, undefined);
   assert.equal(older.feeds, undefined);
   for (const bad of [
     { items: 'a' }, { items: 'a', tools: [], extra: 0 }, { items: 'a', tools: [], feeds: 0 }, { items: 1, tools: [], extra: 0, feeds: 0 },
     { items: 'a', tools: 'x', extra: 0, feeds: 0 }, { items: 'a', tools: [{ k: 'Bad Id', l: 'x', i: 0 }], extra: 0, feeds: 0 },
-    { items: 'a', tools: [{ k: 'cmd:a', l: 'x', i: 14 }], extra: 0, feeds: 0 }, { items: 'a', tools: [{ k: 'cmd:a', l: 'x', i: 0, z: 1 }], extra: 0, feeds: 0 },
-    { items: 'a', tools: Array(5).fill({ k: 'cmd:a', l: 'x', i: 0 }), extra: 0, feeds: 0 }, { items: 'a', tools: [], extra: 401, feeds: 0 },
-    { items: 'a', tools: [], extra: 0, feeds: 10 }, { items: 'x'.repeat(513), tools: [], extra: 0, feeds: 0 },
+    { items: 'a', tools: [{ k: 'cmd:a', l: 'x', i: 99 }], extra: 0, feeds: 0 }, { items: 'a', tools: [{ k: 'cmd:a', l: 'x', i: 0, z: 1 }], extra: 0, feeds: 0 },
+    { items: 'a', tools: Array(100).fill({ k: 'cmd:a', l: 'x', i: 0 }), extra: 0, feeds: 0 }, { items: 'a', tools: [], extra: 99 * 28 + 1, feeds: 0 },
+    { items: 'a', tools: [], extra: 0, feeds: 10 }, { items: 'x'.repeat(4097), tools: [], extra: 0, feeds: 0 },
   ]) assert.equal(parse(bad), null, JSON.stringify(bad));
 });
 
@@ -153,10 +157,11 @@ test('the Rust state fixture still parses, and a tool command is validated befor
   return bundle('protocol.ts').then(({ sendTool }) => {
     assert.equal(sendTool('address', 'cmd:new-tab', 2), true);
     assert.equal(sendTool('tabs', 'closed-tabs', 0), true);
-    for (const [bar, item, index] of [['address', 'BAD', 0], ['address', 'cmd:a', -1], ['address', 'cmd:a', 14], ['address', '', 0], ['address', 'cmd:a', 1.5]]) {
+    assert.equal(sendTool('address', 'cmd:new-tab', 40), true, 'a button far along a long bar still runs');
+    for (const [bar, item, index] of [['address', 'BAD', 0], ['address', 'cmd:a', -1], ['address', 'cmd:a', 99], ['address', '', 0], ['address', 'cmd:a', 1.5]]) {
       assert.equal(sendTool(bar, item, index), false, `${item} ${index}`);
     }
-    assert.deepEqual(sent, [{ v: 1, t: 'tool', b: 'address', k: 'cmd:new-tab', i: 2 }, { v: 1, t: 'tool', b: 'tabs', k: 'closed-tabs', i: 0 }]);
+    assert.deepEqual(sent, [{ v: 1, t: 'tool', b: 'address', k: 'cmd:new-tab', i: 2 }, { v: 1, t: 'tool', b: 'tabs', k: 'closed-tabs', i: 0 }, { v: 1, t: 'tool', b: 'address', k: 'cmd:new-tab', i: 40 }]);
     delete globalThis.window;
   });
 });

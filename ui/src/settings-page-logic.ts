@@ -788,9 +788,13 @@ export const AREAS: readonly AreaSpec[] = [
   ] },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split groups start page speed dial', parts: ['tabs', 'stacks', 'startpage'], groups: [
     group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_active_min_width', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_title_notifications', 'tabs_unread_indicator', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
-    group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_focus_page']),
+    group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_new_tab_in_group', 'tabs_focus_page']),
+    // The start page is what "New tab page: Start" shows, so its two groups follow New tabs. The speed
+    // dial rows and the widget rows are apart, each under its own switch, so a row behind More still
+    // says which switch it belongs to.
+    group('startPage', 'Start page', 'startpage', ['startDials', 'startThumbSize', 'startTitles', 'startColumns', 'startAddButton', 'startGroupReopen', 'startDragReorder']),
+    group('startWidgets', 'Start page widgets', 'startpage', ['startWidgets', 'startWidgetColumns', 'startWidgetBg', 'startWidgetColor', 'startWidgetHeight', 'startWidgetDrag']),
     group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']),
-    group('startPage', 'Start page', 'startpage', ['startDials', 'startTitles', 'startThumbSize', 'startWidgets', 'startGroupReopen', 'startAddButton', 'startColumns', 'startDragReorder', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag']),
     group('closing', 'Closing', 'tabs', ['tabs_close_related', 'tabs_close_activation', 'tabs_align_close_button', 'tabs_keep_window', 'tabs_confirm_close', 'tabs_double_click', 'tabs_close_left', 'tabs_close_always']),
     group('pinned', 'Pinned and restored', 'tabs', ['tabs_pinned_close', 'tabs_pinned_separator', 'tabs_pinned_restrict', 'tabs_load_pinned', 'tabs_lazy_restore']),
     group('selecting', 'Selecting and audio', 'tabs', ['tabs_selection', 'tabs_selection_active', 'tabs_mute_mode']),
@@ -892,7 +896,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'fontSize', 'defaultZoom',
   'tabPosition', 'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position',
   'grouping', 'tabs_workspaces', // --- T10 ---
-  'startDials', 'startTitles', 'startThumbSize', 'startWidgets',
+  'startDials', 'startThumbSize', 'startTitles', 'startColumns', 'startWidgets', // the rest of the start page is `more`, under its own group's switch
   'blocker', 'cookieNotices', 'blockYoutubeVideoAds', 'history', 'historyRetention', 'tracking', 'secHttps', 'spoilerProtection',
   'addrAutocomplete', 'bmNewTab', 'translateOffer', 'feedsOpen',
   ...PAGE_TOOLS_CORE, // --- page tools (T7) ---
@@ -1034,22 +1038,22 @@ const BUILT_ROWS: readonly RowSpec[] = [
   // --- tab stacks, tiling and workspaces (T10) ---
   { id: 'workspaceRules', section: 'tabs', label: 'Rules', aria: 'Workspace rules', description: '', keywords: 'workspace rules sites open automatically named workspace domain Workspace rules Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.' },
   // --- start page --- (docs/design/start-page.md)
-  { id: 'startGroupReopen', section: 'startpage', label: 'Start group', aria: 'Open the start page on', description: '', keywords: 'speed dial group last first new tab start page reopen Open the start page on Which speed dial group a new tab shows first.' },
-  { id: 'startTitles', section: 'startpage', label: 'Titles', aria: 'Show titles', description: '', keywords: 'speed dial titles names always never needed labels Show titles When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.' },
+  { id: 'startGroupReopen', section: 'startpage', label: 'Starting group', aria: 'Speed dial group a new tab opens on', description: '', keywords: 'start group speed dial group last used first new tab start page reopen Open the start page on Which speed dial group a new tab shows first.' },
+  { id: 'startTitles', section: 'startpage', label: 'Site names', aria: 'Show site names under speed dial tiles', description: '', keywords: 'speed dial titles names always never needed auto if no image hover labels Show titles When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.' },
   { id: 'startDials', section: 'startpage', label: 'Speed dials', aria: 'Show speed dials on new tabs', description: '', keywords: 'speed dials new tab blank start page groups sites pinned Show speed dials on new tabs Off, a new tab is blank.' },
-  { id: 'startAddButton', section: 'startpage', label: 'Add button', aria: 'Show the add button', description: '', keywords: 'speed dial add button plus tile new site Show the add button A tile at the end of each group for adding a site.' },
-  { id: 'startColumns', section: 'startpage', label: 'Columns', aria: 'Maximum columns', description: '', keywords: 'speed dial columns row grid width Maximum columns The most speed dials in a row. Fewer show when the window is narrow.' },
+  { id: 'startAddButton', section: 'startpage', label: 'Add site tile', aria: 'Show the Add a site tile', description: '', keywords: 'speed dial add button plus tile new site add a site Show the add button A tile at the end of each group for adding a site.' },
+  { id: 'startColumns', section: 'startpage', label: 'Max columns', aria: 'Maximum speed dial columns', description: '', keywords: 'speed dial columns row grid width Maximum columns The most speed dials in a row. Fewer show when the window is narrow.' },
   { id: 'startThumbSize', section: 'startpage', label: 'Tile size', description: '', keywords: 'speed dial thumbnail size tiny small medium large huge tiles Tile size How large each speed dial tile is.' },
-  { id: 'startDragReorder', section: 'startpage', label: 'Reorder', aria: 'Drag to reorder', description: '', keywords: 'speed dial drag drop reorder move sort Drag to reorder Drag speed dials to reorder them, or onto a folder to put them inside it. Alt and the arrow keys do the same.' },
+  { id: 'startDragReorder', section: 'startpage', label: 'Drag to reorder', aria: 'Drag speed dials to reorder them', description: '', keywords: 'speed dial drag drop reorder move sort Drag to reorder Drag speed dials to reorder them, or onto a folder to put them inside it. Alt and the arrow keys do the same.' },
   { id: 'startHomepage', section: 'startpage', label: 'Homepage', description: '', keywords: 'home page homepage address url Homepage The Home button opens this. Leave it empty for the start page.' },
   { id: 'startupMode', section: 'startpage', label: 'Startup', aria: 'On startup', description: '', keywords: 'startup launch open start page last session where you left off homepage specific pages restore when bowser starts On startup What opens when Bowser starts.' },
   { id: 'startupPages', section: 'startpage', label: 'Startup pages', aria: 'Pages to open at startup', description: '', keywords: 'startup pages specific urls tabs launch Pages to open at startup One address per line, up to eight. Used when Bowser starts with specific pages.' },
-  { id: 'startWidgets', section: 'startpage', label: 'Dashboard', aria: 'Show the dashboard', description: '', keywords: 'widgets dashboard top sites sticky note date privacy statistics webpage Show the dashboard Widgets under the speed dials: top sites, bookmarks, a sticky note, the date, privacy statistics and a web page.' },
+  { id: 'startWidgets', section: 'startpage', label: 'Widgets', aria: 'Show widgets on the start page', description: '', keywords: 'widgets dashboard start page top sites sticky note date privacy statistics webpage Show the dashboard Widgets under the speed dials: top sites, bookmarks, a sticky note, the date, privacy statistics and a web page.' },
   { id: 'startWidgetColumns', section: 'startpage', label: 'Widget columns', description: '', keywords: 'widgets columns row dashboard Widget columns The most widgets in a row, 1 to 4.' },
-  { id: 'startWidgetHeight', section: 'startpage', label: 'Height', aria: 'Widget height', description: '', keywords: 'widgets height tall regular dashboard Widget height Regular or tall widgets.' },
-  { id: 'startWidgetBg', section: 'startpage', label: 'Background', aria: 'Widget background', description: '', keywords: 'widgets background solid transparent translucent custom colour Widget background How a widget is filled: solid, semi-transparent, transparent or a colour you choose.' },
-  { id: 'startWidgetColor', section: 'startpage', label: 'Colour', aria: 'Custom widget colour', description: '', keywords: 'widgets colour color custom background Custom widget colour Used when the widget background is Custom.' },
-  { id: 'startWidgetDrag', section: 'startpage', label: 'Rearrange', aria: 'Drag to rearrange widgets', description: '', keywords: 'widgets drag rearrange reorder move Drag to rearrange widgets Drag a widget by its handle, or press Alt and an arrow key on it.' },
+  { id: 'startWidgetHeight', section: 'startpage', label: 'Widget height', description: '', keywords: 'widgets height tall regular dashboard Widget height Regular or tall widgets.' },
+  { id: 'startWidgetBg', section: 'startpage', label: 'Widget background', description: '', keywords: 'widgets background solid transparent translucent custom colour Widget background How a widget is filled: solid, semi-transparent, transparent or a colour you choose.' },
+  { id: 'startWidgetColor', section: 'startpage', label: 'Custom colour', aria: 'Custom widget colour', description: '', keywords: 'widgets colour color custom background Custom widget colour Used when the widget background is Custom.' },
+  { id: 'startWidgetDrag', section: 'startpage', label: 'Drag to rearrange', aria: 'Drag to rearrange widgets', description: '', keywords: 'widgets drag rearrange reorder move Drag to rearrange widgets Drag a widget by its handle, or press Alt and an arrow key on it.' },
   // --- end start page ---
   { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.' },
   { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.' },

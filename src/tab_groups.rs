@@ -10,6 +10,13 @@
 //! optional island name, and optional island colour. Load it once at startup
 //! with [`GroupPreferences::load`] and call [`GroupPreferences::save`] after an
 //! explicit user change.
+//!
+//! Besides site groups there are *manual* groups ([`TabGroupKey::Manual`]): groups the user made
+//! from the tab menu ("Add tab to new group"), with no site behind them. Their name, colour and
+//! collapsed flag ride along in [`GroupPreferences`] so every projection sees them, but they are
+//! never written to `tab-groups.txt`: a manual group belongs to its tabs, so it is saved with the
+//! session (`session.rs`) and comes back with them. A tab in a manual group is never part of a site
+//! group, so automatic grouping can never pull it out.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -231,14 +238,147 @@ impl From<io::Error> for PreferencesError {
     }
 }
 
+/// Identity of a manual tab group, unique within one window. Ids start at 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ManualGroupId(pub u32);
+
+/// Display state of a manual group. Kept in memory and in the session file, never in
+/// `tab-groups.txt`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ManualGroup {
+    /// Cleaned user name, or `None` for the default ("Group 1").
+    pub name: Option<String>,
+    /// Index into the island colours, or `None` for the theme accent.
+    pub colour: Option<u8>,
+    pub collapsed: bool,
+}
+
+/// Most manual groups one window keeps. Creating one more is refused.
+pub const MAX_MANUAL_GROUPS: usize = 64;
+
+/// Name shown for a manual group the user has not named.
+pub fn default_manual_name(id: ManualGroupId) -> String {
+    format!("Group {}", id.0)
+}
+
 /// Per-domain grouping mode and collapsed state. Domains left at the default
-/// (Auto, expanded) are not stored.
+/// (Auto, expanded) are not stored. Manual groups are kept alongside (see the module notes) and
+/// are never serialized here.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GroupPreferences {
     entries: BTreeMap<DomainKey, Entry>,
+    manual: BTreeMap<ManualGroupId, ManualGroup>,
 }
 
 impl GroupPreferences {
+    // ----- manual groups -----
+
+    /// Makes a new manual group and returns its id: one more than the highest id in use, so ids
+    /// stay small and readable ("Group 3"). `None` when [`MAX_MANUAL_GROUPS`] already exist.
+    pub fn create_manual_group(&mut self) -> Option<ManualGroupId> {
+        if self.manual.len() >= MAX_MANUAL_GROUPS {
+            return None;
+        }
+        let next = self.manual.keys().next_back().map_or(1, |id| id.0.saturating_add(1));
+        let id = ManualGroupId(next);
+        self.manual.insert(id, ManualGroup::default());
+        Some(id)
+    }
+
+    pub fn manual_group(&self, id: ManualGroupId) -> Option<&ManualGroup> {
+        self.manual.get(&id)
+    }
+
+    /// Every manual group, by id.
+    pub fn manual_groups(&self) -> impl Iterator<Item = (ManualGroupId, &ManualGroup)> {
+        self.manual.iter().map(|(id, group)| (*id, group))
+    }
+
+    /// Forgets every manual group for which `keep` is false. Returns whether any went.
+    pub fn retain_manual_groups(&mut self, mut keep: impl FnMut(ManualGroupId) -> bool) -> bool {
+        let before = self.manual.len();
+        self.manual.retain(|id, _| keep(*id));
+        self.manual.len() != before
+    }
+
+    // ----- any group, by key -----
+
+    /// The name the user gave the group, if any.
+    pub fn group_name(&self, key: &TabGroupKey) -> Option<&str> {
+        match key {
+            TabGroupKey::Domain(domain) => self.name(domain),
+            TabGroupKey::Manual(id) => self.manual.get(id).and_then(|group| group.name.as_deref()),
+        }
+    }
+
+    /// The group's colour index, or `None` for the theme accent.
+    pub fn group_colour(&self, key: &TabGroupKey) -> Option<u8> {
+        match key {
+            TabGroupKey::Domain(domain) => self.colour(domain),
+            TabGroupKey::Manual(id) => self.manual.get(id).and_then(|group| group.colour),
+        }
+    }
+
+    pub fn group_collapsed(&self, key: &TabGroupKey) -> bool {
+        match key {
+            TabGroupKey::Domain(domain) => self.is_collapsed(domain),
+            TabGroupKey::Manual(id) => self.manual.get(id).is_some_and(|group| group.collapsed),
+        }
+    }
+
+    /// Sets the collapsed flag of any group; returns whether anything changed. An unknown manual
+    /// group changes nothing.
+    pub fn set_group_collapsed(
+        &mut self,
+        key: &TabGroupKey,
+        collapsed: bool,
+    ) -> Result<bool, PreferencesError> {
+        match key {
+            TabGroupKey::Domain(domain) => self.set_collapsed(domain, collapsed),
+            TabGroupKey::Manual(id) => Ok(self.update_manual(*id, |group| group.collapsed = collapsed)),
+        }
+    }
+
+    /// Renames any group after [`clean_name`]; a blank name clears it.
+    pub fn set_group_name(&mut self, key: &TabGroupKey, name: &str) -> Result<bool, PreferencesError> {
+        match key {
+            TabGroupKey::Domain(domain) => self.set_name(domain, name),
+            TabGroupKey::Manual(id) => {
+                let name = clean_name(name);
+                Ok(self.update_manual(*id, |group| group.name = name))
+            }
+        }
+    }
+
+    /// Recolours any group; `None` restores the theme accent. Colour ids at or above
+    /// [`COLOUR_COUNT`] are rejected without changing anything.
+    pub fn set_group_colour(
+        &mut self,
+        key: &TabGroupKey,
+        colour: Option<u8>,
+    ) -> Result<bool, PreferencesError> {
+        match key {
+            TabGroupKey::Domain(domain) => self.set_colour(domain, colour),
+            TabGroupKey::Manual(id) => {
+                if colour.is_some_and(|id| usize::from(id) >= COLOUR_COUNT) {
+                    return Err(PreferencesError::Malformed);
+                }
+                Ok(self.update_manual(*id, |group| group.colour = colour))
+            }
+        }
+    }
+
+    fn update_manual(&mut self, id: ManualGroupId, change: impl FnOnce(&mut ManualGroup)) -> bool {
+        let Some(group) = self.manual.get_mut(&id) else {
+            return false;
+        };
+        let before = group.clone();
+        change(group);
+        *group != before
+    }
+
+    // ----- site groups -----
+
     pub fn mode(&self, key: &DomainKey) -> GroupMode {
         self.entries.get(key).map_or(GroupMode::Auto, |e| e.mode)
     }
@@ -288,6 +428,13 @@ impl GroupPreferences {
             entry.collapsed = current.is_collapsed(domain);
             if !entry.is_default() {
                 merged.entries.insert(domain.clone(), entry);
+            }
+        }
+        // A manual group that still exists keeps its current fold; one that undo brings back keeps
+        // the fold it had then.
+        for (id, group) in &mut merged.manual {
+            if let Some(now) = current.manual.get(id) {
+                group.collapsed = now.collapsed;
             }
         }
         merged
@@ -520,13 +667,28 @@ pub struct TabGroupInput {
     /// Placed into this domain's group by the user. Such a member keeps the group formed even when
     /// it is below the mode's threshold, unless the domain is `Never`.
     pub manual: bool,
+    /// The manual group the user put this tab in. It wins over `domain`: such a tab is in that
+    /// group alone (even as its only member) and never in a site group.
+    pub group: Option<ManualGroupId>,
 }
 
-/// Identity of a projected tab group. Tabs group by site only.
+/// Identity of a projected tab group: a site group or a group the user made.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TabGroupKey {
     /// Group formed by tabs sharing a registrable domain.
     Domain(DomainKey),
+    /// Group the user made by hand from the tab menu.
+    Manual(ManualGroupId),
+}
+
+impl TabGroupKey {
+    /// The site of a site group; `None` for a manual group.
+    pub fn domain(&self) -> Option<&DomainKey> {
+        match self {
+            Self::Domain(domain) => Some(domain),
+            Self::Manual(_) => None,
+        }
+    }
 }
 
 /// One visible island in the strip. A group's members are emitted as one contiguous run at its
@@ -537,7 +699,7 @@ pub enum TabGroupKey {
 pub struct StripSlot {
     /// Index in the unmodified tab model whose title/favicon this island represents.
     pub tab_index: usize,
-    /// Present when this island participates in a group.
+    /// The site of the site group this island is in; `None` for a manual group or no group.
     pub domain: Option<DomainKey>,
     /// Present when this island participates in a group.
     pub group_key: Option<TabGroupKey>,
@@ -550,7 +712,7 @@ pub struct StripSlot {
     /// True for a collapsed group whose active tab is elsewhere: the slot is only the group's colour
     /// marker, and `tab_index` names a member for lookups but is not drawn as a tab.
     pub marker_only: bool,
-    /// Colour id of a domain island, or `None` for the theme accent and for slots in no domain island.
+    /// Colour id of the island's group, or `None` for the theme accent and for slots in no group.
     pub island_colour: Option<u8>,
 }
 
@@ -561,7 +723,7 @@ pub fn project_strip(
     active_index: usize,
     preferences: &GroupPreferences,
 ) -> Vec<StripSlot> {
-    let groups = domain_groups(tabs, preferences)
+    let groups = all_groups(tabs, preferences)
         .into_iter()
         .collect::<BTreeMap<_, _>>();
     let mut group_for_index = vec![None; tabs.len()];
@@ -593,14 +755,9 @@ pub fn project_strip(
         }
         let mut group_members = groups[group_key].clone();
         group_members.sort_unstable();
-        let TabGroupKey::Domain(domain) = group_key;
-        let domain = Some(domain.clone());
-        let collapsed = domain
-            .as_ref()
-            .is_some_and(|domain| preferences.is_collapsed(domain));
-        let island_colour = domain
-            .as_ref()
-            .and_then(|domain| preferences.colour(domain));
+        let domain = group_key.domain().cloned();
+        let collapsed = preferences.group_collapsed(group_key);
+        let island_colour = preferences.group_colour(group_key);
         if collapsed {
             // The active member keeps a compact island. Otherwise the group is only its marker.
             let active_member = group_members.contains(&active_index);
@@ -644,7 +801,7 @@ pub fn group_keys(
     preferences: &GroupPreferences,
 ) -> Vec<Option<TabGroupKey>> {
     let mut keys = vec![None; tabs.len()];
-    for (key, indices) in domain_groups(tabs, preferences) {
+    for (key, indices) in all_groups(tabs, preferences) {
         for index in indices {
             keys[index] = Some(key.clone());
         }
@@ -693,28 +850,36 @@ pub fn live_domains(tabs: &[TabGroupInput]) -> std::collections::BTreeSet<Domain
         .collect()
 }
 
-/// Domain groups over unpinned tabs. Each domain's members must satisfy its group mode.
-fn domain_groups(
+/// Every group over unpinned tabs: manual groups first (any number of members, as long as the
+/// group exists), then site groups over the tabs in no manual group, each satisfying its mode.
+fn all_groups(
     tabs: &[TabGroupInput],
     preferences: &GroupPreferences,
 ) -> Vec<(TabGroupKey, Vec<usize>)> {
+    let mut manual = BTreeMap::<ManualGroupId, Vec<usize>>::new();
     let mut members = BTreeMap::<DomainKey, Vec<usize>>::new();
     for (index, tab) in tabs.iter().enumerate() {
-        if !tab.pinned
-            && let Some(domain) = &tab.domain
-        {
+        if tab.pinned {
+            continue;
+        }
+        if let Some(group) = tab.group.filter(|group| preferences.manual.contains_key(group)) {
+            manual.entry(group).or_default().push(index);
+        } else if let Some(domain) = &tab.domain {
             members.entry(domain.clone()).or_default().push(index);
         }
     }
-    members
+    let manual = manual
+        .into_iter()
+        .map(|(id, indices)| (TabGroupKey::Manual(id), indices));
+    let sites = members
         .into_iter()
         .filter(|(domain, indices)| {
             preferences.forms_group(domain, indices.len())
                 || (preferences.mode(domain) != GroupMode::Never
                     && indices.iter().any(|&index| tabs[index].manual))
         })
-        .map(|(domain, indices)| (TabGroupKey::Domain(domain), indices))
-        .collect()
+        .map(|(domain, indices)| (TabGroupKey::Domain(domain), indices));
+    manual.chain(sites).collect()
 }
 
 #[cfg(test)]
@@ -749,6 +914,7 @@ mod tests {
             }),
             pinned,
             manual: false,
+            group: None,
         }
     }
 
@@ -760,6 +926,7 @@ mod tests {
             ),
             pinned,
             manual: false,
+            group: None,
         }
     }
 
@@ -789,6 +956,150 @@ mod tests {
         for url in other {
             assert!(!is_search_results(&Url::parse(url).unwrap()), "{url}");
         }
+    }
+
+    #[test]
+    fn a_manual_group_forms_with_one_tab_and_takes_its_tabs_out_of_site_groups() {
+        let mut preferences = GroupPreferences::default();
+        let group = preferences.create_manual_group().unwrap();
+        assert_eq!(group, ManualGroupId(1));
+        let mut tabs = [
+            input(Some("github.com"), false),
+            input(Some("github.com"), false),
+            input(Some("example.net"), false),
+        ];
+        // Before: the two GitHub tabs are a site group.
+        assert_eq!(group_keys(&tabs, &preferences)[0], Some(TabGroupKey::Domain(key("github.com"))));
+
+        tabs[0].group = Some(group);
+        let keys = group_keys(&tabs, &preferences);
+
+        // The manual group holds its one tab; the GitHub tab left behind is alone, so no site group.
+        assert_eq!(keys, vec![Some(TabGroupKey::Manual(group)), None, None]);
+        let slots = project_strip(&tabs, 0, &preferences);
+        assert_eq!(slots[0].group_key, Some(TabGroupKey::Manual(group)));
+        assert_eq!(slots[0].domain, None, "a manual group has no site");
+        assert!(slots[0].group_control);
+        assert_eq!(slots[0].group_size, 1);
+    }
+
+    #[test]
+    fn manual_groups_span_sites_and_ignore_site_modes() {
+        let mut preferences = GroupPreferences::default();
+        let group = preferences.create_manual_group().unwrap();
+        preferences.set_mode(&key("example.net"), GroupMode::Never).unwrap();
+        let mut tabs = [
+            input(Some("github.com"), false),
+            input(Some("example.net"), false),
+            input(None, false),
+            input(Some("github.com"), true),
+        ];
+        for tab in &mut tabs {
+            tab.group = Some(group);
+        }
+
+        let keys = group_keys(&tabs, &preferences);
+
+        let manual = Some(TabGroupKey::Manual(group));
+        assert_eq!(keys, vec![manual.clone(), manual.clone(), manual, None], "a pinned tab never joins");
+    }
+
+    #[test]
+    fn a_tab_naming_a_manual_group_that_no_longer_exists_falls_back_to_its_site() {
+        let preferences = GroupPreferences::default();
+        let mut tabs = [input(Some("github.com"), false), input(Some("github.com"), false)];
+        tabs[0].group = Some(ManualGroupId(7));
+
+        let site = Some(TabGroupKey::Domain(key("github.com")));
+        assert_eq!(group_keys(&tabs, &preferences), vec![site.clone(), site]);
+    }
+
+    #[test]
+    fn manual_and_site_groups_project_side_by_side() {
+        let mut preferences = GroupPreferences::default();
+        let group = preferences.create_manual_group().unwrap();
+        preferences.set_group_collapsed(&TabGroupKey::Manual(group), true).unwrap();
+        preferences.set_group_colour(&TabGroupKey::Manual(group), Some(3)).unwrap();
+        let mut tabs = [
+            input(Some("alpha.example.com"), false),
+            input(Some("one.example.org"), false),
+            input(Some("alpha.example.com"), false),
+            input(Some("two.example.io"), false),
+        ];
+        tabs[1].group = Some(group);
+        tabs[3].group = Some(group);
+
+        let slots = project_strip(&tabs, 0, &preferences);
+
+        // Site group (0, 2) expanded; the manual group folds to one marker at its first member.
+        assert_eq!(slots.iter().map(|slot| slot.tab_index).collect::<Vec<_>>(), [0, 2, 1]);
+        assert_eq!(slots[2].group_key, Some(TabGroupKey::Manual(group)));
+        assert!(slots[2].collapsed && slots[2].marker_only);
+        assert_eq!(slots[2].group_size, 2);
+        assert_eq!(slots[2].island_colour, Some(3));
+        assert_eq!(strip_order(&tabs, &group_keys(&tabs, &preferences)).len(), 4);
+    }
+
+    #[test]
+    fn manual_group_ids_count_up_and_are_bounded() {
+        let mut preferences = GroupPreferences::default();
+        let first = preferences.create_manual_group().unwrap();
+        let second = preferences.create_manual_group().unwrap();
+        assert_eq!((first, second), (ManualGroupId(1), ManualGroupId(2)));
+        assert!(preferences.retain_manual_groups(|id| id != first));
+        assert_eq!(preferences.create_manual_group(), Some(ManualGroupId(3)));
+        assert_eq!(preferences.manual_group(ManualGroupId(3)), Some(&ManualGroup::default()));
+        while preferences.manual_groups().count() < MAX_MANUAL_GROUPS {
+            preferences.create_manual_group().unwrap();
+        }
+        assert_eq!(preferences.create_manual_group(), None);
+        assert_eq!(default_manual_name(ManualGroupId(4)), "Group 4");
+    }
+
+    #[test]
+    fn manual_group_name_colour_and_fold_change_through_the_key() {
+        let mut preferences = GroupPreferences::default();
+        let id = preferences.create_manual_group().unwrap();
+        let key = TabGroupKey::Manual(id);
+        assert!(preferences.set_group_name(&key, "  Trip\tplanning ").unwrap());
+        assert_eq!(preferences.group_name(&key), Some("Tripplanning"));
+        assert!(!preferences.set_group_name(&key, "Tripplanning").unwrap(), "unchanged");
+        assert!(preferences.set_group_colour(&key, Some(5)).unwrap());
+        assert!(preferences.set_group_colour(&key, Some(COLOUR_COUNT as u8)).is_err());
+        assert_eq!(preferences.group_colour(&key), Some(5));
+        assert!(preferences.set_group_collapsed(&key, true).unwrap());
+        assert!(preferences.group_collapsed(&key));
+        assert!(preferences.set_group_name(&key, "   ").unwrap());
+        assert_eq!(preferences.group_name(&key), None);
+        // A group that does not exist changes nothing.
+        assert!(!preferences.set_group_collapsed(&TabGroupKey::Manual(ManualGroupId(9)), true).unwrap());
+    }
+
+    #[test]
+    fn manual_groups_are_never_written_to_the_site_preferences_file() {
+        let mut preferences = GroupPreferences::default();
+        let id = preferences.create_manual_group().unwrap();
+        preferences.set_group_name(&TabGroupKey::Manual(id), "Holiday").unwrap();
+
+        let text = preferences.serialize();
+
+        assert!(!text.contains("Holiday"));
+        assert_eq!(GroupPreferences::parse(&text).unwrap(), GroupPreferences::default());
+    }
+
+    #[test]
+    fn undo_keeps_the_current_fold_of_a_manual_group() {
+        let mut before = GroupPreferences::default();
+        let id = before.create_manual_group().unwrap();
+        let key = TabGroupKey::Manual(id);
+        let mut now = before.clone();
+        now.set_group_name(&key, "Renamed").unwrap();
+        now.set_group_collapsed(&key, true).unwrap();
+
+        let merged = before.with_collapse_from(&now);
+
+        assert_eq!(merged.group_name(&key), None);
+        assert!(merged.group_collapsed(&key));
     }
 
     #[test]

@@ -79,8 +79,9 @@ Shown rows first, then More (in brackets):
 | | Panels | [Close button, Folder counts, Auto-close, Reset] |
 | **Tabs** | Tab bar (`tabs`) | Tab position (Top / Side) [Scroll tabs, Wheel switch, Tight when max, Active width, Load progress, Click to previous, Title alerts, Unread dots, Dim sleeping, Inactive days, Preview images, Preview memory] |
 | | New tabs | New tab page, Page address, New tab position [Background, Duplicate, Focus page] |
+| | Start page (`startpage`) | Speed dials, Tile size, Site names, Max columns [Add site tile, Group to show, Drag to reorder] |
+| | Start page widgets | Widgets [Widget columns, Widget background, Custom colour, Widget height, Drag to rearrange] |
 | | Groups and workspaces (`stacks`) | Auto group, Workspaces, Rules (sub-page) [Edge split, Tile titles, Tight tiles, Workspace wheel, Tab counts] |
-| | Start page (`startpage`) | Titles, Tile size, Dashboard [Start group, Add button, Columns, Reorder, Widget columns, Height, Background, Colour, Rearrange] |
 | | Closing | [Related tab, After close, Close in place, Keep window, Confirm close, Double-click, Close on left, Always close] |
 | | Pinned and restored | [Close pinned, Separator, Stay on site, Load pinned, Lazy restore] |
 | | Selecting and audio | [Multi-select, Include active, Tab audio] |

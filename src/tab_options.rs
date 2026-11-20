@@ -195,6 +195,9 @@ tab_options! {
     /// A link opened in a new tab loads without leaving the page being read.
     link_background: bool = false, "tabs_link_background";
     duplicate_position: DuplicatePosition = DuplicatePosition::Beside, "tabs_duplicate_position";
+    /// A new tab opened from a tab in a group (Ctrl+T or the new tab button while it is shown, or
+    /// "New tab to the right" on it) joins that group (`App::join_group_of`).
+    new_tab_in_group: bool = true, "tabs_new_tab_in_group";
     /// Closing a tab returns to the tab that opened it, when that is still open.
     close_related: bool = false, "tabs_close_related";
     close_activation: CloseActivation = CloseActivation::Right, "tabs_close_activation";

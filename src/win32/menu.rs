@@ -374,8 +374,14 @@ pub(crate) fn only_available(entries: Vec<Entry>) -> Vec<Entry> {
                 }
             }
             Entry::SectionHeader(_) => {
-                // A header heads at least one item before the next line or the end.
-                let heads = kept[index + 1..].iter().take_while(|next| !matches!(next, Entry::Separator | Entry::SectionHeader(_))).any(|next| matches!(next, Entry::Item(_)));
+                // A header heads at least one item before the next line or the end. A header
+                // straight after it is its explanatory line (the HTML menu draws it as such), so
+                // the two stand or fall together.
+                let heads = kept[index + 1..]
+                    .iter()
+                    .skip_while(|next| matches!(next, Entry::SectionHeader(_)))
+                    .take_while(|next| !matches!(next, Entry::Separator | Entry::SectionHeader(_)))
+                    .any(|next| matches!(next, Entry::Item(_)));
                 if heads {
                     out.push(entry.clone());
                 }
@@ -2126,6 +2132,20 @@ mod tests {
         let headed = only_available(vec![Entry::SectionHeader("A".into()), item(1, false), Entry::Separator, Entry::SectionHeader("B".into()), item(2, true)]);
         assert_eq!(headed.len(), 2);
         assert!(matches!(&headed[0], Entry::SectionHeader(title) if title == "B"));
+        // A heading with its explanatory line under it keeps both while an item follows them, and
+        // loses both when none does.
+        let explained = only_available(vec![
+            item(1, true),
+            Entry::Separator,
+            Entry::SectionHeader("Title".into()),
+            Entry::SectionHeader("What it means".into()),
+            item(2, false),
+            item(3, true),
+        ]);
+        assert_eq!(ids(&explained), vec![Some(1), None, None, None, Some(3)]);
+        assert!(matches!(&explained[2], Entry::SectionHeader(title) if title == "Title"));
+        let empty = only_available(vec![item(1, true), Entry::Separator, Entry::SectionHeader("Title".into()), Entry::SectionHeader("What it means".into()), item(2, false)]);
+        assert_eq!(ids(&empty), vec![Some(1)]);
     }
 
     /// A popup as every caller other than the main menu builds it: no profile header.

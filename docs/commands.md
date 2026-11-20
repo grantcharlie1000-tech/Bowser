@@ -125,12 +125,13 @@ Y), Esc, Alt+F4, Shift+F10 and Ctrl+Alt with a typing key (AltGr) cannot be assi
 Registry rows in `src/commands/registry.rs` (handlers in `src/win32/stack_ui.rs`), so each is in Quick Commands,
 the keyboard editor, the cheat sheet and chains. The ids keep the word "stack" from these commands' old names,
 because shortcuts, toolbar buttons and chains store them; Quick Commands and the cheat sheet still find the three
-group commands when "stack" is typed (`registry::search_words`), though the word is never shown:
+group commands when "stack" is typed (and the two website commands when "site" is, their old word)
+(`registry::search_words`), though the words are never shown:
 
 | Id | Label | Default |
 | --- | --- | --- |
-| `stack-site-tabs` | Group tabs of this site | |
-| `stack-tabs-by-site` | Group all tabs by site | |
+| `stack-site-tabs` | Group this website's tabs | |
+| `stack-tabs-by-site` | Group all tabs by website | |
 | `unstack` | Ungroup | |
 | `tile-vertical` | Tile vertically | Ctrl+F9 |
 | `tile-horizontal` | Tile horizontally | Ctrl+F8 |
@@ -146,7 +147,9 @@ front, at most four (the split view's panes); with neither they say so. A group 
 organisation (Ctrl+Shift+Z) undoes a whole command in one step. The tab menu's "Tab group" submenu offers the
 same and the per-group actions (name and colour, pin, hibernate, tile, save as a session, bookmark all, copy all
 links, move to a workspace or a new window, ungroup), then the site's standing choice (always, automatically or
-never group this site).
+never group this site). Above those it offers groups made by hand: *Add tab to new group*, *Add tab to group ›*
+and *Remove from group*; a group made by hand holds tabs of any sites and is never broken up by the commands
+above (see the addendum in `docs/superpowers/specs/2026-10-10-smart-tab-groups-design.md`).
 
 Tab groups have one look (islands) and one setting: Settings > Groups > "Group tabs automatically", which
 applies at once. Tabs from one site share a group; an opener link no longer forms a group of its own. Drag a tab
