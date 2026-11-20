@@ -147,7 +147,7 @@ function Stop-Bowser([string]$why = 'close') {
 }
 
 # ---------------------------------------------------------------- input and evidence
-function IsFg { $fp = [uint32]0; [E2E]::GetWindowThreadProcessId([E2E]::GetForegroundWindow(), [ref]$fp) | Out-Null; return ($fp -eq [uint32]$script:bowser.Id) }
+function IsFg { return ([E2E]::GetForegroundWindow() -eq $script:h) }
 function Front { for ($i = 0; $i -lt 10; $i++) { if (IsFg) { return $true }; [E2E]::Force($script:h); Start-Sleep -Milliseconds 200 }; return (IsFg) }
 function Click([int]$x, [int]$y, [switch]$Right) {
   [E2E]::SetCursorPos($x, $y) | Out-Null; Start-Sleep -Milliseconds 150
@@ -311,7 +311,11 @@ function Flow-Groups {
     Keys 'Research' 500
     $typed = $null; try { $typed = $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { }
     $current.data.name_field_after_typing = $typed
-    if ($focused) { Check 'typing straight away (no click in the field) names the group' ($typed -eq 'Research') "field holds '$typed', foreground $([E2E]::Cls([E2E]::GetForegroundWindow()))" }
+    if ($focused) {
+      Check 'typing straight away (no click in the field) names the group' ($typed -eq 'Research') "field holds '$typed', foreground $([E2E]::Cls([E2E]::GetForegroundWindow()))"
+      # So the rest of the flow still runs: name it the way that always worked, a click in the field.
+      if ($typed -ne 'Research') { $c = Center $field; Click $c[0] $c[1]; Start-Sleep -Milliseconds 500; Keys '^a' 200; Keys 'Research' 500 }
+    }
     Shot 'g05-name-typed'
     $teal = FindAll ($UIA::FromHandle($editor)) $null { param($n) $n -eq 'Teal' } | Select-Object -First 1
     if ($teal) { $c = Center $teal; Click $c[0] $c[1]; Note 'clicked Teal'; Start-Sleep -Milliseconds 900 } else { Note 'no Teal swatch' }
