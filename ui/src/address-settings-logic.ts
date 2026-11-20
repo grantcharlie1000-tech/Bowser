@@ -303,6 +303,22 @@ export function monogram(name: string): string {
   return first.toUpperCase();
 }
 
+/** Which search rows cannot change anything with these options (address-section.ts rests them). */
+export interface SearchRowsOff {
+  /** The search field's own options (engine icon, remembered engine, kept text, its suggestions): there is no field. */
+  readonly field: boolean;
+  /** Suggestions for plain typing: the address field does not search, or the drop-down's Suggestions source is off. */
+  readonly suggestions: boolean;
+  /** Suggestions after an engine nickname: the drop-down's Suggestions source is off. */
+  readonly nicknameSuggestions: boolean;
+}
+
+/** Mirrors src/address_suggest.rs `remote_query` and src/win32/address_bar.rs (the nickname and field suggestions). */
+export function searchRowsOff(s: Pick<AddressValues, 'search_field' | 'search_in_address' | 'dd_sources'>): SearchRowsOff {
+  const source = sourceList(s.dd_sources).includes('search');
+  return { field: s.search_field === 'off', suggestions: !s.search_in_address || !source, nicknameSuggestions: !source };
+}
+
 // ---- rows (the nav search index) ----
 
 /** The privacy trade-off of `search_suggestions`, shown under its row. */
@@ -333,22 +349,22 @@ export const ADDRESS_ROWS: readonly RowSpec[] = [
   S('engines', 'search', 'Engines', '', 'search engines add edit remove reorder nickname url suggest post image restore defaults Search engines Add, edit, order and remove the engines the address bar and the search field use.'),
   S('searchDefault', 'search', 'Search engine', '', 'default engine optimised google duckduckgo bing search address bar Search engine DuckDuckGo, with no sponsored results. Type img before a query for images.'),
   // The one row with a sub-line: turning it on sends typing to the engine, so the row says so.
-  S('searchSuggestions', 'search', 'Search suggestions', SEARCH_SUGGESTIONS_NOTE, 'search suggestions autocomplete autofill predictions google engine network privacy typing as you type Show search suggestions'),
+  S('searchSuggestions', 'search', 'Search suggestions', SEARCH_SUGGESTIONS_NOTE, 'search suggestions autocomplete autofill predictions google engine network privacy typing as you type Show search suggestions Needs Search from address on and the Suggestions source in Address bar suggestions.'),
   S('searchPrivate', 'search', 'Private search', '', 'private window search engine incognito Private window search engine Used in private tabs. Default means the engine above.'),
   S('searchImage', 'search', 'Image search', '', 'image search engine reverse picture Image search engine Used by “Search for this image” on a picture.'),
   S('searchField', 'search', 'Search field', '', 'search field toolbar button text box Search field A separate field beside the address field, as a text field or a button.'),
-  S('searchNickname', 'search', 'Nicknames', '', 'nickname engine list dropdown show Show nicknames in the engine list Each engine in the list and the drop-down shows its nickname.'),
-  S('searchIcon', 'search', 'Engine icon', '', 'engine icon search field Show the engine icon The search field shows the engine chosen.'),
-  S('searchKeepEngine', 'search', 'Remember engine', '', 'keep last engine search field remember Keep the last selected engine The search field starts with the engine you used last.'),
-  S('searchKeepText', 'search', 'Keep text', '', 'keep text search field clear after Keep typed text after searching The search field is not cleared after a search.'),
-  S('searchSuggestField', 'search', 'Suggestions', '', 'search suggestions search field engine network Show engine suggestions in the search field The engine is asked for suggestions as you type in the search field.'),
-  S('searchNewTab', 'search', 'New tab', '', 'search new tab always Always search in a new tab Searches open in a new tab instead of the current one.'),
-  S('searchInAddress', 'search', 'Address search', '', 'search address field omnibox enable Search from the address field Off, text that is not an address is not searched there. Engine nicknames still work.'),
+  S('searchNickname', 'search', 'Show nicknames', '', 'Nicknames nickname engine list dropdown show Show nicknames in the engine list Each engine in the list and the drop-down shows its nickname.'),
+  S('searchIcon', 'search', 'Engine icon', '', 'engine icon search field Show the engine icon The search field shows the engine chosen. Only with a search field.'),
+  S('searchKeepEngine', 'search', 'Remember engine', '', 'keep last engine search field remember Keep the last selected engine The search field starts with the engine you used last. Only with a search field.'),
+  S('searchKeepText', 'search', 'Keep text', '', 'keep text search field clear after Keep typed text after searching The search field is not cleared after a search. Only with a search field.'),
+  S('searchSuggestField', 'search', 'Field suggestions', '', 'Suggestions search suggestions search field engine network Show engine suggestions in the search field The engine is asked for suggestions as you type in the search field. Only with a search field.'),
+  S('searchNewTab', 'search', 'Search in new tab', '', 'New tab search new tab always Always search in a new tab Searches open in a new tab instead of the current one.'),
+  S('searchInAddress', 'search', 'Search from address', '', 'Address search search address field omnibox enable Search from the address field Off, text that is not an address is not searched there. Engine nicknames still work.'),
   S('searchSelection', 'search', 'Selection search', '', 'selection search background tab context menu Search for selected text in a background tab The page’s “Search for …” menu item opens its results without leaving the page.'),
-  S('searchSuggestAddress', 'search', 'Address suggestions', '', 'search suggestions address nickname engine network Show engine suggestions in the address field After an engine’s nickname, the engine’s own suggestions appear. Nothing is sent before.'),
-  S('nickBookmarks', 'search', 'Bookmarks nick', '', 'nickname scope bookmarks @bookmarks address field Bookmarks scope nickname Type it in the address field, then a word, to search only bookmarks.'),
-  S('nickHistory', 'search', 'History nick', '', 'nickname scope history @history address field History scope nickname Type it in the address field, then a word, to search only history.'),
-  S('nickTabs', 'search', 'Tabs nick', '', 'nickname scope tabs @tabs address field Tabs scope nickname Type it in the address field, then a word, to find an open tab.'),
+  S('searchSuggestAddress', 'search', 'Nickname suggestions', '', 'Address suggestions search suggestions address nickname engine network Show engine suggestions in the address field After an engine’s nickname, the engine’s own suggestions appear. Nothing is sent before. Needs the Suggestions source in Address bar suggestions.'),
+  S('nickBookmarks', 'search', 'Bookmarks scope', '', 'Bookmarks nick nickname scope bookmarks @bookmarks address field Bookmarks scope nickname Type it in the address field, then a word, to search only bookmarks.'),
+  S('nickHistory', 'search', 'History scope', '', 'History nick nickname scope history @history address field History scope nickname Type it in the address field, then a word, to search only history.'),
+  S('nickTabs', 'search', 'Tabs scope', '', 'Tabs nick nickname scope tabs @tabs address field Tabs scope nickname Type it in the address field, then a word, to find an open tab.'),
   S('bmNewTab', 'bookmarks', 'New tab', '', 'bookmark new tab open Open bookmarks in a new tab Choosing a bookmark opens it beside the current tab.'),
   S('bmSingleClick', 'bookmarks', 'Single click', '', 'bookmark panel single click double open Open panel items with a single click Off, bookmarks in the panel open with a double click.'),
   S('bmConfirm', 'bookmarks', 'Confirm many', '', 'bookmark confirm open many folder tabs warning Ask before opening many bookmarks Opening a folder of this many bookmarks or more asks first. 0 never asks.'),

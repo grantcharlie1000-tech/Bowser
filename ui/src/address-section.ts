@@ -9,7 +9,7 @@ import { textButton } from './panels/kit';
 import type { PanelFields, SettingsSection, SnapshotMsg } from './protocol';
 import {
   BAR_DISPLAYS, BAR_DISPLAY_LABELS, BAR_POSITIONS, MAX_CONFIRM, MAX_ENGINES, MAX_RESULTS, MIN_CONFIRM, MIN_RESULTS, SEARCH_FIELD_MODES, SOURCE_LABELS,
-  EMPTY_ENGINE, draftOfEngine, engineChoiceLabel, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
+  EMPTY_ENGINE, draftOfEngine, searchRowsOff, engineChoiceLabel, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
   type AddressKey, type AddressSnapshot, type BarDisplay, type BarPosition, type EngineDraft, type EngineOp, type EngineView, type SearchFieldMode, type SourceId,
 } from './address-settings-logic';
 
@@ -44,10 +44,11 @@ export function mountAddressSections(host: AddressHost): AddressSection {
     host.send(fields);
   };
 
-  const toggle = (cardNode: HTMLElement, id: string, key: AddressKey, options: { stack?: boolean } = {}): void => {
+  const toggle = (cardNode: HTMLElement, id: string, key: AddressKey, options: { stack?: boolean } = {}): Resting => {
     const control = host.switchControl((on) => put(key, on));
-    host.row(cardNode, id, control.root, options);
+    const { root } = host.row(cardNode, id, control.root, options);
     painters.push((s) => control.set(Boolean(s.s[key])));
+    return { root, control };
   };
 
   // ---- Address bar ----
@@ -97,7 +98,7 @@ export function mountAddressSections(host: AddressHost): AddressSection {
 
   const chooseCard = host.card('search', 'Which engine');
   const defaultSelect = engineSelect(host, chooseCard, 'searchDefault', 'Default search engine', false, (id) => host.send(engineFields({ op: 'default', id }) ?? { a: 'engine', text: '' }));
-  toggle(chooseCard, 'searchSuggestions', 'search_suggestions');
+  const suggestions = toggle(chooseCard, 'searchSuggestions', 'search_suggestions');
   const privateSelect = engineSelect(host, chooseCard, 'searchPrivate', 'Private window search engine', true, (id) => host.send(engineFields({ op: 'private', id }) ?? { a: 'engine', text: '' }));
   const imageSelect = engineSelect(host, chooseCard, 'searchImage', 'Image search engine', false, (id) => host.send(engineFields({ op: 'image', id }) ?? { a: 'engine', text: '' }));
   painters.push((s) => {
@@ -110,17 +111,30 @@ export function mountAddressSections(host: AddressHost): AddressSection {
   const mode = host.segmentedControl<SearchFieldMode>('Search field', SEARCH_FIELD_MODES.map((m) => [m, m === 'off' ? 'Off' : m === 'field' ? 'Text field' : 'Button'] as const), (value) => put('search_field', value));
   host.row(fieldOptionsCard, 'searchField', mode.root);
   painters.push((s) => mode.set(s.s.search_field));
+  // Nicknames also label the address bar's drop-down and the engine list, so that row stays with the field off.
   toggle(fieldOptionsCard, 'searchNickname', 'search_show_nickname');
-  toggle(fieldOptionsCard, 'searchIcon', 'search_show_icon');
-  toggle(fieldOptionsCard, 'searchKeepEngine', 'search_keep_engine');
-  toggle(fieldOptionsCard, 'searchKeepText', 'search_keep_text');
-  toggle(fieldOptionsCard, 'searchSuggestField', 'search_suggest_field');
+  const fieldRows = [
+    toggle(fieldOptionsCard, 'searchIcon', 'search_show_icon'),
+    toggle(fieldOptionsCard, 'searchKeepEngine', 'search_keep_engine'),
+    toggle(fieldOptionsCard, 'searchKeepText', 'search_keep_text'),
+    toggle(fieldOptionsCard, 'searchSuggestField', 'search_suggest_field'),
+  ];
 
   const behaviourCard = host.card('search', 'Searching');
   toggle(behaviourCard, 'searchNewTab', 'search_new_tab');
   toggle(behaviourCard, 'searchInAddress', 'search_in_address');
   toggle(behaviourCard, 'searchSelection', 'search_selection_background');
-  toggle(behaviourCard, 'searchSuggestAddress', 'search_suggest_address');
+  const nicknameSuggestions = toggle(behaviourCard, 'searchSuggestAddress', 'search_suggest_address');
+  // A row whose switch cannot change anything right now leaves the page (a search still finds it,
+  // dimmed), as the start page's rows do (settings-start.ts): the field's own options while there is
+  // no search field, and the engine suggestions while the drop-down's Suggestions source is off (or,
+  // for plain typing, while the address field does not search at all).
+  painters.push((s) => {
+    const off = searchRowsOff(s.s);
+    for (const row of fieldRows) rest(row, off.field);
+    rest(suggestions, off.suggestions);
+    rest(nicknameSuggestions, off.nicknameSuggestions);
+  });
 
   const scopeCard = host.card('search', 'Scoped nicknames');
   const scope = (id: string, key: 'nick_bookmarks' | 'nick_history' | 'nick_tabs', fallback: string): void => {
@@ -211,6 +225,15 @@ export function mountAddressSections(host: AddressHost): AddressSection {
 }
 
 // ---- small controls ----
+
+/** A switch row the section can rest: disabled, dimmed and out of the page (`is-na`). */
+interface Resting { readonly root: HTMLElement; readonly control: { disable(off: boolean): void } }
+
+function rest(row: Resting, off: boolean): void {
+  row.control.disable(off);
+  row.root.classList.toggle('is-off', off);
+  row.root.classList.toggle('is-na', off);
+}
 
 interface Field<T> { readonly root: HTMLElement; set(value: T): void }
 
