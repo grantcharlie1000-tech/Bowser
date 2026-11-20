@@ -17,6 +17,7 @@ import { mountProtection } from './panels/protection'; // blocking, history and 
 import { mountExtensionsSection } from './extensions-section';
 import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
+import { parseCommandsSnapshot } from './commands-logic';
 import { mountStartSection, startPageShown } from './settings-start'; // --- start page ---
 import { mountProfiles, paintDisc } from './settings-profiles'; // --- profiles ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
@@ -47,10 +48,10 @@ import {
 import {
   BOOKMARKS_BAR_MODES, EFFICIENCY_ARIA, EFFICIENCY_LABELS, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   ROWS, SPOILER_LIMITS_NOTE, SPOILER_MODES, SPOILER_MODE_HINTS, SPOILER_MODE_LABELS, SPOILER_OFF_WARNING, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
-  addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
+  addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, restingPageRows, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SpoilerMode, type TabLayout, type ThemeMode, type TrackingPrevention,
-  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RESTART_NOTE, anchorGroup, areaOf, placementOf, rowTier, type AreaSpec,
+  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RELOAD_NOTE, RESTART_NOTE, anchorGroup, areaOf, placementOf, rowTier, type AreaSpec,
   SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_GROUPS, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
   addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
@@ -556,9 +557,12 @@ export function startSettingsPage(root: HTMLElement): void {
         }
         const described = [desc?.id, flag?.id].filter((part): part is string => part !== undefined).join(' ');
         if (described !== '' && !target.hasAttribute('aria-describedby')) target.setAttribute('aria-describedby', described);
+        if (spec.reload) target.setAttribute('aria-description', RELOAD_NOTE);
       }
       node.append(wrap);
     }
+    // A change that reaches pages as they load says so in the row's tooltip (no sub-line).
+    if (spec.reload) node.setAttribute('data-tip', RELOAD_NOTE);
     into.append(node);
     const result = { spec, root: node, label, desc, card: into, flag, target };
     rows.set(id, result);
@@ -1932,6 +1936,27 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   lockLater();
 
+  // ---- rows that cannot act now ----
+  // As on the start page: a row whose switch cannot change anything in this state is disabled and leaves
+  // the page (`is-na`; a search still finds it, dimmed), instead of looking live. `restingPageRows` says
+  // which; the Keyboard's own snapshot says whether shortcuts are on at all.
+  let shortcutsOn = true;
+  const restingControls: ReadonlyArray<readonly [string, { disable(off: boolean): void }]> = [
+    ['spoilerMode', spoilerMode], ['spoilerReducedEffects', spoilerEffects], ['spoilerOcr', spoilerOcr], ['translateAuto', translateAuto],
+    ['ctrlTabMru', mru], ['ctrlShiftCCopyLink', copyLink], ['ctrlSVerticalTabs', vTabs],
+  ];
+  const paintResting = (readable: boolean, translateOn: boolean): void => {
+    if (!draft) return;
+    const resting = restingPageRows(draft, translateOn, shortcutsOn);
+    for (const [id, control] of restingControls) {
+      const off = resting.has(id);
+      control.disable(!readable || off);
+      const node = rows.get(id)?.root;
+      node?.classList.toggle('is-off', readable && off);
+      node?.classList.toggle('is-na', readable && off);
+    }
+  };
+
   // ---- applying a snapshot ----
   const apply = (s: SettingsSnapshot): void => {
     const settle = pending === 0;
@@ -2098,15 +2123,11 @@ export function startSettingsPage(root: HTMLElement): void {
     ]) control.disable(!s.readable);
     paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
     paintDependents(); // after the group-wide disable too: these rows also follow other rows
-    // The mode and the effects only matter while protection is on.
-    spoilerMode.disable(!s.readable || !d.spoilerProtection);
-    spoilerEffects.disable(!s.readable || !d.spoilerProtection);
-    spoilerOcr.disable(!s.readable || !d.spoilerProtection);
+    // The mode, the covers and the image scan only matter while protection is on: `paintResting` below.
     spoilerFeed.disable(!s.readable);
     spoilerOff.disabled = !s.readable;
     downloadAsk.disable(!s.readable);
     translateOffer.disable(!s.readable);
-    translateAuto.disable(!s.readable);
     translateSelect?.button.toggleAttribute('disabled', !s.readable);
     downloadChange.disabled = !s.readable;
     allowInput.disabled = !s.readable;
@@ -2120,6 +2141,7 @@ export function startSettingsPage(root: HTMLElement): void {
     themeMode.disable(!s.readable);
     tabPosition.set(simpleTabChoice(tabBarEdge(d.tabLayout)));
     tabPosition.disable(!s.readable);
+    paintResting(s.readable, s.translateOffer);
     lockLater(); // --- settings slim ---
     // A snapshot during a search (a change just saved) keeps the results where the reader is.
     if (query !== '') filter(false);
@@ -2477,6 +2499,12 @@ export function startSettingsPage(root: HTMLElement): void {
     if (message.t === 'snap' && message.p === 'passwords') { passwordsSection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'commands') {
       commandSections.receive(message);
+      const on = parseCommandsSnapshot(message.d)?.shortcutsEnabled;
+      if (on !== undefined && on !== shortcutsOn) {
+        shortcutsOn = on;
+        if (snapshot) paintResting(snapshot.readable, snapshot.translateOffer);
+        if (query !== '') filter(false);
+      }
       return;
     }
     if (message.t === 'snap' && message.p === 'address') { // --- address bar, search and bookmarks ---

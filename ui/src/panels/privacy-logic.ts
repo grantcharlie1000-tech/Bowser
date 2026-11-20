@@ -13,7 +13,7 @@ export type PrivacySnapshot = {
   stats: { allTime: number; session: number; currentSite: number; topSites: { host: string; count: number }[]; days: { day: string; count: number }[] };
   site: string | null; security: 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
   blocking: boolean | null; tracking: string | null; smartScreen: boolean | null;
-  /** The level Settings will apply on the next start; `tracking` is what the engine reports now. */
+  /** The level chosen in Settings (put in force at once); `tracking` is what the engine reports now. */
   trackingSetting: 'balanced' | 'strict'; efficiencyActive: boolean;
   blockerSetting: boolean; sleeping: boolean; sleepAfter: number;
   sites: SiteRow[]; denied: DeniedRow[]; status: string | null;

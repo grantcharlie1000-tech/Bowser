@@ -504,6 +504,10 @@ pub trait EngineAdapter {
     /// whether a page may show the link-address overlay) to every open tab. Tabs created later
     /// start with it.
     fn apply_status_overlay(&mut self) {}
+    /// Settings > Privacy > Tracking: puts `level` in force for the normal profile now. The level
+    /// belongs to the browsing profile, so every open normal tab follows at once, and tabs created
+    /// later start with it. Private tabs keep Strict whatever the setting says.
+    fn set_tracking_prevention(&mut self, _level: TrackingPreventionLevel) {}
     /// The profile's tracking-prevention level as the browser reports it now, or `None` when the
     /// engine cannot say.
     fn tracking_prevention_level(&self, _tab: crate::tabs::TabId) -> Option<&'static str> {

@@ -31,8 +31,10 @@ impl App {
     }
 
     /// Takes the privacy, history and appearance settings into the running app: the blocker's level,
-    /// cookie-notice switch and exceptions, the history retention, the website look and the private
-    /// theme. Called after any of them is saved. Pages already open keep what they loaded.
+    /// cookie-notice switch and exceptions, tracking prevention, the history retention, the website look
+    /// and the private theme. Called after any of them is saved. Pages already open keep the blocking
+    /// they loaded with (the settings page says "Reload open pages to apply"); tracking prevention is
+    /// the profile's, so open tabs follow it at once.
     pub fn apply_privacy_settings(app: &AppRef, settings: &Settings) {
         let blocker = {
             let mut state = app.borrow_mut();
@@ -45,11 +47,23 @@ impl App {
             state.settings.force_dark_websites = settings.force_dark_websites;
             let private_theme_changed = state.settings.private_theme != settings.private_theme;
             state.settings.private_theme = settings.private_theme;
-            (state.blocker.clone(), private_theme_changed, state.hwnd)
+            // Tracking prevention is live: the engine sets it on the profile, so open tabs follow.
+            // A benchmark launch keeps the engine default, as it did at start.
+            let tracking = (state.settings.tracking_prevention != settings.tracking_prevention && state.benchmark_url.is_none())
+                .then_some(settings.tracking_prevention);
+            state.settings.tracking_prevention = settings.tracking_prevention;
+            (state.blocker.clone(), private_theme_changed, state.hwnd, tracking)
         };
-        let (blocker, private_theme_changed, hwnd) = blocker;
+        let (blocker, private_theme_changed, hwnd, tracking) = blocker;
         if let Some(blocker) = blocker {
             blocker.borrow_mut().apply_settings(settings);
+        }
+        if let Some(level) = tracking {
+            let level = match level {
+                crate::settings::TrackingLevel::Balanced => crate::engine::TrackingPreventionLevel::Balanced,
+                crate::settings::TrackingLevel::Strict => crate::engine::TrackingPreventionLevel::Strict,
+            };
+            Self::call_engine(app, |engine| engine.set_tracking_prevention(level));
         }
         history_retention::set_current(settings.history_retention);
         if website_look::set(website_look::WebsiteLook::from_settings(settings)) {
