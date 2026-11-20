@@ -17,7 +17,7 @@ import { mountProtection } from './panels/protection'; // blocking, history and 
 import { mountExtensionsSection } from './extensions-section';
 import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
-import { mountStartSection } from './settings-start'; // --- start page ---
+import { mountStartSection, startPageShown } from './settings-start'; // --- start page ---
 import { mountProfiles, paintDisc } from './settings-profiles'; // --- profiles ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
 import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
@@ -85,7 +85,7 @@ const GROUP_ICONS: Readonly<Record<string, IconName>> = {
   profiles: 'person', startup: 'enter', search: 'search', searchField: 'address-bar', searchScopes: 'grid',
   downloads: 'folder-download', defaultBrowser: 'globe',
   theme: 'droplet', layout: 'sidebar', toolbar: 'customize', text: 'zoom-in', bookmarksBar: 'bookmark', window: 'window', panels: 'app-tile',
-  tabBar: 'tab-switch', newTabs: 'plus', groups: 'tab-group', startPage: 'home', closing: 'close', pinned: 'pin', selecting: 'volume',
+  tabBar: 'tab-switch', newTabs: 'plus', groups: 'tab-group', startPage: 'home', startWidgets: 'app-tile', closing: 'close', pinned: 'pin', selecting: 'volume',
   blocking: 'block', history: 'clock', siteData: 'cookie', security: 'lock', spoilers: 'eye',
   passwords: 'key',
   address: 'address-bar', suggestions: 'search', bookmarks: 'bookmark', translate: 'translate', capture: 'capture', reader: 'reader', pageTools: 'pip', feeds: 'bell',
@@ -2034,7 +2034,7 @@ export function startSettingsPage(root: HTMLElement): void {
     accentReset.disabled = !s.readable;
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
-    startSection.apply(d.start, s.readable); // --- start page ---
+    startSection.apply(d.start, s.readable, startPageShown(s.tabOptions)); // --- start page --- (a Blank new tab page has none)
     themeMode.set(simpleThemeChoice(String(s.themeOptions.theme_schedule), String(s.themeOptions.theme_look)));
     themeMode.disable(!s.readable);
     tabPosition.set(simpleTabChoice(tabBarEdge(d.tabLayout)));

@@ -649,6 +649,20 @@
   opacity: 1;
 }
 
+/* A row that rests because the switch it depends on is off (the start page's speed dial and widget
+   rows): the label greys with its disabled control, so the row reads as waiting, not broken. */
+:where(#app.sp-root) .sp-row.is-off > .sp-text > .sp-label {
+  color: var(--bw-text-2);
+  opacity: 0.6;
+}
+
+@media (forced-colors: active) {
+  :where(#app.sp-root) .sp-row.is-off > .sp-text > .sp-label {
+    color: GrayText;
+    opacity: 1;
+  }
+}
+
 .sp-group-note {
   margin: calc(var(--bw-space-1) * -1) 0 var(--bw-space-2);
   padding-inline-start: var(--bw-space-0_5);

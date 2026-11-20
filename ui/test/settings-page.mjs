@@ -1195,7 +1195,9 @@ test('the Start page section: the snapshot parses, every row exists once and the
 });
 
 test('the Start page section: each control saves its own key, and a snapshot moves the controls', () => {
-  deliver(fixture.snap);
+  // The speed dial rows only act while Speed dials is on (the Rust default is off), so start from on.
+  const dialsOn = { ...fixture.snap.d, start: { ...fixture.snap.d.start, dials: true } };
+  deliver({ ...fixture.snap, d: dialsOn });
   const row = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
   const lastSave = () => sent.filter((m) => m.t === 'set' && m.a === 'save').at(-1).text.split('\n');
   const value = (key) => lastSave().find((l) => l.startsWith(`${key}=`));
@@ -1205,33 +1207,42 @@ test('the Start page section: each control saves its own key, and a snapshot mov
     row(id).querySelector('[role="switch"]').click();
     assert.equal(value(key), `${key}=${expected}`, id);
     assert.equal(sent.length, 1, `${id} sends one save`);
-    deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+    deliver({ ...fixture.snap, d: { ...dialsOn, ack: 'saved' } });
   };
-  // Switches (the page starts from the Rust fixture: add button on, drag on, widgets off, widget drag on).
+  // Switches (speed dials on, then the Rust fixture: add button on, drag on, widgets off, widget drag on).
+  flip('startDials', 'start_dials', 'false');
   flip('startAddButton', 'start_add_button', 'false');
   flip('startDragReorder', 'start_drag_reorder', 'false');
   flip('startWidgets', 'start_widgets', 'true');
   // The widget rows follow the widgets switch once Bowser answers with it on.
-  const widgetsOn = { ...fixture.snap.d, start: { ...fixture.snap.d.start, widgets: true } };
+  const widgetsOn = { ...dialsOn, start: { ...dialsOn.start, widgets: true } };
   assert.equal(radios('startWidgetColumns').every((b) => b.disabled), true, 'off while widgets are off');
   deliver({ ...fixture.snap, d: widgetsOn });
   assert.equal(radios('startWidgetColumns').every((b) => b.disabled), false);
   flip('startWidgetDrag', 'start_widget_drag', 'false');
   deliver({ ...fixture.snap, d: widgetsOn });
 
-  // Segmented controls: titles (always / when needed / never), group reopen, tile size, widget columns / height / background.
+  // Segmented controls: titles (always / if no image / never), group reopen, tile size, widget columns / height / background.
   const pick = (id, index, key, expected) => {
     sent.length = 0;
     radios(id)[index].click();
     assert.equal(value(key), `${key}=${expected}`, id);
     deliver({ ...fixture.snap, d: widgetsOn });
   };
-  assert.deepEqual(radios('startTitles').map((b) => b.textContent), ['Always', 'Auto', 'Never']);
+  assert.deepEqual(radios('startTitles').map((b) => b.textContent), ['Always', 'If no image', 'Never']);
+  assert.match(radios('startTitles')[1].getAttribute('aria-label'), /without a chosen image/);
+  assert.deepEqual(radios('startGroupReopen').map((b) => b.textContent), ['Last used', 'First']);
   pick('startTitles', 1, 'start_titles', 'auto');
   pick('startTitles', 2, 'start_titles', 'never');
   pick('startGroupReopen', 1, 'start_group_reopen', 'first');
   assert.deepEqual(radios('startThumbSize').map((b) => b.textContent), ['Tiny', 'Small', 'Medium', 'Large', 'Huge'], 'five thumbnail sizes');
   for (const [i, size] of [[0, '1'], [1, '2'], [3, '4'], [4, '5']]) pick('startThumbSize', i, 'start_thumb_size', size);
+  // Max columns is a list of 1 to 12.
+  row('startColumns').querySelector('.bw-select-button').click();
+  sent.length = 0;
+  row('startColumns').querySelectorAll('[role="option"]')[8].click();
+  assert.equal(value('start_columns'), 'start_columns=9');
+  deliver({ ...fixture.snap, d: widgetsOn });
   for (const [i, n] of [[0, '1'], [2, '3'], [3, '4']]) pick('startWidgetColumns', i, 'start_widget_columns', n);
   pick('startWidgetHeight', 1, 'start_widget_height', 'tall');
   assert.deepEqual(radios('startWidgetBg').map((b) => b.textContent), ['Solid', 'Tinted', 'Clear', 'Custom']);
@@ -1300,6 +1311,69 @@ test('the Start page section follows the snapshot: values, the startup mode and 
   deliver({ ...fixture.snap, d: { ...tuned, readable: false } });
   for (const id of ['startAddButton', 'startWidgets']) assert.equal(row(id).querySelector('[role="switch"]').disabled, true, id);
   assert.equal(row('startHomepage').querySelector('input').disabled, true);
+  deliver(fixture.snap);
+});
+
+test('the Start page section: a row that cannot act rests (disabled, dimmed) until its switch is on', () => {
+  const row = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const off = (id) => {
+    const node = row(id);
+    const control = node.querySelector('[role="switch"], .bw-select-button, input');
+    const radios = node.querySelectorAll('[role="radio"]');
+    const disabled = radios.length > 0 ? radios.every((b) => b.disabled) : control.disabled;
+    assert.equal(node.classList.contains('is-off'), disabled, `${id}: dimmed exactly when disabled`);
+    return disabled;
+  };
+  const dialRows = ['startTitles', 'startThumbSize', 'startColumns', 'startAddButton', 'startGroupReopen', 'startDragReorder'];
+  const widgetRows = ['startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetDrag', 'startWidgetColor'];
+  const snap = (start, tabOptions = {}) => deliver({ ...fixture.snap, d: { ...fixture.snap.d, start: { ...fixture.snap.d.start, ...start }, tabOptions: { ...fixture.snap.d.tabOptions, ...tabOptions } } });
+
+  // The Rust defaults: speed dials and widgets off, so only their two switches act.
+  snap({});
+  for (const id of [...dialRows, ...widgetRows]) assert.equal(off(id), true, `${id} rests while its switch is off`);
+  for (const id of ['startDials', 'startWidgets']) assert.equal(off(id), false, id);
+  // Speed dials on: its rows wake, the widget rows still rest.
+  snap({ dials: true });
+  for (const id of dialRows) assert.equal(off(id), false, id);
+  for (const id of widgetRows) assert.equal(off(id), true, id);
+  // Widgets on: their rows wake; the colour only for a Custom background.
+  snap({ widgets: true });
+  for (const id of dialRows) assert.equal(off(id), true, id);
+  for (const id of widgetRows) assert.equal(off(id), id === 'startWidgetColor', id);
+  snap({ widgets: true, widgetBg: 'custom' });
+  assert.equal(off('startWidgetColor'), false);
+
+  // A Blank new tab page shows no start page at all: everything rests and the two switches say why.
+  const notes = () => ['startDials', 'startWidgets'].map((id) => row(id).querySelector('.sp-start-note'));
+  const described = () => row('startDials').querySelector('[role="switch"]').getAttribute('aria-describedby') ?? '';
+  assert.ok(notes().every((note) => note.hidden), 'no note while the start page is shown');
+  assert.doesNotMatch(described(), /sp-f-startDials/, 'a hidden note is not read out either');
+  snap({ dials: true, widgets: true, widgetBg: 'custom' }, { tabs_new_tab_page: 'blank' });
+  for (const id of ['startDials', 'startWidgets', ...dialRows, ...widgetRows]) assert.equal(off(id), true, `${id} rests on a Blank new tab page`);
+  for (const note of notes()) {
+    assert.equal(note.hidden, false);
+    assert.equal(note.textContent, 'Not shown: New tab page is Blank');
+  }
+  assert.match(described(), /sp-f-startDials/);
+  // The homepage and startup do not depend on the start page.
+  assert.equal(row('startHomepage').querySelector('input').disabled, false);
+  // Homepage or a specific page still leaves the start page for an empty tab.
+  for (const page of ['start', 'homepage', 'url']) {
+    snap({ dials: true }, { tabs_new_tab_page: page });
+    assert.equal(off('startTitles'), false, page);
+    assert.ok(notes().every((note) => note.hidden), page);
+    assert.doesNotMatch(described(), /sp-f-startDials/, page);
+  }
+
+  // The two groups: speed dials, then widgets, each led by its switch, right after New tabs.
+  const tabs = logic.AREAS.find((a) => a.key === 'tabs').groups.map((g) => g.key);
+  assert.deepEqual(tabs.slice(tabs.indexOf('newTabs'), tabs.indexOf('newTabs') + 3), ['newTabs', 'startPage', 'startWidgets']);
+  assert.equal(logic.placementOf('startDials', 'startpage').group.rows[0], 'startDials');
+  assert.equal(logic.placementOf('startWidgetBg', 'startpage').group.rows[0], 'startWidgets');
+  assert.equal(logic.anchorGroup('startpage').key, 'startPage', 'bowser://settings/startpage still lands on the speed dials');
+  // The labels say what the row is, without the group around it.
+  assert.equal(row('startWidgets').querySelector('.sp-label').textContent, 'Widgets', 'not "Dashboard", the Privacy dashboard’s name');
+  assert.equal(row('startWidgetBg').querySelector('.sp-label').textContent, 'Widget background');
   deliver(fixture.snap);
 });
 

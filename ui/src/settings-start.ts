@@ -1,12 +1,18 @@
 // The settings page's "Start page" section (docs/design/start-page.md): speed dials, the homepage and
 // startup, and the dashboard widgets. settings-page.ts hands this module its own card, row and change
 // helpers (so the rows look and behave like every other row) and calls `apply` with each snapshot.
-import { el } from './dom';
+//
+// Every row that tunes the speed dials only does something while Speed dials is on, and every widget
+// row only while Widgets is on: `apply` disables (and dims) them otherwise, so no control looks live
+// while it cannot change what a new tab shows. With the new tab page set to Blank (Tabs > New tabs)
+// there is no start page at all, so the whole section rests and its two switches say why.
+import { el, icon } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
   GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_MODES, WIDGET_BGS, WIDGET_HEIGHTS, normaliseAddress,
   type GroupReopen, type StartSettings, type StartupMode, type TitleMode, type WidgetBg, type WidgetHeight,
 } from './start-page-logic';
+import type { TabOptionValues } from './tab-options-logic';
 
 interface Ctl<T> { readonly root: HTMLElement; set(value: T): void; disable(off: boolean): void }
 
@@ -21,10 +27,17 @@ export interface StartSectionHost {
   toast(text: string, ok: boolean): void;
 }
 
-export const GROUP_REOPEN_LABELS: Readonly<Record<GroupReopen, string>> = { last: 'Last', first: 'First' };
+export const GROUP_REOPEN_LABELS: Readonly<Record<GroupReopen, string>> = { last: 'Last used', first: 'First' };
 export const GROUP_REOPEN_ARIA: Readonly<Record<GroupReopen, string>> = { last: 'The group you used last', first: 'The first group' };
-export const TITLE_LABELS: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'Auto', never: 'Never' };
-export const TITLE_ARIA: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'When needed', never: 'Never' };
+// "Auto" read as if it did nothing: it only differs from Always for a tile with a chosen image.
+export const TITLE_LABELS: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'If no image', never: 'Never' };
+export const TITLE_ARIA: Readonly<Record<TitleMode, string>> = {
+  always: 'Always',
+  auto: 'Under tiles without a chosen image, on hover for the rest',
+  never: 'Never',
+};
+/** Under the two switches while the new tab page is Blank: why the section does nothing. */
+export const START_OFF_NOTE = 'Not shown: New tab page is Blank';
 export const STARTUP_LABELS: Readonly<Record<StartupMode, string>> = {
   start_page: 'Start page',
   last_session: 'Continue',
@@ -35,6 +48,14 @@ export const THUMB_LABELS: readonly string[] = ['Tiny', 'Small', 'Medium', 'Larg
 export const HEIGHT_LABELS: Readonly<Record<WidgetHeight, string>> = { regular: 'Regular', tall: 'Tall' };
 export const BG_LABELS: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Tinted', transparent: 'Clear', custom: 'Custom' };
 export const BG_ARIA: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Semi-transparent', transparent: 'Transparent', custom: 'Custom' };
+
+/**
+ * Whether a blank new tab shows the start page, from the Tabs options: only a Blank new tab page turns
+ * it off (mirrors `tab_options::start_page_shown` in Rust, which `start_ui::enabled` asks).
+ */
+export function startPageShown(tabOptions: TabOptionValues): boolean {
+  return tabOptions.tabs_new_tab_page !== 'blank';
+}
 
 /** The lines of a "specific pages" box as addresses, or `null` when one is not a web address or there are too many. */
 export function parsePageLines(text: string): string[] | null {
@@ -49,18 +70,36 @@ export function parsePageLines(text: string): string[] | null {
   return out;
 }
 
-export function mountStartSection(host: StartSectionHost): { apply(start: StartSettings, readable: boolean): void } {
+/** A quiet note under a row's label (the settings page's `.sp-flag`), hidden until `apply` shows it. */
+function rowNote(row: HTMLElement, id: string, text: string): HTMLElement {
+  const note = el('span', 'sp-flag sp-start-note');
+  note.id = `sp-f-${id}`;
+  note.hidden = true;
+  const words = el('span');
+  words.textContent = text;
+  note.append(icon('info', { size: 12, fine: true }), words);
+  row.querySelector('.sp-text')?.append(note);
+  return note;
+}
+
+/** A row whose control cannot act now: dimmed as a whole, so it reads as resting rather than broken. */
+function rest(row: HTMLElement, off: boolean): void {
+  row.classList.toggle('is-off', off);
+}
+
+export function mountStartSection(host: StartSectionHost): { apply(start: StartSettings, readable: boolean, shown?: boolean): void } {
   // Speed dials
   const dials = host.card('startpage', 'Dials');
   // Off by default: a new tab is blank until speed dials are turned on here.
   const dialsOn = host.switchControl((on) => host.change((s) => { s.dials = on; }));
-  host.row(dials, 'startDials', dialsOn.root);
+  const dialsRow = host.row(dials, 'startDials', dialsOn.root).root;
+  const dialsNote = rowNote(dialsRow, 'startDials', START_OFF_NOTE);
   const reopen = host.segmentedControl<GroupReopen>('Open the start page on', GROUP_REOPEN.map((key) => [key, GROUP_REOPEN_LABELS[key], GROUP_REOPEN_ARIA[key]] as const), (value) => host.change((s) => { s.groupReopen = value; }));
-  host.row(dials, 'startGroupReopen', reopen.root);
+  const reopenRow = host.row(dials, 'startGroupReopen', reopen.root).root;
   const titles = host.segmentedControl<TitleMode>('Show titles', (['always', 'auto', 'never'] as const).map((key) => [key, TITLE_LABELS[key], TITLE_ARIA[key]] as const), (value) => host.change((s) => { s.titles = value; }));
-  host.row(dials, 'startTitles', titles.root);
+  const titlesRow = host.row(dials, 'startTitles', titles.root).root;
   const addButton = host.switchControl((on) => host.change((s) => { s.addButton = on; }));
-  host.row(dials, 'startAddButton', addButton.root);
+  const addRow = host.row(dials, 'startAddButton', addButton.root).root;
   const columnsHost = el('div', 'sp-select-host');
   let columnsSelect: SelectField<string> | null = null;
   const paintColumns = (value: number): void => {
@@ -78,11 +117,11 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
     columnsSelect.button.setAttribute('aria-labelledby', 'sp-l-startColumns');
     columnsHost.replaceChildren(columnsSelect.root);
   };
-  host.row(dials, 'startColumns', columnsHost);
+  const columnsRow = host.row(dials, 'startColumns', columnsHost).root;
   const size = host.segmentedControl<string>('Tile size', THUMB_LABELS.map((label, i) => [String(i + 1), label] as const), (value) => host.change((s) => { s.thumbSize = Number(value); }));
-  host.row(dials, 'startThumbSize', size.root);
+  const sizeRow = host.row(dials, 'startThumbSize', size.root).root;
   const drag = host.switchControl((on) => host.change((s) => { s.dragReorder = on; }));
-  host.row(dials, 'startDragReorder', drag.root);
+  const dragRow = host.row(dials, 'startDragReorder', drag.root).root;
 
   // Homepage and startup
   const home = host.card('startpage', 'Startup');
@@ -154,23 +193,37 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   // Widgets
   const widgets = host.card('startpage', 'Widgets');
   const widgetsOn = host.switchControl((on) => host.change((s) => { s.widgets = on; }));
-  host.row(widgets, 'startWidgets', widgetsOn.root);
+  const widgetsRow = host.row(widgets, 'startWidgets', widgetsOn.root).root;
+  const widgetsNote = rowNote(widgetsRow, 'startWidgets', START_OFF_NOTE);
   const wcols = host.segmentedControl<string>('Widget columns', ['1', '2', '3', '4'].map((n) => [n, n] as const), (value) => host.change((s) => { s.widgetColumns = Number(value); }));
-  host.row(widgets, 'startWidgetColumns', wcols.root);
+  const wcolsRow = host.row(widgets, 'startWidgetColumns', wcols.root).root;
   const wheight = host.segmentedControl<WidgetHeight>('Widget height', WIDGET_HEIGHTS.map((key) => [key, HEIGHT_LABELS[key]] as const), (value) => host.change((s) => { s.widgetHeight = value; }));
-  host.row(widgets, 'startWidgetHeight', wheight.root);
+  const wheightRow = host.row(widgets, 'startWidgetHeight', wheight.root).root;
   const wbg = host.segmentedControl<WidgetBg>('Widget background', WIDGET_BGS.map((key) => [key, BG_LABELS[key], BG_ARIA[key]] as const), (value) => host.change((s) => { s.widgetBg = value; }));
-  host.row(widgets, 'startWidgetBg', wbg.root);
+  const wbgRow = host.row(widgets, 'startWidgetBg', wbg.root).root;
   const wcolor = el('input', 'sp-color');
   wcolor.type = 'color';
   wcolor.setAttribute('aria-label', 'Custom widget colour');
   wcolor.addEventListener('change', () => host.change((s) => { s.widgetColor = wcolor.value.toLowerCase(); }));
-  host.row(widgets, 'startWidgetColor', wcolor);
+  const wcolorRow = host.row(widgets, 'startWidgetColor', wcolor).root;
   const wdrag = host.switchControl((on) => host.change((s) => { s.widgetDrag = on; }));
-  host.row(widgets, 'startWidgetDrag', wdrag.root);
+  const wdragRow = host.row(widgets, 'startWidgetDrag', wdrag.root).root;
+
+  /** Shows or hides a switch's note, and adds it to (or drops it from) the switch's accessible description:
+   *  a hidden element named by aria-describedby would still be read out. */
+  const paintNote = (control: HTMLElement, note: HTMLElement, show: boolean): void => {
+    if (note.hidden === show) note.hidden = !show;
+    const now = control.getAttribute('aria-describedby') ?? '';
+    const ids = now.split(' ').filter((id) => id !== '' && id !== note.id);
+    if (show) ids.push(note.id);
+    const next = ids.join(' ');
+    if (next === now) return;
+    if (next !== '') control.setAttribute('aria-describedby', next);
+    else control.removeAttribute('aria-describedby');
+  };
 
   return {
-    apply(start, readable): void {
+    apply(start, readable, shown = true): void {
       dialsOn.set(start.dials);
       reopen.set(start.groupReopen);
       titles.set(start.titles);
@@ -187,14 +240,26 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       wbg.set(start.widgetBg);
       wcolor.value = start.widgetColor;
       wdrag.set(start.widgetDrag);
-      for (const control of [dialsOn, reopen, titles, addButton, size, drag, widgetsOn]) control.disable(!readable);
+      // No start page while the new tab page is Blank; the homepage and startup rows do not depend on it.
+      const live = readable && shown;
+      paintNote(dialsOn.root, dialsNote, readable && !shown);
+      paintNote(widgetsOn.root, widgetsNote, readable && !shown);
+      for (const control of [dialsOn, widgetsOn]) control.disable(!live);
+      for (const row of [dialsRow, widgetsRow]) rest(row, readable && !shown);
+      // The rows below only matter while what they tune is on. (An unreadable file greys every control
+      // and says so in the banner; the rows are not dimmed for that.)
+      const dialsLive = live && start.dials;
+      for (const control of [reopen, titles, addButton, size, drag]) control.disable(!dialsLive);
+      columnsSelect?.button.toggleAttribute('disabled', !dialsLive);
+      for (const row of [reopenRow, titlesRow, addRow, columnsRow, sizeRow, dragRow]) rest(row, readable && !dialsLive);
+      const widgetsLive = live && start.widgets;
+      for (const control of [wcols, wheight, wbg, wdrag]) control.disable(!widgetsLive);
+      for (const row of [wcolsRow, wheightRow, wbgRow, wdragRow]) rest(row, readable && !widgetsLive);
+      wcolor.disabled = !widgetsLive || start.widgetBg !== 'custom';
+      rest(wcolorRow, readable && wcolor.disabled);
       homepage.disabled = !readable;
-      columnsSelect?.button.toggleAttribute('disabled', !readable);
       startupSelect?.button.toggleAttribute('disabled', !readable);
-      // The rows below only matter while what they tune is on.
       pages.disabled = !readable || start.startup !== 'specific_pages';
-      for (const control of [wcols, wheight, wbg, wdrag]) control.disable(!readable || !start.widgets);
-      wcolor.disabled = !readable || !start.widgets || start.widgetBg !== 'custom';
     },
   };
 }

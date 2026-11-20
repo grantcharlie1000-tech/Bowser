@@ -65,6 +65,12 @@ Settings: show the dashboard, columns 1 to 4 (the window width can lower it), re
 solid / semi-transparent / transparent / custom colour (the text colour is chosen to keep 4.5:1), drag to
 rearrange (pointer on the handle, or Alt and an arrow key).
 
+In Settings (Tabs, right after New tabs) the start page is two groups, each led by its switch: **Start
+page** (Speed dials, then the rows that tune them) and **Start page widgets** (Widgets, then the widget
+rows). A row whose switch is off is disabled and dimmed rather than left looking live, the custom colour
+only wakes for a Custom background, and while the new tab page is Blank there is no start page, so both
+groups rest and the two switches say "Not shown: New tab page is Blank" (`settings-start.ts`).
+
 ## Settings keys (`settings.txt`)
 
 All are optional in a `save` payload (an older page leaves them as they were) and tolerant in a hand-edited
