@@ -1,0 +1,70 @@
+name: Reproduce corner resize
+
+# Builds Bowser, opens it on the Classic layout on a hosted Windows runner and drags each window corner
+# with the real mouse (benchmarks/scripts/repro-resize.ps1). Screenshots, window geometry and the
+# BOWSER_PAINT_LOG output are kept as an artifact and pushed to the `resize-repro-results` branch.
+# Evidence only: nothing here gates a merge.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'claude/**'
+    paths:
+      - '.github/workflows/resize-repro.yml'
+      - 'benchmarks/scripts/repro-resize.ps1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: resize-repro
+  cancel-in-progress: true
+
+jobs:
+  repro:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+      - name: Build Bowser (HTML chrome, release, as shipped)
+        run: |
+          cargo +stable build --locked --release --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+      - name: Drag the corners
+        timeout-minutes: 10
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/repro-resize.ps1 -Exe target/release/bowser.exe -Out "$env:RUNNER_TEMP/resize-repro"
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: resize-repro
+          path: ${{ runner.temp }}/resize-repro
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Push the evidence to a branch
+        if: always()
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'resize-repro'
+          if (-not (Test-Path $dir)) { Write-Host 'nothing to push'; exit 0 }
+          Set-Location $dir
+          git init -q -b resize-repro-results
+          git config user.name 'github-actions'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -q -m "Resize repro evidence for $env:SOURCE_SHA"
+          git push -f "https://x-access-token:$env:TOKEN@github.com/${{ github.repository }}.git" resize-repro-results
