@@ -29,6 +29,8 @@ export interface BarSnapshot {
   readonly display: BarDisplay;
   readonly items: readonly BarItem[];
   readonly groups: readonly BarGroup[];
+  /** "Other bookmarks", shown at the bar's far end while it holds anything (Chrome, Edge). */
+  readonly other: { readonly id: number; readonly n: number } | null;
 }
 
 const noControls = (v: unknown, max: number): v is string => typeof v === 'string' && v.length <= max && !/[\u0000-\u001f\u007f]/.test(v);
@@ -37,7 +39,16 @@ const isFav = (v: unknown): v is string => typeof v === 'string' && (v === '' ||
 /** Strict validation of a `bookmarkbar` snapshot; `null` for anything partial, extended or malformed. */
 export function parseBarSnapshot(d: SnapshotMsg['d']): BarSnapshot | null {
   const keys = ['display', 'items', 'groups'];
-  if (Object.keys(d).length !== keys.length || Object.keys(d).some((key) => !keys.includes(key))) return null;
+  const hasOther = 'other' in d;
+  if (Object.keys(d).length !== keys.length + (hasOther ? 1 : 0) || Object.keys(d).some((key) => key !== 'other' && !keys.includes(key))) return null;
+  let other: BarSnapshot['other'] = null;
+  if (hasOther) {
+    const raw = d.other;
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+    const { id, n } = raw as Record<string, unknown>;
+    if (Object.keys(raw).length !== 2 || typeof id !== 'number' || !Number.isInteger(id) || id < 1 || id > 0xffffffff || typeof n !== 'number' || !Number.isInteger(n) || n < 1) return null;
+    other = { id, n };
+  }
   if (!(BAR_DISPLAYS as readonly unknown[]).includes(d.display) || !Array.isArray(d.items) || !Array.isArray(d.groups)) return null;
   if (d.items.length > MAX_BAR_ITEMS || d.groups.length > MAX_BAR_GROUPS) return null;
   const items: BarItem[] = [];
@@ -58,7 +69,7 @@ export function parseBarSnapshot(d: SnapshotMsg['d']): BarSnapshot | null {
     if (typeof colour !== 'number' || !Number.isInteger(colour) || colour < -1 || colour > 255) return null;
     groups.push({ key, name, pinned, live, colour });
   }
-  return { display: d.display as BarDisplay, items, groups };
+  return { display: d.display as BarDisplay, items, groups, other };
 }
 
 /** What a bookmark or folder shows on the bar in `display`. */
@@ -85,6 +96,10 @@ export function contextFields(id: number): PanelFields { return { a: 'barctx', i
 export function groupFields(key: string): PanelFields { return { a: 'bargroup', text: key }; }
 export function groupContextFields(key: string): PanelFields { return { a: 'bargctx', text: key }; }
 export function overflowFields(first: number, rect: string): PanelFields { return { a: 'baroverflow', n: first, text: rect }; }
+/** The bar's own menu (a right-click on its empty part). */
+export function backgroundFields(): PanelFields { return { a: 'barbg' }; }
+/** "Import bookmarks" on the empty bar. */
+export function importFields(): PanelFields { return { a: 'barimport' }; }
 
 /**
  * How many of `widths` fit in `available` pixels with `gap` between them, leaving room for the

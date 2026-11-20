@@ -406,6 +406,17 @@ test('the bookmarks bar snapshot from Rust parses, and malformed ones do not', (
   }
 });
 
+test('Other bookmarks rides at the bar end only with an id and a positive count', () => {
+  const d = fixture.bar.d;
+  assert.equal(barLogic.parseBarSnapshot(d).other, null, 'absent: no button');
+  assert.deepEqual(barLogic.parseBarSnapshot({ ...d, other: { id: 7, n: 3 } }).other, { id: 7, n: 3 });
+  for (const other of [{ id: 0, n: 3 }, { id: 7, n: 0 }, { id: 7 }, { id: 7, n: 3, x: 1 }, null, [7, 3]]) {
+    assert.equal(barLogic.parseBarSnapshot({ ...d, other }), null, JSON.stringify(other));
+  }
+  assert.deepEqual(barLogic.backgroundFields(), { a: 'barbg' });
+  assert.deepEqual(barLogic.importFields(), { a: 'barimport' });
+});
+
 test('each display mode shows what its name says, folders keep their names unless only icons show', () => {
   const link = { kind: 'link' };
   const folder = { kind: 'folder' };

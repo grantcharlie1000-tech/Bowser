@@ -144,13 +144,16 @@ const histRows = [
 ];
 const panelSnap = (p, d) => ({ v: 1, t: 'snap', p, d });
 const historyPanel = (rows) => panelSnap('history', { rows, favs: {}, query: '', undo: false });
-const bookmarksPanel = (items) => panelSnap('bookmarks', { items, query: '', currentFolder: null, singleClick: true });
+// The shape src/chrome_host/panels/bookmarks.rs sends: every folder (with its count), the links of the
+// bar and of each open folder, the "Other bookmarks" root and which folders are open.
+const bookmarksPanel = (items) => panelSnap('bookmarks', { items, query: '', currentFolder: null, singleClick: true, other: items.length ? 6 : 0xffffffff, expanded: items.length ? [1] : [], total: 0, error: '', undo: '', canAdd: true, favs: {} });
 const bmItems = [
-  { id: 1, parent: null, title: 'Reading', kind: 'folder' },
-  { id: 2, parent: null, title: 'Work', kind: 'folder' },
-  { id: 3, parent: null, title: 'Example news', kind: 'link', url: 'https://news.example/' },
-  { id: 4, parent: null, title: 'Docs home', kind: 'link', url: 'https://docs.example.com/' },
-  { id: 5, parent: 1, title: 'Spec', kind: 'link', url: 'https://spec.example/', folderPath: ['Reading'] },
+  { id: 1, parent: null, title: 'Reading', kind: 'folder', n: 1 },
+  { id: 2, parent: null, title: 'Work', kind: 'folder', n: 0 },
+  { id: 6, parent: null, title: 'Other bookmarks', kind: 'folder', n: 0 },
+  { id: 3, parent: null, title: 'Example news', kind: 'link', url: 'https://news.example/', host: 'news.example' },
+  { id: 4, parent: null, title: 'Docs home', kind: 'link', url: 'https://docs.example.com/', host: 'docs.example.com' },
+  { id: 5, parent: 1, title: 'Spec', kind: 'link', url: 'https://spec.example/', host: 'spec.example' },
 ];
 const customizePanel = (full) => panelSnap('customize', {
   visible: { workspaces: true, apps: true, bookmarks: true, history: full },

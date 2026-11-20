@@ -299,8 +299,10 @@ pub struct BarGroup {
 pub const MAX_BAR_ITEMS: usize = 200;
 pub const MAX_BAR_GROUPS: usize = 32;
 
-/// `{v:1,t:"snap",p:"bookmarkbar",d:{display,items:[..],groups:[..]}}`.
-pub fn bar_snapshot_json(display: &str, items: &[BarItem], groups: &[BarGroup]) -> String {
+/// `{v:1,t:"snap",p:"bookmarkbar",d:{display,items:[..],groups:[..],other?}}`. `other` is the
+/// "Other bookmarks" folder as `(id, items in it)`: the bar shows it at its far end, as Chrome and
+/// Edge do, while it holds anything.
+pub fn bar_snapshot_json(display: &str, items: &[BarItem], groups: &[BarGroup], other: Option<(u64, usize)>) -> String {
     snap_json("bookmarkbar", |out| {
         out.string("display", display);
         out.array("items", |list| {
@@ -325,6 +327,12 @@ pub fn bar_snapshot_json(display: &str, items: &[BarItem], groups: &[BarGroup]) 
                 });
             }
         });
+        if let Some((id, n)) = other.filter(|(_, n)| *n > 0) {
+            out.object("other", |o| {
+                o.uint("id", id);
+                o.uint("n", n as u64);
+            });
+        }
     })
     .expect("bookmarkbar is a panel token")
 }
@@ -344,6 +352,10 @@ pub enum BarAction {
     GroupContext { key: String },
     /// The items from index `first` on, which did not fit, listed under the button at `rect`.
     Overflow { first: usize, rect: super::protocol::HoverRect },
+    /// The bar's own context menu (a right-click on its empty part).
+    Background,
+    /// "Import bookmarks" from the empty bar.
+    Import,
 }
 
 fn valid_domain_key(text: &str) -> bool {
@@ -362,6 +374,7 @@ pub fn bar_command(f: &PanelFields) -> Option<BarAction> {
         "barctx" if f.n.is_none() && f.text.is_none() => Some(BarAction::Context { id: f.id? }),
         "bargroup" if f.id.is_none() && f.n.is_none() => Some(BarAction::Group { key: f.text.clone().filter(|key| valid_domain_key(key))? }),
         "bargctx" if f.id.is_none() && f.n.is_none() => Some(BarAction::GroupContext { key: f.text.clone().filter(|key| valid_domain_key(key))? }),
+        "barbg" | "barimport" if f.id.is_none() && f.n.is_none() && f.text.is_none() => Some(if f.a == "barbg" { BarAction::Background } else { BarAction::Import }),
         "baroverflow" if f.id.is_none() => Some(BarAction::Overflow { first: usize::try_from(f.n?).ok().filter(|n| *n < MAX_BAR_ITEMS)?, rect: HoverRect::parse(f.text.as_deref()?)? }),
         _ => None,
     }
@@ -376,6 +389,9 @@ pub enum DialogPage<'a> {
 
 /// The bookmark dialog's fields.
 pub struct BookmarkDialog<'a> {
+    /// `add`: nothing is saved until Save ("Always open the bookmark dialog"); `added`: Ctrl+D or
+    /// the star just saved the page (Chrome's "Bookmark added" bubble); `edit`: it was saved before.
+    pub mode: &'a str,
     pub url: &'a str,
     /// The page is bookmarked already: the dialog edits it and offers Remove.
     pub existing: bool,
@@ -413,6 +429,7 @@ pub fn dialog_snapshot_json(page: &DialogPage<'_>) -> String {
                 }
             });
             out.string("error", plain(b.error, MAX_ERROR_CHARS).trim());
+            out.string("mode", if matches!(b.mode, "add" | "added" | "edit") { b.mode } else { "add" });
         }
     })
     .expect("addressdlg is a panel token")
@@ -469,6 +486,7 @@ mod tests {
         let folders = vec![Folder { id: 4, title: "Reading".into(), depth: 0 }, Folder { id: 9, title: "Rust".into(), depth: 1 }];
         let snapshot = snapshot_json(&Snapshot { settings: &settings, engines: &engines, folders: &folders, guest: false, ack: Ack::None, error: "" });
         let bookmark = dialog_snapshot_json(&DialogPage::Bookmark(BookmarkDialog {
+            mode: "edit",
             url: "https://www.rust-lang.org/",
             existing: true,
             name: "Rust",
@@ -485,6 +503,7 @@ mod tests {
                 BarItem { id: 2, folder: true, title: "Reading".into(), url: String::new(), fav: String::new() },
             ],
             &[BarGroup { key: "example.com".into(), name: "Example".into(), pinned: true, live: false, colour: -1 }],
+            None,
         );
         let fixture = format!(
             "{{\"addr\":{},\"sfield\":{},\"snap\":{},\"qr\":{},\"bookmark\":{},\"bar\":{}}}\n",
@@ -504,6 +523,16 @@ mod tests {
             fixture,
             "set BOWSER_WRITE_FIXTURES=1 cargo test address_messages_write_the_ui_fixture --lib"
         );
+    }
+
+    #[test]
+    fn the_bar_shows_other_bookmarks_only_while_it_holds_something() {
+        assert!(!bar_snapshot_json("text", &[], &[], Some((7, 0))).contains("other"));
+        assert!(bar_snapshot_json("text", &[], &[], Some((7, 3))).contains(r#""other":{"id":7,"n":3}"#));
+        let plain = |a: &str| PanelFields { a: a.into(), ..PanelFields::default() };
+        assert_eq!(bar_command(&plain("barbg")), Some(BarAction::Background));
+        assert_eq!(bar_command(&plain("barimport")), Some(BarAction::Import));
+        assert_eq!(bar_command(&PanelFields { a: "barbg".into(), id: Some(1), ..PanelFields::default() }), None);
     }
 
     #[test]

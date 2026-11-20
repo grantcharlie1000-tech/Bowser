@@ -197,7 +197,10 @@ pub(super) fn tab_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize)
             }
         }
         STACK_BOOKMARK => match App::bookmark_stack(app, id) {
-            Ok(count) => toast(hwnd, &format!("{count} {} bookmarked", if count == 1 { "page" } else { "pages" })),
+            Ok(saved) => {
+                toast(hwnd, &App::tabs_saved_message(&App::stack_name(app, id).unwrap_or_default(), saved));
+                super::post(hwnd, super::WM_RAIL_CHANGED, windows::Win32::Foundation::WPARAM(0), windows::Win32::Foundation::LPARAM(0));
+            }
             Err(message) => super::show_error_message(&message),
         },
         STACK_COPY => {

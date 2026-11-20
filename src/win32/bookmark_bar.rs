@@ -352,17 +352,40 @@ fn group_chips(app: &AppRef, live: &[(String, Vec<TabId>)]) -> Vec<BarGroup> {
     chips
 }
 
-fn favicon_for(url: &str) -> String {
-    let host = url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned));
-    host.and_then(|host| crate::favicon::load_favicon_bytes(&host).ok().flatten())
-        .and_then(|png| chrome_host::protocol::favicon_uri(&png))
-        .filter(|uri| uri.len() <= 8 * 1024)
-        .unwrap_or_default()
+/// The site's icon as a data URI that fits the bar (any cached icon, re-encoded small when needed);
+/// empty when there is none yet, and its host is then added to `missing`.
+fn favicon_for(url: &str, missing: &mut Vec<String>) -> String {
+    let Some(host) = url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned)) else { return String::new() };
+    match crate::bookmark_icons::icon_png(&host).and_then(|png| chrome_host::protocol::favicon_uri(&png)).filter(|uri| uri.len() <= 8 * 1024) {
+        Some(uri) => uri,
+        None => {
+            missing.push(host);
+            String::new()
+        }
+    }
 }
 
+/// Icons fetched for bookmarks arrived (`bookmark_icons::WM_BOOKMARK_ICONS`): the bar draws again.
+pub(crate) fn icons_changed(owner: HWND, app: &AppRef) {
+    let _ = with(owner, |rt| {
+        rt.built = None;
+        rt.snapshot = None;
+    });
+    sync(owner, app);
+}
+
+/// What the bar lists: folder `folder`'s items, or the top level without "Other bookmarks" (which
+/// the bar shows at its far end instead).
 fn bar_items(store: &BookmarkStore, folder: u64) -> Vec<Bookmark> {
     let parent = (folder != 0 && store.items().iter().any(|item| item.id == folder && matches!(item.kind, BookmarkKind::Folder))).then_some(folder);
-    store.children(parent).into_iter().cloned().collect()
+    store.children(parent).into_iter().filter(|item| parent.is_some() || !store.is_permanent(item.id)).cloned().collect()
+}
+
+/// "Other bookmarks" for the bar's far end: shown only beside the top level, while it holds anything.
+fn other_button(store: &BookmarkStore, folder: u64) -> Option<(u64, usize)> {
+    let showing_top = folder == 0 || !store.items().iter().any(|item| item.id == folder && matches!(item.kind, BookmarkKind::Folder));
+    let other = store.other().filter(|_| showing_top)?;
+    Some((other, store.children(Some(other)).len()))
 }
 
 fn snapshot_for(app: &AppRef, owner: HWND) -> Option<(String, BuiltFrom)> {
@@ -384,14 +407,18 @@ fn snapshot_for(app: &AppRef, owner: HWND) -> Option<(String, BuiltFrom)> {
         return None;
     }
     let store = if crate::productivity::profile_allows_productivity(&profile) { BookmarkStore::load(profile.root()).unwrap_or_default() } else { BookmarkStore::new() };
+    let mut missing = Vec::new();
     let items: Vec<BarItem> = bar_items(&store, settings.address.bar_folder)
         .into_iter()
         .map(|item| match item.kind {
             BookmarkKind::Folder => BarItem { id: item.id, folder: true, title: item.title, url: String::new(), fav: String::new() },
-            BookmarkKind::Link { url, .. } => BarItem { id: item.id, folder: false, title: item.title, fav: favicon_for(&url), url },
+            BookmarkKind::Link { url, .. } => BarItem { id: item.id, folder: false, title: item.title, fav: favicon_for(&url, &mut missing), url },
         })
         .collect();
-    Some((address_page::bar_snapshot_json(settings.address.bar_display.key(), &items, &groups), built))
+    // Sites never opened here (imported bookmarks) have no icon yet: ask them, in the background.
+    crate::bookmark_icons::fetch_missing(owner.0 as isize, missing.iter().map(String::as_str));
+    let other = other_button(&store, settings.address.bar_folder);
+    Some((address_page::bar_snapshot_json(settings.address.bar_display.key(), &items, &groups, other), built))
 }
 
 /// Brings the bar in line with the settings and the tabs: reserves (or frees) its room, creates and
@@ -527,6 +554,38 @@ const OPEN_ALL: usize = 1 << 40;
 const NEW_TAB: usize = 1 << 41;
 const COPY: usize = 1 << 42;
 const DELETE: usize = 1 << 43;
+/// Edit bookmark `id` in the bookmark bubble.
+const EDIT: usize = 1 << 44;
+/// The bar's own items: [`BAR_ADD_PAGE`] and the rest.
+const BAR: usize = 1 << 45;
+const BAR_ADD_PAGE: usize = BAR | 1;
+const BAR_PANEL: usize = BAR | 2;
+const BAR_IMPORT: usize = BAR | 3;
+const BAR_HIDE: usize = BAR | 4;
+
+/// What every bar menu ends with, as in Chrome's: add the shown page, the full list, import, and
+/// the bar itself.
+fn bar_entries() -> Vec<super::menu::Entry> {
+    use super::menu::{Entry, Icon, Item};
+    vec![
+        Entry::Item(Item::new(BAR_ADD_PAGE, "Bookmark this page", Icon::None).glyph("bookmark").shortcut("Ctrl+D")),
+        Entry::Item(Item::new(BAR_PANEL, "Show all bookmarks", Icon::None).glyph("folder-open").shortcut("Ctrl+B")),
+        Entry::Item(Item::new(BAR_IMPORT, "Import bookmarks…", Icon::None).glyph("import")),
+        Entry::Separator,
+        Entry::Item(Item::new(BAR_HIDE, "Hide the bookmarks bar", Icon::None).glyph("eye-off")),
+    ]
+}
+
+/// Settings > Bookmarks bar: never shown, from the bar's own menu.
+fn hide_bar(app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return };
+    let path = profile.settings_file();
+    let Ok(mut settings) = crate::settings::read_strict(&path) else { return };
+    settings.bookmarks_bar = BookmarksBar::Never;
+    if crate::settings::save(&path, &settings).is_ok() {
+        App::apply_live_settings(app, &settings);
+    }
+}
 
 fn folder_entries(store: &BookmarkStore, folder: u64, depth: u32) -> Vec<super::menu::Entry> {
     use super::menu::{Entry, Icon, Item};
@@ -578,7 +637,20 @@ fn show_folder(owner: HWND, app: &AppRef, id: u64, anchor: POINT) {
 
 /// A pick from a folder, overflow or context menu.
 fn pick(owner: HWND, app: &AppRef, id: usize) {
+    match id {
+        BAR_ADD_PAGE => { let _ = super::window::run_registered(owner, app, "add-bookmark"); return; }
+        BAR_PANEL => { let _ = super::window::run_registered(owner, app, "bookmarks-panel"); return; }
+        BAR_IMPORT => { super::settings_page::open(owner, app, Some(crate::internal_page::Section::Profile), false); return; }
+        BAR_HIDE => { hide_bar(app); super::window::split_ui_invalidate(owner); return; }
+        _ => {}
+    }
     let Some((profile, mut store)) = store_now() else { return };
+    if id & EDIT != 0 {
+        if let Some(url) = url_of(&store, (id & (EDIT - 1)) as u64) {
+            super::address_dialog::show_bubble(owner, app, &url, false);
+        }
+        return;
+    }
     if id & OPEN_ALL != 0 {
         let folder = (id & (OPEN_ALL - 1)) as u64;
         let urls = crate::chrome_host::panels::bookmarks::links_under(store.items(), folder);
@@ -637,13 +709,18 @@ fn run(owner: HWND, app: &AppRef, action: BarAction) {
                     entries.push(Entry::Item(Item::new(NEW_TAB | id as usize, "Open in a new tab", Icon::None).glyph("external")));
                     entries.push(Entry::Item(Item::new(COPY | id as usize, "Copy address", Icon::None).glyph("copy")));
                     entries.push(Entry::Separator);
+                    entries.push(Entry::Item(Item::new(EDIT | id as usize, "Edit…", Icon::None).glyph("edit")));
                 }
                 BookmarkKind::Folder => {
                     entries.push(Entry::Item(Item::new(OPEN_ALL | id as usize, "Open all in tabs", Icon::None).glyph("external").disabled_if(crate::chrome_host::panels::bookmarks::links_under(store.items(), id).is_empty())));
                     entries.push(Entry::Separator);
                 }
             }
-            entries.push(Entry::Item(Item::new(DELETE | id as usize, "Delete", Icon::None).glyph("trash")));
+            if !store.is_permanent(id) {
+                entries.push(Entry::Item(Item::new(DELETE | id as usize, "Delete", Icon::None).glyph("trash")));
+            }
+            entries.push(Entry::Separator);
+            entries.extend(bar_entries());
             let raw = owner.0 as isize;
             super::menu::show(owner, cursor(), Placement::BelowLeft, Menu { header: None, entries, footer: String::new() }, "bookmark-item", move |app, picked| {
                 if let Some(picked) = picked {
@@ -669,10 +746,24 @@ fn run(owner: HWND, app: &AppRef, action: BarAction) {
         BarAction::GroupContext { key } => {
             let settings = App::settings(app);
             let pinned = settings.address.bar_groups.contains(&key);
-            let entries = vec![Entry::Item(Item::new(1, if pinned { "Unpin from the bookmarks bar" } else { "Pin to the bookmarks bar" }, Icon::None).glyph("pin"))];
+            let members: Vec<TabId> = live_groups(app).into_iter().find(|(domain, _)| *domain == key).map(|(_, members)| members).unwrap_or_default();
+            let entries = vec![
+                Entry::Item(Item::new(1, if pinned { "Unpin from the bookmarks bar" } else { "Pin to the bookmarks bar" }, Icon::None).glyph("pin")),
+                Entry::Item(Item::new(2, "Bookmark all tabs in the group", Icon::None).glyph("bookmark").disabled_if(members.is_empty())),
+            ];
             let raw = owner.0 as isize;
             super::menu::show(owner, cursor(), Placement::BelowLeft, Menu { header: None, entries, footer: String::new() }, "bookmark-group", move |app, picked| {
-                if picked.is_none() {
+                let Some(picked) = picked else { return };
+                if picked.id == 2 {
+                    let owner = HWND(raw as *mut _);
+                    let name = members.first().and_then(|tab| App::site_group_tabs(app, *tab)).map_or_else(|| key.clone(), |(name, _)| name);
+                    match App::bookmark_tabs(app, &name, &members) {
+                        Ok(saved) => {
+                            super::window::show_toast(owner, &App::tabs_saved_message(&name, saved), "Bookmarks");
+                            super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                        }
+                        Err(message) => super::show_error_message(&message),
+                    }
                     return;
                 }
                 let mut list = App::settings(app).address.bar_groups.clone();
@@ -685,6 +776,15 @@ fn run(owner: HWND, app: &AppRef, action: BarAction) {
                 super::window::split_ui_invalidate(HWND(raw as *mut _));
             });
         }
+        BarAction::Background => {
+            let raw = owner.0 as isize;
+            super::menu::show(owner, cursor(), Placement::BelowLeft, Menu { header: None, entries: bar_entries(), footer: String::new() }, "bookmark-bar", move |app, picked| {
+                if let Some(picked) = picked {
+                    pick(HWND(raw as *mut _), app, picked.id);
+                }
+            });
+        }
+        BarAction::Import => super::settings_page::open(owner, app, Some(crate::internal_page::Section::Profile), false),
         BarAction::Overflow { first, rect } => {
             let Some((_, store)) = store_now() else { return };
             let settings = App::settings(app);

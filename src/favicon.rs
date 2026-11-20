@@ -123,7 +123,8 @@ fn sha256(message: &[u8]) -> [u8; 32] {
 }
 
 const MAX_FAVICON_FILE_BYTES: usize = 256 * 1024;
-const MAX_PERSISTENT_FAVICONS: usize = 400;
+/// Room for the icons of every site with a bookmark as well as recent tabs (files are a few KiB).
+const MAX_PERSISTENT_FAVICONS: usize = 1500;
 
 /// Candidate same-origin favicon URLs, with the conventional ICO path first.
 pub fn favicon_url_candidates(page_url: &str) -> Vec<String> {
@@ -195,6 +196,12 @@ pub fn remember_in_background(host: &str, bytes: Vec<u8>) {
             let _ = store_favicon_in(&job.0, &job.1, &job.2);
         }
     }
+}
+
+/// [`store_favicon`] into a cache folder resolved earlier (on another thread than the UI's, where the
+/// active profile is not known).
+pub fn store_favicon_at(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Result<String> {
+    store_favicon_in(dir, host, bytes)
 }
 
 fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Result<String> {

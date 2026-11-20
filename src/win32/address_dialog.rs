@@ -41,6 +41,9 @@ use crate::{
 const CLASS: PCWSTR = w!("BowserAddressDialog");
 const QR_SIZE: (i32, i32) = (360, 470);
 const BOOKMARK_SIZE: (i32, i32) = (400, 520);
+/// The "Bookmark added" / "Edit bookmark" bubble under the toolbar (Chrome, Edge and Firefox open
+/// theirs under the star): name, folder, nickname, description, Remove and Done.
+const BUBBLE_SIZE: (i32, i32) = (360, 316);
 
 /// Takes the page's declared title and description (when it could be read).
 pub(crate) type MetadataDone = Box<dyn FnOnce(Option<(String, String)>)>;
@@ -49,7 +52,8 @@ pub(crate) type MetadataDone = Box<dyn FnOnce(Option<(String, String)>)>;
 #[derive(Clone, Debug)]
 enum Page {
     Qr { url: String },
-    Bookmark { url: String, title: String, description: String },
+    /// `bubble`: the anchored bubble for a saved page (`added`: saved just now), not the dialog.
+    Bookmark { url: String, title: String, description: String, added: bool, bubble: bool },
 }
 
 struct Runtime {
@@ -106,7 +110,7 @@ fn bounds_of(window: HWND) -> RECT {
     client
 }
 
-fn create_window(owner: HWND, title: &str, size: (i32, i32)) -> Option<HWND> {
+fn create_window(owner: HWND, title: &str, size: (i32, i32), anchor: Option<windows::Win32::Foundation::POINT>) -> Option<HWND> {
     unsafe {
         let instance = HINSTANCE(GetModuleHandleW(None).ok()?.0);
         if !CLASS_READY.with(Cell::get) {
@@ -119,13 +123,27 @@ fn create_window(owner: HWND, title: &str, size: (i32, i32)) -> Option<HWND> {
         let dpi = GetDpiForWindow(owner).max(96) as i32;
         let mut owner_rect = RECT::default();
         let _ = GetWindowRect(owner, &mut owner_rect);
-        let placed = super::html_dialog::dialog_rect(owner_rect, super::html_dialog::work_area_of(owner), size.0 * dpi / 96, size.1 * dpi / 96, true);
+        let work = super::html_dialog::work_area_of(owner);
+        let placed = match anchor {
+            Some(point) => bubble_rect(point, work, size.0 * dpi / 96, size.1 * dpi / 96),
+            None => super::html_dialog::dialog_rect(owner_rect, work, size.0 * dpi / 96, size.1 * dpi / 96, true),
+        };
         let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
         let hwnd = CreateWindowExW(Default::default(), CLASS, PCWSTR(title.as_ptr()), WS_POPUP | WS_CLIPCHILDREN, placed.left, placed.top, placed.right - placed.left, placed.bottom - placed.top, Some(owner), None, Some(instance), None).ok()?;
         let round: i32 = 2;
         let _ = DwmSetWindowAttribute(hwnd, 33, (&round as *const i32).cast(), 4);
         Some(hwnd)
     }
+}
+
+/// The bubble hangs from `point` (screen pixels, the bottom right of the toolbar's last button),
+/// right-aligned to it and kept on the work area.
+fn bubble_rect(point: windows::Win32::Foundation::POINT, work: RECT, width: i32, height: i32) -> RECT {
+    let width = width.min(work.right - work.left);
+    let height = height.min(work.bottom - work.top);
+    let left = (point.x - width).min(work.right - width).max(work.left);
+    let top = point.y.min(work.bottom - height).max(work.top);
+    RECT { left, top, right: left + width, bottom: top + height }
 }
 
 #[link(name = "dwmapi")]
@@ -138,9 +156,10 @@ fn open(owner: HWND, app: &AppRef, page: Page) {
         super::show_error_message("This dialog needs the HTML chrome, which is not available.");
         return;
     };
-    let (title, size) = match &page {
-        Page::Qr { .. } => ("QR code", QR_SIZE),
-        Page::Bookmark { .. } => ("Bookmark", BOOKMARK_SIZE),
+    let (title, size, anchor) = match &page {
+        Page::Qr { .. } => ("QR code", QR_SIZE, None),
+        Page::Bookmark { bubble: true, .. } => ("Bookmark", BUBBLE_SIZE, super::window::bubble_anchor(owner)),
+        Page::Bookmark { .. } => ("Bookmark", BOOKMARK_SIZE, None),
     };
     // One at a time: a second request replaces the first.
     let existing: Vec<HWND> = RUNTIMES.with(|map| map.borrow().values().filter_map(|runtime| runtime.try_borrow().ok().map(|state| state.window)).collect());
@@ -151,7 +170,7 @@ fn open(owner: HWND, app: &AppRef, page: Page) {
             }
         }
     }
-    let Some(window) = create_window(owner, title, size) else {
+    let Some(window) = create_window(owner, title, size, anchor) else {
         super::show_error_message("The dialog could not be opened.");
         return;
     };
@@ -277,19 +296,22 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     }
     let snapshot = match &page {
         Page::Qr { url } => Some(address_page::dialog_snapshot_json(&address_page::DialogPage::Qr { text: url })),
-        Page::Bookmark { url, title, description, .. } => {
+        Page::Bookmark { url, title, description, added, .. } => {
             let profile = crate::profile::active().ok();
             let root = profile.as_ref().map(|profile| profile.root().to_path_buf());
             let store = root.as_deref().and_then(|root| BookmarkStore::load(root).ok()).unwrap_or_default();
             let extras = root.as_deref().map(Extras::load).unwrap_or_default();
-            let existing = store.items().iter().find(|item| matches!(&item.kind, BookmarkKind::Link { url: stored, .. } if stored == url));
+            let existing = store.find_url(url);
             let (nickname, saved_description) = existing.map_or(("", description.as_str()), |item| (extras.nickname(item.id), extras.get(item.id).map_or("", |extra| extra.description.as_str())));
-            let folders = folders_of(&store);
+            let folders = dialog_folders(&store);
+            let mode = match (existing.is_some(), *added) { (false, _) => "add", (true, true) => "added", (true, false) => "edit" };
             Some(address_page::dialog_snapshot_json(&address_page::DialogPage::Bookmark(address_page::BookmarkDialog {
+                mode,
                 url,
                 existing: existing.is_some(),
                 name: existing.map_or(title.as_str(), |item| item.title.as_str()),
-                folder: existing.and_then(|item| item.parent).unwrap_or(0),
+                // A new bookmark goes where the last one went (Chrome, Edge, Firefox), else the bar.
+                folder: existing.map_or_else(|| store.last_folder().unwrap_or(0), |item| item.parent.unwrap_or(0)),
                 nickname,
                 description: saved_description,
                 folders: &folders,
@@ -300,6 +322,49 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     if let Some(snapshot) = snapshot {
         let _ = host.post_json(&snapshot);
     }
+}
+
+/// The folders the bookmark dialog offers, under its two roots: the bar's folders (the dialog lists
+/// "Bookmarks bar" itself as `0`) one step in, then "Other bookmarks" (its id, or
+/// [`crate::bookmarks::OTHER_WIRE`] before it exists, which saving into makes) and its folders.
+pub(crate) fn dialog_folders(store: &BookmarkStore) -> Vec<Folder> {
+    let other = store.other();
+    let mut out: Vec<Folder> = folders_of(store)
+        .into_iter()
+        .filter(|folder| Some(folder.id) != other)
+        .map(|folder| Folder { depth: folder.depth + 1, ..folder })
+        .collect();
+    // Folders inside Other bookmarks were listed under it by `folders_of`: take them out again.
+    let inside_other: Vec<u64> = match other {
+        Some(id) => {
+            let mut ids = vec![id];
+            let mut at = 0;
+            while at < ids.len() {
+                let parent = ids[at];
+                ids.extend(store.items().iter().filter(|i| i.parent == Some(parent) && i.kind == BookmarkKind::Folder).map(|i| i.id));
+                at += 1;
+            }
+            ids
+        }
+        None => Vec::new(),
+    };
+    out.retain(|folder| !inside_other.contains(&folder.id));
+    let mut tail = vec![Folder { id: store.other_wire(), title: crate::bookmarks::OTHER_TITLE.to_owned(), depth: 0 }];
+    if let Some(id) = other {
+        fn walk(store: &BookmarkStore, parent: u64, depth: u32, out: &mut Vec<Folder>) {
+            for item in store.children(Some(parent)) {
+                if item.kind == BookmarkKind::Folder && out.len() < address_page::MAX_FOLDERS / 2 && depth <= 16 {
+                    out.push(Folder { id: item.id, title: item.title.clone(), depth });
+                    walk(store, item.id, depth + 1, out);
+                }
+            }
+        }
+        walk(store, id, 1, &mut tail);
+    }
+    // Other bookmarks always has its place, however many folders the bar holds.
+    out.truncate(address_page::MAX_FOLDERS - tail.len());
+    out.extend(tail);
+    out
 }
 
 /// Every folder of `store`, in tree order with its depth.
@@ -349,11 +414,6 @@ fn run(runtime: &Rc<RefCell<Runtime>>, action: DialogAction) {
     }
 }
 
-/// The folder id a dialog sends (`0` is the top level) as a parent.
-fn parent_of(folder: u64) -> Option<u64> {
-    (folder != 0).then_some(folder)
-}
-
 /// Saves (adds or updates) the bookmark for `url` with the dialog's fields.
 fn save_bookmark(app: &AppRef, owner: HWND, url: &str, name: &str, folder: u64, nickname: &str, description: &str) -> Result<(), String> {
     let profile = crate::profile::active().map_err(|_| "The profile is not ready.".to_owned())?;
@@ -363,23 +423,28 @@ fn save_bookmark(app: &AppRef, owner: HWND, url: &str, name: &str, folder: u64, 
     let mut store = BookmarkStore::load(profile.root()).map_err(|error| format!("Bookmarks could not be loaded: {error}"))?;
     let mut extras = Extras::load_for_change(profile.root()).map_err(|error| format!("Bookmark details could not be loaded: {error}"))?;
     extras.prune(&store);
-    let parent = parent_of(folder);
-    let existing = store.items().iter().find(|item| matches!(&item.kind, BookmarkKind::Link { url: stored, .. } if stored == url)).map(|item| item.id);
+    let before = store.clone();
+    let parent = store.resolve_parent(folder).map_err(|error| crate::chrome_host::panels::bookmarks::explain(&before, &error, url))?;
+    let existing = store.find_url(url).map(|item| (item.id, item.parent));
     // The nickname is checked before anything is written.
     let id = match existing {
-        Some(id) => {
+        Some((id, was_in)) => {
             extras.set(id, nickname, description)?;
-            store.update_bookmark(id, name, url).map_err(|error| error.to_string())?;
-            let at = store.children(parent).len();
-            store.move_item(id, parent, at).map_err(|error| error.to_string())?;
+            store.update_bookmark(id, name, url).map_err(|error| crate::chrome_host::panels::bookmarks::explain(&before, &error, url))?;
+            // Only a change of folder moves it (to the end of the new one); a rename keeps its place.
+            if was_in != parent {
+                let at = store.children(parent).len();
+                store.move_item(id, parent, at).map_err(|error| crate::chrome_host::panels::bookmarks::explain(&before, &error, url))?;
+            }
             id
         }
         None => {
-            let id = store.add_bookmark(parent, name, url).map_err(|error| error.to_string())?;
+            let id = store.add_bookmark(parent, name, url).map_err(|error| crate::chrome_host::panels::bookmarks::explain(&before, &error, url))?;
             extras.set(id, nickname, description)?;
             id
         }
     };
+    store.set_last_folder(parent);
     store.save(profile.root()).map_err(|error| format!("Bookmark could not be saved: {error}"))?;
     extras.save(profile.root()).map_err(|error| format!("Bookmark details could not be saved: {error}"))?;
     let _ = (app, id);
@@ -402,6 +467,12 @@ fn remove_bookmark(owner: HWND, url: &str) {
     }
 }
 
+/// The bubble for the bookmark of `url`: "Bookmark added" right after Ctrl+D or the star saved
+/// it (`added`), else "Edit bookmark". Nothing is saved or removed by opening it.
+pub(super) fn show_bubble(owner: HWND, app: &AppRef, url: &str, added: bool) {
+    open(owner, app, Page::Bookmark { url: url.to_owned(), title: String::new(), description: String::new(), added, bubble: true });
+}
+
 /// The QR code of the page at `url`.
 pub(super) fn show_qr(owner: HWND, app: &AppRef, url: &str) {
     open(owner, app, Page::Qr { url: url.to_owned() });
@@ -419,7 +490,7 @@ pub(super) fn show_bookmark(owner: HWND, app: &AppRef) {
     let app_handle = app.clone();
     let url_text = url.as_str().to_owned();
     if !fetch {
-        open(owner, app, Page::Bookmark { url: url_text, title, description: String::new() });
+        open(owner, app, Page::Bookmark { url: url_text, title, description: String::new(), added: false, bubble: false });
         return;
     }
     fetch_metadata(app, tab, Box::new(move |meta| {
@@ -431,7 +502,7 @@ pub(super) fn show_bookmark(owner: HWND, app: &AppRef) {
             Some((meta_title, description)) => (bookmark_title(user_name.as_deref(), &title, &meta_title, &url_text), description),
             None => (title, String::new()),
         };
-        open(owner, &app_handle, Page::Bookmark { url: url_text, title, description });
+        open(owner, &app_handle, Page::Bookmark { url: url_text, title, description, added: false, bubble: false });
     }));
 }
 
@@ -644,7 +715,27 @@ mod tests {
         store.add_bookmark(Some(rust), "Book", "https://doc.rust-lang.org/book/").unwrap();
         let folders = folders_of(&store);
         assert_eq!(folders.iter().map(|f| (f.title.as_str(), f.depth)).collect::<Vec<_>>(), [("Reading", 0), ("Rust", 1), ("Work", 0)]);
-        assert_eq!(parent_of(0), None);
-        assert_eq!(parent_of(5), Some(5));
+    }
+
+    /// The dialog lists the bar's folders under "Bookmarks bar" (which it shows as 0), then
+    /// "Other bookmarks" and its folders, whether or not that folder exists yet.
+    #[test]
+    fn the_dialog_lists_both_roots_and_their_folders() {
+        let mut store = BookmarkStore::new();
+        let reading = store.add_folder(None, "Reading").unwrap();
+        store.add_folder(Some(reading), "Rust").unwrap();
+        let shape = |store: &BookmarkStore| dialog_folders(store).iter().map(|f| (f.title.clone(), f.depth)).collect::<Vec<_>>();
+        assert_eq!(shape(&store), [("Reading".to_owned(), 1), ("Rust".to_owned(), 2), ("Other bookmarks".to_owned(), 0)]);
+        assert_eq!(dialog_folders(&store).last().unwrap().id, crate::bookmarks::OTHER_WIRE);
+        let other = store.ensure_other().unwrap();
+        store.add_folder(Some(other), "Recipes").unwrap();
+        assert_eq!(shape(&store), [("Reading".to_owned(), 1), ("Rust".to_owned(), 2), ("Other bookmarks".to_owned(), 0), ("Recipes".to_owned(), 1)]);
+        assert_eq!(dialog_folders(&store)[2].id, other);
+        for n in 0..250 {
+            store.add_folder(None, &format!("F{n}")).unwrap();
+        }
+        let many = dialog_folders(&store);
+        assert_eq!(many.len(), address_page::MAX_FOLDERS);
+        assert!(many.iter().any(|f| f.id == other), "Other bookmarks is never cut off");
     }
 }

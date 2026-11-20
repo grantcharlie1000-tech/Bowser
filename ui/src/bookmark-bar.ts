@@ -9,7 +9,7 @@ import { el, icon } from './dom';
 import { faviconTile } from './panels/kit';
 import { guardRow, MASK_LABEL } from './spoiler-guard'; // --- spoiler guard ---
 import {
-  contextFields, faceOf, fitCount, folderFields, groupContextFields, groupFields, openFields, overflowFields, parseBarSnapshot,
+  backgroundFields, contextFields, faceOf, fitCount, folderFields, groupContextFields, groupFields, importFields, openFields, overflowFields, parseBarSnapshot,
   type BarGroup, type BarItem, type BarSnapshot,
 } from './bookmark-bar-logic';
 
@@ -26,7 +26,31 @@ export function startBookmarkBar(root: HTMLElement): void {
   overflow.setAttribute('aria-haspopup', 'menu');
   overflow.append(icon('chevron-right', { size: 12, fine: true }));
   overflow.hidden = true;
-  bar.append(list, overflow);
+  // "Other bookmarks" at the far end, as in Chrome and Edge: past the overflow, never hidden by it.
+  const otherSep = el('span', 'bm-sep bm-other-sep');
+  otherSep.setAttribute('aria-hidden', 'true');
+  const other = el('button', 'bm-item is-folder bm-other');
+  other.type = 'button';
+  other.setAttribute('aria-haspopup', 'menu');
+  other.append(icon('folder', { size: 14, fine: true, className: 'bm-glyph' }));
+  const otherLabel = el('span', 'bm-label');
+  otherLabel.textContent = 'Other bookmarks';
+  other.append(otherLabel);
+  other.hidden = true;
+  otherSep.hidden = true;
+  other.addEventListener('click', () => {
+    const rect = rectWire(other.getBoundingClientRect());
+    const id = Number(other.dataset.id);
+    if (rect !== null && id > 0) send_(folderFields(id, rect));
+  });
+  other.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); const id = Number(other.dataset.id); if (id > 0) send_(contextFields(id)); });
+  bar.append(list, overflow, otherSep, other);
+  // A right-click on the bar's empty part: its own menu (add this page, all bookmarks, import, hide).
+  bar.addEventListener('contextmenu', (event) => {
+    if (event.target instanceof Element && event.target.closest('.bm-item')) return;
+    event.preventDefault();
+    send_(backgroundFields());
+  });
   root.replaceChildren(bar);
 
   let snapshot: BarSnapshot | null = null;
@@ -70,7 +94,7 @@ export function startBookmarkBar(root: HTMLElement): void {
       if (event.button === 1 && item.kind === 'link') { event.preventDefault(); send_(openFields(item.id, true)); }
     });
     button.addEventListener('mousedown', (event) => { if (event.button === 1) event.preventDefault(); });
-    button.addEventListener('contextmenu', (event) => { event.preventDefault(); send_(contextFields(item.id)); });
+    button.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); send_(contextFields(item.id)); });
     return button;
   };
 
@@ -87,7 +111,7 @@ export function startBookmarkBar(root: HTMLElement): void {
     label.dir = 'auto';
     button.append(dot, label);
     button.addEventListener('click', () => send_(groupFields(group.key)));
-    button.addEventListener('contextmenu', (event) => { event.preventDefault(); send_(groupContextFields(group.key)); });
+    button.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); send_(groupContextFields(group.key)); });
     return button;
   };
 
@@ -101,7 +125,7 @@ export function startBookmarkBar(root: HTMLElement): void {
     const widths = nodes.map((node) => node.getBoundingClientRect().width);
     const gap = 2;
     const reserve = 28;
-    const available = bar.clientWidth - 16;
+    const available = bar.clientWidth - 16 - (other.hidden ? 0 : other.getBoundingClientRect().width + otherSep.getBoundingClientRect().width + 8);
     const count = fitCount(widths, available, gap, reserve);
     if (count >= nodes.length) return;
     nodes.forEach((node, index) => { node.hidden = index >= count; });
@@ -123,11 +147,23 @@ export function startBookmarkBar(root: HTMLElement): void {
     children.push(...groupNodes);
     nodes = [...nodes, ...groupNodes];
     if (empty) {
+      // Chrome's empty bar: what goes here, how, and the way in for bookmarks kept elsewhere.
       const note = el('span', 'bm-empty');
-      note.textContent = 'Bookmarks you add to this folder appear here.';
-      children.push(note);
+      note.textContent = 'For quick access, bookmark pages here with Ctrl+D.';
+      const importer = el('button', 'bm-item bm-import');
+      importer.type = 'button';
+      const label = el('span', 'bm-label');
+      label.textContent = 'Import bookmarks…';
+      importer.append(label);
+      importer.addEventListener('click', () => send_(importFields()));
+      children.push(note, importer);
     }
     list.replaceChildren(...children);
+    const extra = snapshot.other;
+    other.hidden = extra === null;
+    otherSep.hidden = extra === null;
+    other.dataset.id = extra === null ? '' : String(extra.id);
+    other.setAttribute('aria-label', extra === null ? 'Other bookmarks' : `Other bookmarks, ${extra.n} ${extra.n === 1 ? 'item' : 'items'}`);
     fit();
   };
 
