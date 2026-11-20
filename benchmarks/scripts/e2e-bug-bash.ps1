@@ -518,6 +518,8 @@ function Flow-ServiceWorker {
   $fill = @(); for ($i = 1; $i -le 15; $i++) { $fill += "$A/site/filler${i}?t=Filler%20${i}&c=5f6368" }
   Forward $fill[0..7]; Start-Sleep -Seconds 3
   Forward $fill[8..14]; Start-Sleep -Seconds 5
+  # (The first UI Automation query of a strip can come back empty while Chromium builds its tree.)
+  $null = WaitFor { if (@(Tabs).Count -ge 16) { $true } } 15000 500
   $count = @(Tabs).Count
   Check '16 tabs open' ($count -ge 16) "$count tabs"
   $sw = TabNamed 'SW '

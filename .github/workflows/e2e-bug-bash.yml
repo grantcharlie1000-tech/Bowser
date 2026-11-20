@@ -3,8 +3,8 @@ name: E2E bug-bash flows
 # Builds Bowser as shipped and drives the real app on a hosted Windows desktop through the
 # fix/bug-bash user flows (benchmarks/scripts/e2e-bug-bash.ps1): manual tab groups and their
 # restore, the service-worker load with 15 tabs open, a toolbar with many buttons, and 40 tabs with
-# the mouse wheel. The same harness also runs against main (before the bug bash) and against
-# fix/bug-bash as it was before this branch's fixes, for comparison.
+# the mouse wheel. The same harness also runs against main from before the bug bash and against main
+# as shipped with it (v0.0.41, without this branch's fixes), for comparison.
 # Evidence only (screenshots, results.json/md): nothing here gates a merge.
 
 on:
@@ -29,13 +29,13 @@ jobs:
           - label: fix
             ref: ''
             flows: groups,toolbar,strip,sw
-          # main, before the bug bash: the same measurements, for comparison.
-          - label: main
-            ref: main
+          # main just before fix/bug-bash was merged (517e1d4c): the same measurements, for comparison.
+          - label: before
+            ref: 517e1d4cd1d832e423b087e76b750c64247c19a8
             flows: sw,toolbar,strip
-          # fix/bug-bash without this branch's fixes: the group flow it was failing.
-          - label: bugbash
-            ref: fix/bug-bash
+          # main now (fix/bug-bash merged, v0.0.41) without this branch's fixes: the group flow.
+          - label: shipped
+            ref: main
             flows: groups
     defaults:
       run:
