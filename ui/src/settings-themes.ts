@@ -33,7 +33,7 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   host.row(host.card, 'themeSchedule', schedule.root);
 
   const look = host.segmentedControl<string>('Look without a schedule', LOOKS, (value) => host.send('theme_look', value));
-  host.row(host.card, 'themeLook', look.root);
+  const lookRow = host.row(host.card, 'themeLook', look.root).root;
 
   // Schedule times: two time fields side by side.
   const times = el('div', 'sp-theme-times');
@@ -56,7 +56,7 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
     times.append(field);
   }
   const otherTime = (key: TimeKey): string => String(latest[key === 'theme_light_from' ? 'theme_dark_from' : 'theme_light_from'] ?? '');
-  host.row(host.card, 'themeTimes', times);
+  const timesRow = host.row(host.card, 'themeTimes', times).root;
 
   // Custom colours: background, text and highlight, each with a swatch and a way back to Bowser's own.
   const colours = el('div', 'sp-theme-colours');
@@ -151,6 +151,12 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
       for (const [key, input] of timeInputs) {
         input.value = String(values[key]);
         input.disabled = disabled || !timesApply(values);
+      }
+      // The look and the times only act under their own schedule: otherwise the rows leave the page
+      // (`is-na`; a search still lists them, dimmed), as the start page's rows do.
+      for (const [node, applies] of [[lookRow, lookApplies(values)], [timesRow, timesApply(values)]] as const) {
+        node.classList.toggle('is-off', readable && !applies);
+        node.classList.toggle('is-na', readable && !applies);
       }
       for (const [key, parts] of colourInputs) {
         const value = String(values[key]);

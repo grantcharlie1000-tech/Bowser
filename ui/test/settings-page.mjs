@@ -1520,6 +1520,8 @@ test('Adding an engine checks the form first, then sends one add command; editin
 });
 
 test('Search field, scoped nicknames and bookmark rows send their own keys; bar rows join the bookmarks bar card', () => {
+  // The bar's own rows act while the bar can show (the fixture's profile never shows it).
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bookmarksBar: 'always' } });
   deliver(addressFixture.snap);
   const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
   sent.length = 0;
@@ -1554,7 +1556,7 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
   assert.equal(rowOf('searchDefault').querySelector('.bw-select-value').textContent, 'DuckDuckGo', 'the default engine is DuckDuckGo, stored as optimised');
   // A bad snapshot is dropped and leaves the page as it was.
   deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, def: 'gone' } });
-  assert.equal(app.querySelectorAll('.ad-engine').length, 7);
+  assert.equal(app.querySelectorAll('.ad-engine').length, 7);  deliver(fixture.snap);
 });
 
 // ---- wave-1 integration: one coherent page ----
@@ -1951,7 +1953,8 @@ test('layout: the snapshot carries the Layout block, refuses anything else, and 
   assert.equal(logic.ROWS.find((row) => row.id === 'sidePanelPosition'), undefined);
   assert.equal(logic.ROWS.find((row) => row.id === 'layoutBars'), undefined, 'bar positions follow the preset');
   for (const id of ['layoutPreset']) assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'core', id);
-  for (const id of ['layout', 'sidebarWidth', 'sidebarPinned', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
+  assert.equal(logic.ROWS.find((row) => row.id === 'showTitleBar'), undefined, 'the window lays its title row out by itself');
+  for (const id of ['layout', 'sidebarWidth', 'sidebarPinned', 'tabBarVisible', 'addressBarVisible', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
     assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'more', id);
   }
 });
@@ -2091,7 +2094,7 @@ test('layout: the page shows the preset thumbnails, which alone place the bars; 
     assert.ok(areaNode('appearance').contains(rowNode(id)), id);
     assert.ok(!moreOf('appearance').contains(rowNode(id)), id);
   }
-  for (const id of ['layout', 'sidebarWidth', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
+  for (const id of ['layout', 'sidebarWidth', 'tabBarVisible', 'addressBarVisible', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
     assert.ok(moreOf('appearance').contains(rowNode(id)), `${id} is behind More options`);
   }
   // A preset: every key of its configuration in one save.
@@ -2130,8 +2133,6 @@ test('layout: the rows behind More options each save their key; the UI zoom take
   expectSave(/\ntab_bar_visible=false\n/);
   sw('addressBarVisible').click();
   expectSave(/\naddress_bar_visible=false\n/);
-  sw('showTitleBar').click();
-  expectSave(/\nshow_title_bar=true\n/);
   assert.deepEqual(rowNode('statusBar').querySelectorAll('[role="radio"]').map((b) => b.textContent), ['Overlay', 'Hidden']);
   assert.deepEqual(rowNode('statusBar').querySelectorAll('[role="radio"]').map((b) => b.getAttribute('aria-label')), ['Info overlay only', 'Hidden']);
   seg('statusBar', 1).click();

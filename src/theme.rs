@@ -256,6 +256,10 @@ pub struct UserTheme {
     /// The accent is the active page's colour ("Get accent colour from the webpage"), not one the
     /// person picked: a page's colour can be anything, so it is kept visible like the other colours.
     pub accent_from_page: bool,
+    /// "Limit accent saturation" below 100% while no accent is chosen (`accent` is `None`): the
+    /// palette's own accent colours are limited instead ([`limit_own_accent`]). `None` leaves them.
+    /// A chosen accent is limited before it gets here, so this is always `None` beside one.
+    pub own_accent_saturation: Option<u8>,
 }
 
 impl UserTheme {
@@ -471,7 +475,17 @@ const SELECTION_FADE: [u8; 5] = [0x40, 0x30, 0x20, 0x10, 0x00];
 /// `contrast` choice names, over every backdrop. With nothing chosen this is `palette_base`.
 pub fn themed(appearance: Appearance, solid: bool, user: &UserTheme) -> (Palette, Appearance) {
     let appearance = user.background.map_or(appearance, polarity);
-    let base = palette_base(appearance, solid);
+    // "Limit accent saturation" with no accent chosen: the palette's own accent colours are the
+    // accent, so they are the ones limited (the limit was otherwise a no-op on the default theme).
+    let limited;
+    let base = match (user.accent, user.own_accent_saturation) {
+        (None, Some(max)) => {
+            limited = limit_own_accent(palette_base(appearance, solid), max);
+            &limited
+        }
+        _ => palette_base(appearance, solid),
+    };
+    let user = &UserTheme { own_accent_saturation: None, ..*user };
     if user.is_plain() {
         return (base.clone(), appearance);
     }
@@ -688,6 +702,15 @@ pub fn effective_appearance(requested: Appearance) -> Appearance {
         Some(background) => polarity(background),
         None => requested,
     }
+}
+
+/// `palette` with its own accent colours (the focus ring and the progress bar) limited to
+/// `max_percent` saturation, as [`limit_saturation`] does to a chosen accent.
+pub fn limit_own_accent(palette: &Palette, max_percent: u8) -> Palette {
+    let mut palette = palette.clone();
+    palette.omnibox_focus_border = limit_saturation(palette.omnibox_focus_border, max_percent);
+    palette.progress_fill = limit_saturation(palette.progress_fill, max_percent);
+    palette
 }
 
 /// `palette` with its focus and progress colours replaced by `accent`, when the `theme`/
@@ -1144,7 +1167,7 @@ mod tests {
 
     fn user(background: Option<u32>, foreground: Option<u32>, highlight: Option<u32>, accent: Option<u32>, colouring: Colouring, contrast: Contrast) -> UserTheme {
         let colour = |value: Option<u32>| value.map(|rgb| Rgba::hex(rgb, 0xFF));
-        UserTheme { accent: colour(accent), background: colour(background), foreground: colour(foreground), highlight: colour(highlight), colouring, contrast, accent_from_page: false }
+        UserTheme { accent: colour(accent), background: colour(background), foreground: colour(foreground), highlight: colour(highlight), colouring, contrast, accent_from_page: false, own_accent_saturation: None }
     }
 
     /// `user`'s theme with the accent taken from the page instead of picked.

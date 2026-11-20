@@ -32,7 +32,7 @@ import { REFRESH_CHOICES, feedAssignment, refreshLabel, type RefreshChoice } fro
 import {
   DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
   TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig, presetSidebarPinned,
-  rememberOwnLayout, selectedTile, tabBarEdge, uiZoomText, type LayoutConfig, type Preset, type StatusBar,
+  centringApplies, rememberOwnLayout, selectedTile, sidebarShown, tabBarEdge, uiZoomText, type LayoutConfig, type Preset, type StatusBar,
   type UiDensity,
 } from './layout-logic';
 // --- end layout ---
@@ -434,6 +434,14 @@ export function startSettingsPage(root: HTMLElement): void {
   const sectionNodes = new Map<SettingsSection, HTMLElement>();
   const navButtons = new Map<SettingsSection, HTMLButtonElement>();
   const rows = new Map<string, RowNode>();
+  /** Row `id` cannot act now: dimmed (`is-off`) and, with `gone`, out of the page (`is-na`). */
+  const rest = (id: string, off: boolean, gone = false): void => {
+    const node = rows.get(id)?.root;
+    node?.classList.toggle('is-off', off);
+    node?.classList.toggle('is-na', gone);
+  };
+  /** Row `id` only tunes something that is off: out of the page (a search still lists it, dimmed). */
+  const away = (id: string, gone: boolean): void => rest(id, gone, gone);
   const groups: Group[] = [];
   let cardSeq = 0;
 
@@ -659,8 +667,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(layoutCard, 'tabBarVisible', tabBarVisible.root);
   const addressBarVisible = switchControl((on) => change((d) => { d.layout.addressBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'addressBarVisible', addressBarVisible.root);
-  const titleBar = switchControl((on) => change((d) => { d.layout.showTitleBar = on; rememberOwnLayout(d); }));
-  row(layoutCard, 'showTitleBar', titleBar.root);
   const statusBarCtl = segmentedControl<StatusBar>('Status bar', STATUS_BARS.map((key) => [key, key === 'overlay' ? 'Overlay' : 'Hidden', STATUS_BAR_LABELS[key]] as const), (value) => change((d) => { d.layout.statusBar = value; rememberOwnLayout(d); }));
   row(layoutCard, 'statusBar', statusBarCtl.root);
   const densityCtl = segmentedControl<UiDensity>('Density', UI_DENSITIES.map((key) => [key, key === 'regular' ? 'Regular' : 'Compact'] as const), (value) => change((d) => { d.layout.uiDensity = value; }));
@@ -705,7 +711,9 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // Theme
   const themeCard = card('appearance', 'Theme');
-  const theme = segmentedControl<ThemeMode>('Palette', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium' : 'System', key === 'helium' ? 'Helium colours' : 'System'] as const), (value) => change((d) => { d.theme = value; }));
+  // A custom accent wins over either palette (theme.rs `resolved_accent`), so picking a palette puts the
+  // accent back to that palette's; while one is chosen no palette shows as picked, so either can be.
+  const theme = segmentedControl<ThemeMode>('Palette', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium' : 'Windows', key === 'helium' ? 'Helium colours' : 'Windows accent colour'] as const), (value) => change((d) => { d.theme = value; d.themeAccent = ''; }));
   row(themeCard, 'theme', theme.root);
   const accentInput = el('input', 'sp-color');
   accentInput.type = 'color';
@@ -1313,7 +1321,37 @@ export function startSettingsPage(root: HTMLElement): void {
     barCard: bookmarksCard,
     switchControl,
     segmentedControl,
+    painted: () => paintDependents(),
   });
+
+  /**
+   * Rows that cannot act in the state other rows leave them in. Each is disabled and dimmed (`is-off`);
+   * one that only tunes something switched off also leaves the page (`is-na`; a search still lists it),
+   * as the start page's rows do. An unreadable file locks every control and the banner says why, so
+   * the rows are not dimmed for that.
+   */
+  const paintDependents = (): void => {
+    const s = snapshot;
+    const d = draft;
+    if (!s || !d) return;
+    const readable = s.readable;
+    // "Centre address" moves the field only where it has a toolbar row of its own beside free room.
+    const centring = centringApplies(d.tabLayout, d.layout.tabBarVisible, d.layout.addressBarPosition);
+    centred.disable(!readable || !centring);
+    rest('centredAddressBar', readable && !centring);
+    // "Full address" shows everything, so the short form has nothing to shorten (omnibox.rs `address_display`).
+    const full = addressSections.fullAddress();
+    minimal.disable(!readable || full);
+    rest('minimalUrl', readable && full);
+    // The bookmarks bar's own rows only matter while it can show; pinning groups only while they show on it.
+    const bar = d.bookmarksBar !== 'never';
+    bookmarksGroups.disable(!readable || !bar);
+    away('bookmarksBarTabGroups', readable && !bar);
+    const barGroups = bar && d.bookmarksBarTabGroups;
+    pinGroups.disable(!readable || !barGroups);
+    away('pinNewTabGroups', readable && !barGroups);
+    addressSections.barRows(!readable || !bar, readable && !bar);
+  };
   // Simple cannot wait for the address list: the settings engine id is enough for a right-aligned name.
   const engineValue = el('span', 'sp-value sp-engine-value');
   rows.get('searchDefault')?.root.querySelector('.sp-ctl')?.append(engineValue);
@@ -1902,7 +1940,6 @@ export function startSettingsPage(root: HTMLElement): void {
     layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
     tabBarVisible.set(d.layout.tabBarVisible);
     addressBarVisible.set(d.layout.addressBarVisible);
-    titleBar.set(d.layout.showTitleBar);
     statusBarCtl.set(d.layout.statusBar);
     densityCtl.set(d.layout.uiDensity);
     compactMenus.set(d.layout.compactMenus);
@@ -1926,7 +1963,11 @@ export function startSettingsPage(root: HTMLElement): void {
     width.value = String(d.sidebarWidth);
     paintWidth();
     pinStrip.set(d.sidebarPinned);
-    pinStrip.disable(!s.readable || (d.tabLayout !== 'vertical' && d.tabLayout !== 'vertical-right'));
+    // The sidebar's width and pin act only while the tabs are a sidebar on screen: otherwise the rows leave.
+    const sidebar = sidebarShown(d.tabLayout, d.layout.tabBarVisible);
+    pinStrip.disable(!s.readable || !sidebar);
+    width.disabled = !s.readable || !sidebar;
+    for (const id of ['sidebarWidth', 'sidebarPinned']) away(id, s.readable && !sidebar);
     grouping.set(d.automaticTabGrouping);
     previewImages.set(d.tabPreviewImages);
     previewMemory.set(d.tabPreviewMemory);
@@ -1935,7 +1976,7 @@ export function startSettingsPage(root: HTMLElement): void {
     edgeDrop.set(d.splitEdgeDrop);
     paintRules(s.workspaceRules); // --- tab stacks (T10) ---
     vTabs.set(d.ctrlSVerticalTabs);
-    theme.set(d.theme);
+    theme.set(d.themeAccent === '' ? d.theme : null);
     paintAccent(d.themeAccent);
     // --- toolbars and feeds (thread T13) ---
     toolbarOpen.disabled = !s.readable;
@@ -1952,6 +1993,7 @@ export function startSettingsPage(root: HTMLElement): void {
     frameless.set(d.frameless);
     // --- auto-hide (T11) --- the bar list only matters while the master switch is on.
     for (const [bar, sw] of autoHideBarSwitches) { sw.set(autoHideBarsList(d.autoHideBars).includes(bar)); sw.disable(!s.readable || !d.frameless); }
+    away('autoHideBars', s.readable && !d.frameless);
     autoHideFullscreen.set(d.autoHideFullscreen);
     // --- end auto-hide ---
     rounded.set(d.roundedContentFrame);
@@ -2022,10 +2064,11 @@ export function startSettingsPage(root: HTMLElement): void {
       layout, grouping, tracking, efficiency, sleep,
       previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, centred, minimal, loadProgress, frameless, autoHideFullscreen,
       rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube, spoilerSwitch,
-      presets, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
+      presets, tabBarVisible, addressBarVisible, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
       winAnimations, winRangeButtons, winFade, winScrollbars, winMonoIcons, panelClose, panelCounts, panelAutoClose, // --- window and panels (thread T9) ---
     ]) control.disable(!s.readable);
     paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
+    paintDependents(); // after the group-wide disable too: these rows also follow other rows
     // The mode and the effects only matter while protection is on.
     spoilerMode.disable(!s.readable || !d.spoilerProtection);
     spoilerEffects.disable(!s.readable || !d.spoilerProtection);
@@ -2037,7 +2080,6 @@ export function startSettingsPage(root: HTMLElement): void {
     translateAuto.disable(!s.readable);
     translateSelect?.button.toggleAttribute('disabled', !s.readable);
     downloadChange.disabled = !s.readable;
-    width.disabled = !s.readable;
     allowInput.disabled = !s.readable;
     addButton.disabled = !s.readable;
     accentInput.disabled = !s.readable;
