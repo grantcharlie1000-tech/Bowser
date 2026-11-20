@@ -370,6 +370,9 @@ export function startHover(root: HTMLElement): void {
       const typing = island !== null && document.activeElement === island.input;
       if (!island || !typing) island = buildIsland(msg, act);
       fillIsland(island, msg, act, typing);
+      // Opened to edit ("Add tab to new group"): the name field has the keyboard as soon as Rust
+      // activates the popup, with the name selected, so typing names the group and Enter keeps it.
+      if (msg.edit === true) { island.input.focus(); island.input.select(); }
       content = island.menu;
     } else {
       island = null;

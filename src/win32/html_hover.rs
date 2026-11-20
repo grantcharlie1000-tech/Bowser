@@ -197,6 +197,10 @@ struct Layer {
     actions: VecDeque<(u32, HoverAction)>,
     /// The island's name field asked for the keyboard, so activation is allowed until the layer hides.
     keyboard: bool,
+    /// The island menu was opened to edit the group (a command such as "Add tab to new group", not a
+    /// hover): when it is shown its name field takes the keyboard, so the group can be named at once
+    /// and the menu stays while the pointer is elsewhere (it was never over the ball).
+    edit: bool,
     // --- omnibox suggest ---
     /// Clicks on dropdown rows, as (edit seq, row index), run outside WebView2's callback.
     picks: VecDeque<(u32, u8)>,
@@ -342,6 +346,7 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
                 island: None,
                 actions: VecDeque::new(),
                 keyboard: false,
+                edit: false,
                 picks: VecDeque::new(),
                 suggest_seq: 0,
                 shown: None,
@@ -573,9 +578,10 @@ pub(crate) fn hover(owner: HWND, target: Option<(Kind, TabId, RECT)>) {
     }
 }
 
-/// Opens the island menu for `tab` at once (a right click on its ball). `anchor` is in the owner's
-/// client coordinates. Returns false when the layer is not ready, so the caller shows the native menu.
-pub(crate) fn open_island(owner: HWND, app: &AppRef, tab: TabId, anchor: Rect) -> bool {
+/// Opens the island menu for `tab` at once (a right click on its ball, or `edit`: a command that opens
+/// the group's editor, whose name field then takes the keyboard). `anchor` is in the owner's client
+/// coordinates. Returns false when the layer is not ready, so the caller shows the native menu.
+pub(crate) fn open_island(owner: HWND, app: &AppRef, tab: TabId, anchor: Rect, edit: bool) -> bool {
     if !chrome_host::html_ui_enabled() || ready_host(owner).is_none() {
         return false;
     }
@@ -589,6 +595,7 @@ pub(crate) fn open_island(owner: HWND, app: &AppRef, tab: TabId, anchor: Rect) -
         right: origin.x + anchor.right,
         bottom: origin.y + anchor.bottom,
     };
+    let _ = with_layer(owner, |layer| layer.edit = edit);
     show_island(owner, app, tab, screen)
 }
 
@@ -823,7 +830,7 @@ fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
                 } else if let Some(session) = layer.island.as_mut() {
                     session.committed = (!model.name.is_empty()).then(|| model.name.clone());
                 }
-                protocol::island_json(tok, model)
+                protocol::island_json(tok, model, layer.edit)
             }
         };
         // --- omnibox suggest ---
@@ -962,6 +969,15 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
         let _ = SetTimer(Some(window), WATCH_TIMER, WATCH_MS, None);
+        // An island opened to edit takes the keyboard once it is on screen; the page has focused and
+        // selected its name field. Holding the keyboard also keeps it open (`leave_decision`) until
+        // the user clicks elsewhere, presses Enter or Escape.
+        let edit = kind == Kind::Island && with_layer(owner, |layer| std::mem::take(&mut layer.edit)) == Some(true);
+        if edit {
+            let _ = with_layer(owner, |layer| layer.keyboard = true);
+            let _ = SetForegroundWindow(window);
+            let _ = host.focus();
+        }
         // --- omnibox suggest ---
         if kind == Kind::Suggest {
             place_fringe(owner, window, bounds, visible_h, dpi);
@@ -1007,6 +1023,7 @@ fn hide(owner: HWND) {
         layer.bounds = RECT::default();
         layer.tok = 0;
         layer.keyboard = false;
+        layer.edit = false;
         (layer.window, layer.host.clone(), was_shown, closed_suggest, untell, layer.omnibox_focused)
     }) else {
         return;
@@ -1076,6 +1093,7 @@ fn open_timer(owner: HWND) {
         Kind::Card if island_open == Some(true) => {}
         Kind::Card => show_card(owner, &app, target.tab, target.anchor),
         Kind::Island => {
+            let _ = with_layer(owner, |layer| layer.edit = false);
             let _ = show_island(owner, &app, target.tab, target.anchor);
         }
         Kind::Tooltip | Kind::Suggest => {}
@@ -2093,6 +2111,7 @@ mod tests {
             island: None,
             actions: VecDeque::new(),
             keyboard: false,
+            edit: false,
             picks: VecDeque::new(),
             suggest_seq: 0,
             shown: None,

@@ -42,6 +42,9 @@ test('Rust hover fixture parses as tooltip, card, island and hide', () => {
   assert.equal(island.hint, 'Example');
   assert.equal(island.close, 'Close Tab Island · 1 Tab');
   assert.deepEqual(parseInbound(fixture.hide), { t: 'hoverhide' });
+  // Opened to edit the group: only `edit: true` is carried; a hover's island has no `edit`.
+  assert.equal('edit' in island, false);
+  assert.equal(parseInbound({ ...fixture.island, edit: true })?.edit, true);
   // The JSON text form parses the same way.
   assert.deepEqual(parseInbound(JSON.stringify(fixture.card)), card);
 });
@@ -71,6 +74,8 @@ test('malformed hover content is rejected', () => {
     { ...island, name: 'n'.repeat(65) },
     { ...island, swatches: Array.from({ length: 33 }, () => '#fff') },
     { ...island, swatches: ['expression(1)'] },
+    { ...island, edit: false },
+    { ...island, edit: 1 },
     { ...fixture.hide, x: 1 },
   ]) {
     assert.equal(parseInbound(bad), null, JSON.stringify(bad).slice(0, 120));

@@ -273,11 +273,12 @@ pub(crate) fn close() {
     finish(true);
 }
 
-/// Opens the existing island menu immediately for a right-click on its ball.
-pub(crate) fn open_now(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
+/// Opens the existing island menu immediately for a right-click on its ball, or with `edit` for a
+/// command that opens the group's editor (the HTML menu's name field then takes the keyboard).
+pub(crate) fn open_now(main: HWND, app: &AppRef, tab: TabId, anchor: Rect, edit: bool) {
     // --- hover layer ---
     // In HTML mode the island menu is drawn by the HTML hover layer once it is ready.
-    if super::html_hover::open_island(main, app, tab, anchor) {
+    if super::html_hover::open_island(main, app, tab, anchor, edit) {
         cancel(main);
         return;
     }
