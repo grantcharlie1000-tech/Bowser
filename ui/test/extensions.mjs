@@ -514,8 +514,10 @@ test('toolbar: a click sends only the button’s rectangle; the slot matches Rus
 
 test('settings.css: the section moves only colour and keeps to the page tokens', () => {
   const css = read(join(srcDir, 'styles', 'settings.css'));
-  const block = css.slice(css.indexOf('/* ---- Extensions'), css.indexOf('/* ---- "Saved" toast'));
-  assert.ok(block.length > 1000);
+  const start = css.indexOf('\n.sp-ext-head {');
+  const end = css.indexOf('\n:where(#app.sp-root) .sp-toast {', start);
+  assert.ok(start >= 0 && end > start, 'find the Extensions rules before the toast');
+  const block = css.slice(start, end);
   assert.doesNotMatch(block, /@keyframes|animation:|infinite/);
   for (const m of block.matchAll(/transition:\s*([^;]+);/g)) {
     for (const part of m[1].split(',')) assert.ok(['background-color', 'color'].includes(part.trim().split(/\s+/)[0]), part);

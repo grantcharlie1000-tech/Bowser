@@ -2,10 +2,12 @@
 // the strict colour and tab-count limits of the bridge (mirrors protocol.rs tests).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
+import { findComments, reconcileCommentBaseline } from '../comment-rules.mjs';
 import { RULES, findViolations } from '../lint-rules.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +53,57 @@ test('every banned sink in the lint list is flagged', () => {
 test('violations carry 1-based line numbers and clean code passes', () => {
   assert.deepEqual(findViolations('const a = 1;\r\nel.innerHTML = b;\nok();'), [{ line: 2, rule: 'innerHTML' }]);
   assert.deepEqual(findViolations("el.textContent = 'hi'; el.setAttribute('x', y);"), []);
+});
+
+test('comment lint locates TypeScript trivia inside code and template expressions', () => {
+  const source = [
+    'const value = "https://example.test/* string */"; // line',
+    'const pattern = /[/*]+/; /* after regex */',
+    'const nested = `/* template */ ${`// inner ${pattern /* expression */}`',
+    '  /* before close',
+    '  of interpolation */ } // template ${42}`; // last',
+  ].join('\r\n');
+  const comments = findComments('example.ts', source);
+  assert.deepEqual(comments.map(({ text, line, endLine }) => [text, line, endLine]), [
+    ['// line', 1, 1],
+    ['/* after regex */', 2, 2],
+    ['/* expression */', 3, 3],
+    ['/* before close\r\n  of interpolation */', 4, 5],
+    ['// last', 5, 5],
+  ]);
+});
+
+test('comment lint locates CSS comments alongside strings and URLs', () => {
+  const source = [
+    'a { content: "/* string */"; background: URL( https://example.test/*url*/); }',
+    'b/* selector */ { padding: calc(1px /* value */ + 2px); }',
+    '/* multi',
+    '   line */',
+  ].join('\r\n');
+  const comments = findComments('example.css', source);
+  assert.deepEqual(comments.map(({ text, line, endLine }) => [text, line, endLine]), [
+    ['/* selector */', 2, 2],
+    ['/* value */', 2, 2],
+    ['/* multi\r\n   line */', 3, 4],
+  ]);
+});
+
+test('comment baselines count exact text per file and discard unused allowances', () => {
+  const comment = '/* old\ncomment */';
+  const hash = createHash('sha256').update(comment).digest('hex');
+  const baseline = { 'a.ts': { [hash]: 2 } };
+  const retained = findComments('a.ts', `\r\n\r\n${comment.replace('\n', '\r\n')}`);
+  assert.deepEqual(reconcileCommentBaseline({ 'a.ts': retained }, baseline), {
+    violations: [],
+    remaining: { 'a.ts': { [hash]: 1 } },
+  });
+  assert.deepEqual(reconcileCommentBaseline({
+    'a.ts': findComments('a.ts', `${comment}\n${comment}\n${comment}\n// replacement`),
+    'b.ts': findComments('b.ts', comment),
+  }, baseline), {
+    violations: [{ path: 'a.ts', line: 5 }, { path: 'a.ts', line: 7 }, { path: 'b.ts', line: 1 }],
+    remaining: baseline,
+  });
 });
 
 test('the built bundles contain no banned sink', () => {

@@ -1,22 +1,3 @@
-/*
- * Surface: SETTINGS PAGE (?view=settings, drawn over a bowser://settings tab). Owner: settings.
- * Built by ui/src/settings-page.ts; words and the row index in ui/src/settings-page-logic.ts.
- * Spec: docs/design/settings-page.md.
- *
- * Hierarchy is three steps and nothing else: a section title with its glyph (20/28), a group
- * card whose title sits inside it beside a small glyph (14/20 strong), and the rows inside
- * the card (14/20 label, 12/16 description). Space does the separating, always as a margin on the
- * element below: 16px from a section title to its first card, 16px between cards, 48px between
- * sections, inset hairlines between rows (docs/design/settings-structure.md).
- * The accent marks state only (current section, selected option, a switch that is on). Section
- * titles and group titles carry a plain glyph in the text colour (settings-tiles.ts), no tile.
- *
- * Colour: the theme's own window, text, hairline and accent tokens (tokens.css), plus the local
- * --sp-* surfaces below, all derived from them, so the page follows light, dark and the accent.
- * Motion: transform and opacity only, every animation finite; under reduced motion nothing moves
- * (base.css turns transitions into short fades, and the keyframe animations below opt out).
- */
-
 #app.sp-root {
   --sp-page: var(--bw-page);
   --sp-card: var(--bw-card);
@@ -35,8 +16,6 @@
   --sp-gap-title: var(--bw-space-4);
   --sp-gap-group: var(--bw-space-4);
   --sp-gap-heading: var(--bw-space-2);
-  /* One corner radius for the page: cards and every box inside them (buttons, fields, menus, rows,
-     segmented controls) share it, so nested shapes match. Switches stay capsules. */
   --sp-r-card: var(--bw-space-3);
   --bw-r-control: var(--sp-r-card);
   --bw-r-row: var(--sp-r-card);
@@ -44,14 +23,12 @@
   --bw-r-overlay: var(--sp-r-card);
   --sp-card-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent), 0 8px 24px -12px color-mix(in srgb, #000 30%, transparent);
   --sp-glow: color-mix(in srgb, var(--bw-accent) 12%, transparent);
-  /* The family stroke (the toolbar's #app default thins it for the caption glyphs). */
   --bw-icon-stroke: 1.5px;
   display: block;
   width: 100%;
   height: 100vh;
   overflow: hidden;
   padding: 0;
-  /* A soft wash of the accent from the top right, still behind everything (no motion, no cost). */
   background:
     radial-gradient(1100px 480px at 78% -12%, var(--sp-glow), transparent 70%),
     var(--sp-page);
@@ -64,7 +41,6 @@
   --sp-card-shadow: 0 1px 2px color-mix(in srgb, #000 6%, transparent), 0 8px 24px -14px color-mix(in srgb, #000 18%, transparent);
 }
 
-/* Section and group glyphs: plain, in the text colour, no tile behind them (as Zen draws them). */
 .sp-h-tile,
 .sp-g-tile {
   display: inline-grid;
@@ -87,7 +63,6 @@
   background: var(--bw-selection);
 }
 
-/* `hidden` always wins over the display of the classes below (search results, the clear button). */
 .sp [hidden] {
   display: none !important;
 }
@@ -98,13 +73,10 @@
   height: 100%;
 }
 
-/* `display: grid` above beats the browser's own [hidden] rule: without this the page stayed drawn
-   (and in the accessibility tree) under the store and the welcome that hide it. */
 .sp[hidden] {
   display: none;
 }
 
-/* ---- Sidebar: brand, search, sections ---- */
 .sp-side {
   display: flex;
   flex-direction: column;
@@ -130,7 +102,6 @@
   color: var(--bw-accent);
 }
 
-/* The gear turns one tooth into place as the page opens (60deg is its own symmetry). */
 @keyframes sp-turn {
   from {
     transform: rotate(-60deg);
@@ -141,9 +112,6 @@
   animation: sp-turn 640ms var(--bw-ease-out) 80ms both;
 }
 
-/* The start page (start.css) also has .sp-title, .sp-row, .sp-note, .sp-empty, .sp-sr, .sp-tiles and
-   .sp-toast. Those rules here are held to the settings page by :where(#app.sp-root), which adds no
-   specificity, so nothing changes inside settings and nothing leaks onto the start page. */
 :where(#app.sp-root) .sp-title {
   margin: 0;
   font-size: var(--bw-text-subtitle);
@@ -222,7 +190,6 @@
   list-style: none;
 }
 
-/* One wash slides between the sections: transform only, so it never relayouts. */
 .sp-ind {
   position: absolute;
   top: 0;
@@ -290,7 +257,6 @@
   color: var(--bw-accent);
 }
 
-/* Zen-style divider: the everyday areas, then the add-ons and the system ones. */
 .sp-nav-list > li:has(> .sp-nav-item[data-section="extensions"]) {
   margin-top: var(--bw-space-2);
   padding-top: var(--bw-space-2);
@@ -307,9 +273,8 @@
   opacity: 0.45;
 }
 
-/* ---- Content ---- */
 .sp-main {
-  position: relative; /* sections' offsetTop is measured from here */
+  position: relative;
   min-width: 0;
   padding: 40px var(--bw-space-6) 120px;
   outline: none;
@@ -329,7 +294,6 @@
   margin-top: var(--sp-gap-section);
 }
 
-/* While searching, the results read as one list: less air between what is left. */
 .sp.is-searching .sp-sec + .sp-sec {
   margin-top: var(--bw-space-6);
 }
@@ -347,7 +311,6 @@
   outline: none;
 }
 
-/* The column's own 720px is the limit, so a lead stays on one line. It sits close under its title. */
 .sp-lead {
   margin: calc(var(--sp-gap-title) * -1 + var(--bw-space-1)) 0 var(--sp-gap-title);
   color: var(--bw-text-2);
@@ -355,10 +318,6 @@
   line-height: var(--bw-leading-body);
 }
 
-/* ---- settings slim: parts, "More options", sub-pages ----
-   An area holds one part per Rust section; a merged area's parts read as groups of one list. The
-   disclosure is one row in a card, the same height, inset and type as every other row; its body is
-   ordinary groups. A sub-page is a section of its own with a quiet way back above its title. */
 .sp-part + .sp-part {
   margin-top: var(--sp-gap-group);
 }
@@ -367,7 +326,6 @@
   margin-top: var(--sp-gap-group);
 }
 
-/* More is not another card: a quiet pill under the cards, so the shown settings read as the page. */
 .sp-card.sp-more-card {
   display: flex;
   justify-content: center;
@@ -426,7 +384,6 @@
   margin-top: var(--sp-gap-group);
 }
 
-/* The opened list settles in from just above: a short, finite fade and lift. */
 @keyframes sp-more-in {
   from {
     opacity: 0;
@@ -459,7 +416,6 @@
   display: none;
 }
 
-/* A group: its heading, an optional "no effect yet" note, then the card. */
 .sp-group + .sp-group {
   margin-top: var(--sp-gap-group);
 }
@@ -485,9 +441,6 @@
   box-shadow: var(--sp-card-shadow);
 }
 
-/* ---- Group cards: the title sits inside the card, beside its tile (Zen's Account / Sync cards) ----
-   The group is the surface; its card of rows is flat inside it. A block that replaced the card (the
-   extensions list, passwords) keeps its own surface and its heading stays above it. */
 .sp-group:has(> .sp-card) {
   position: relative;
   border: 1px solid var(--sp-card-edge);
@@ -518,12 +471,10 @@
   padding-inline: var(--sp-row-x);
 }
 
-/* The title's tile already sets the card apart: the first row needs no extra air above it. */
 .sp-group:has(> .sp-group-h:not([hidden])) > .sp-card > :where(.sp-row):first-child {
   padding-top: var(--bw-space-2);
 }
 
-/* Sub-headings inside a card (the media report). */
 .sp-card-h {
   margin: 0;
   color: var(--bw-text-2);
@@ -533,7 +484,6 @@
   white-space: nowrap;
 }
 
-/* A search jump lights the card up once: a wash fading out over its own surface. */
 @keyframes sp-flash {
   20% {
     opacity: 1;
@@ -561,7 +511,6 @@
   padding: var(--bw-space-3) var(--sp-row-x);
 }
 
-/* Rows are divided by an inset rule, so the card reads as one object, not a stack of strips. */
 :where(#app.sp-root) .sp-row + .sp-row::before {
   content: "";
   position: absolute;
@@ -610,7 +559,6 @@
   white-space: nowrap;
 }
 
-/* Search suggestions is the one row with a sub-line (what turning it on sends): under the label, wrapping. */
 .sp-row[data-row="searchSuggestions"] > .sp-text {
   flex-direction: column;
   align-items: flex-start;
@@ -618,14 +566,11 @@
 }
 .sp-row[data-row="searchSuggestions"] .sp-desc { white-space: normal; }
 
-/* The download location stays on the label's line. */
 .sp-path {
   unicode-bidi: isolate;
   white-space: nowrap;
 }
 
-/* "Applies after restart" and "Has no effect yet": a quiet line with its own glyph, never a
-   badge, so it informs without shouting across a card full of switches. */
 .sp-flag {
   display: inline-flex;
   align-items: flex-start;
@@ -649,19 +594,13 @@
   opacity: 1;
 }
 
-/* A row that rests because the switch it depends on is off (the start page's speed dial and widget
-   rows): the label greys with its disabled control, so the row reads as waiting, not broken. */
 :where(#app.sp-root) .sp-row.is-off > .sp-text > .sp-label {
   color: var(--bw-text-2);
   opacity: 0.6;
 }
 
-/* A row that tunes something switched off (the start page's dial and widget rows) leaves the page, so a
-   section reads as just its switches until one is on. A search still lists it (dimmed, above). A group
-   whose every row has left (the start page's rows under More) goes with them. */
 :where(#app.sp-root) .sp-row.is-na:not(:where(.is-searching) *) { display: none; }
 :where(#app.sp-root) .sp-group:has(.sp-row.is-na):not(:has(.sp-row:not(.is-na))):not(:where(.is-searching) *) { display: none; }
-/* A More whose every row has left (each tunes something switched off) goes too: its button would open on nothing. */
 :where(#app.sp-root) .sp-more:has(.sp-row.is-na):not(:has(.sp-row:not(.is-na))):not(:where(.is-searching) *) { display: none; }
 
 @media (forced-colors: active) {
@@ -734,7 +673,6 @@
   white-space: nowrap;
 }
 
-/* Buttons on the page sit at the 32px field height and give a little under the pointer. */
 .sp .bw-button {
   height: 32px;
   border-color: var(--sp-field-edge);
@@ -764,7 +702,6 @@
   height: 14px;
 }
 
-/* ---- Profile: the one row that introduces someone, so it is set larger ---- */
 :where(#app.sp-root) .sp-row.is-profile {
   gap: var(--bw-space-4);
   min-height: 80px;
@@ -793,7 +730,6 @@
   margin-inline-start: 0;
 }
 
-/* ---- Profiles: the manager's list, the current profile's look, and the add form ---- */
 :where(#app.sp-root) .sp-row.is-profiles > :is(.sp-profiles, .sp-profile-look, .sp-profile-add, .sp-field-error) {
   align-self: stretch;
 }
@@ -930,7 +866,6 @@
   flex-wrap: wrap;
 }
 
-/* The Simple page's Profile row: avatar, name, then Manage. */
 .sp-simple-profile {
   display: flex;
   align-items: center;
@@ -957,7 +892,6 @@
   }
 }
 
-/* ---- Layout tiles ---- */
 :where(#app.sp-root) .sp-tiles {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -984,7 +918,6 @@
     transform var(--bw-dur-fast) var(--bw-ease-out);
 }
 
-/* The preview is the tile: one rounded shape at the page's radius, no box around it. */
 .sp-art {
   display: block;
   width: 100%;
@@ -1020,7 +953,6 @@
   opacity: 0.5;
 }
 
-/* The drawing's parts, in the chrome's own neutrals (no accent: the chosen tile's ring is the only colour). */
 .sp-art-island {
   fill: color-mix(in srgb, var(--bw-text) 7%, transparent);
 }
@@ -1075,7 +1007,6 @@
   color: var(--bw-text-2);
 }
 
-/* ---- Slider ---- */
 .sp-range-wrap {
   display: flex;
   align-items: center;
@@ -1134,7 +1065,6 @@
   text-align: end;
 }
 
-/* ---- Search engines: radio cards ---- */
 .sp-engines {
   display: flex;
   flex-direction: column;
@@ -1215,7 +1145,6 @@
   line-height: var(--bw-leading-caption);
 }
 
-/* ---- Segmented (theme, efficiency, tracking): a little roomier than the panel one ---- */
 .sp-seg > button {
   height: 28px;
   padding: 0 var(--bw-space-3);
@@ -1243,8 +1172,6 @@
   white-space: nowrap;
 }
 
-/* ---- Allow list: the field sits beside the label; skipped sites and errors wrap beneath ---- */
-/* A row whose control is small and sits beside its text: no taller than it needs to be. */
 :where(#app.sp-root) .sp-row.is-tight {
   min-height: 48px;
   padding-block: var(--bw-space-2);
@@ -1294,7 +1221,6 @@
   border-radius: var(--bw-r-pill);
 }
 
-/* --- tab stacks (T10) --- a workspace rule whose workspace no longer exists rests, shown quieter. */
 .sp-site.is-muted .sp-site-name {
   color: var(--bw-text-dim);
 }
@@ -1322,7 +1248,6 @@
   display: none;
 }
 
-/* ---- Updates ---- */
 :where(#app.sp-root) .sp-row.is-status {
   padding-block: var(--bw-space-4);
 }
@@ -1354,7 +1279,6 @@
   font-weight: var(--bw-weight-strong);
 }
 
-/* ---- Media ---- */
 .sp-media-head {
   display: flex;
   align-items: center;
@@ -1372,7 +1296,6 @@
   padding: 0 var(--sp-row-x) var(--bw-space-3);
 }
 
-/* One inset rule under the Playback row, like the rule between ordinary rows. */
 .sp-media::before {
   content: "";
   position: absolute;
@@ -1416,7 +1339,6 @@
   border-top: 1px solid var(--sp-rule);
 }
 
-/* Plain text, not a tinted capsule: what works reads in full colour, the rest steps back. */
 .sp-media-value {
   color: var(--bw-text-2);
   white-space: nowrap;
@@ -1443,14 +1365,12 @@
   line-height: var(--bw-leading-caption);
 }
 
-/* ---- Reset ---- */
 .sp-reset {
   display: flex;
   align-items: center;
   gap: var(--bw-space-2);
 }
 
-/* ---- Back up and restore: password fields, then the button ---- */
 .sp-backup {
   display: flex;
   flex-wrap: wrap;
@@ -1466,7 +1386,6 @@
   background: var(--sp-field);
 }
 
-/* ---- Theme accent swatch ---- */
 .sp-color {
   width: 36px;
   height: 32px;
@@ -1481,7 +1400,6 @@
   opacity: 0.5;
 }
 
-/* ---- Simple or All. A solid track with a raised segment for the choice that is on. ---- */
 .sp .sp-view {
   width: 100%;
   background: color-mix(in srgb, var(--bw-text) 10%, var(--bw-window-opaque));
@@ -1518,14 +1436,11 @@
   padding-block: var(--bw-space-3);
 }
 
-/* The engine's name stands in for the menu only until the engine list arrives; then the menu is the control, in Simple too. */
 .sp-engine-value { display: none; }
 .sp-row[data-row="searchDefault"] .sp-select-host:empty + .sp-engine-value { display: inline; }
 
-/* Simple: the startup pages field only while "Specific pages" is chosen (All settings shows it, disabled). */
 .sp.is-simple .sp-row[data-row="startupPages"]:has(textarea:disabled) { display: none; }
 
-/* The profile row's Manage opens All settings at Profiles; All settings draws the manager right under it. */
 :where(#app.sp-root) .sp-row.is-profile > .sp-profile-manage-wrap {
   margin-inline-start: auto;
 }
@@ -1565,7 +1480,6 @@
   padding-inline: var(--bw-space-6);
 }
 
-/* Simple is one page: the sidebar becomes a short header, and the section list stays hidden. */
 .sp.is-simple {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -1601,7 +1515,6 @@
 .sp.is-simple > .sp-sr,
 .sp.is-simple > .sp-toast { grid-row: 1; grid-column: 1; }
 
-/* The window title already says Settings. The heading stays for the section's accessible name. */
 .sp.is-simple .sp-simple > .sp-h {
   position: absolute;
   width: 1px;
@@ -1614,7 +1527,6 @@
   border: 0;
 }
 
-/* ---- Theme options: the schedule note, the two times, the three custom colours ---- */
 .sp-schedule-note {
   display: block;
 }
@@ -1658,7 +1570,6 @@
   justify-content: flex-end;
 }
 
-/* ---- Switch lists (Auto-hide > Bars to hide): a two-column grid in a recessed well ---- */
 .sp-toolbar-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1680,7 +1591,6 @@
   min-width: 0;
 }
 
-/* ---- Toolbar: Customise (opens the docked customiser, panels/toolbar.ts) and Reset to default ---- */
 .sp-ctl-pair {
   display: flex;
   flex-wrap: wrap;
@@ -1688,21 +1598,18 @@
   gap: var(--bw-space-2);
 }
 
-/* A button in the card's top corner, on the title line (Toolbar: Reset to default). */
 :where(#app.sp-root) .sp-row > .sp-corner {
   position: absolute;
   inset-block-start: var(--bw-space-3);
   inset-inline-end: var(--sp-row-x);
 }
 
-/* ---- Fonts: custom font field ---- */
 .sp-ui-font-input {
   width: 220px;
   border-color: var(--sp-field-edge);
   background: var(--sp-field);
 }
 
-/* ---- Zoom ---- */
 .sp-zoom-wrap {
   display: flex;
   align-items: center;
@@ -1717,8 +1624,6 @@
   text-align: end;
 }
 
-/* ---- Layout block (thread T6): preset thumbnails, the three edges, the UI zoom value ---- */
-/* Six preset tiles: two rows of three, the same tile as the top-style tiles. */
 :where(#app.sp-root) .sp-tiles.is-presets {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1727,7 +1632,6 @@
   opacity: 0.5;
 }
 
-/* The UI zoom value is a field (select it to type), beside the slider and before Reset. */
 .sp-ui-zoom {
   flex-wrap: wrap;
 }
@@ -1740,7 +1644,6 @@
   width: 64px;
 }
 
-/* ---- Privacy dashboard (the settings page hosts it; panels.css styles its rows) ---- */
 .sp-dash {
   display: flex;
   flex-direction: column;
@@ -1767,7 +1670,6 @@
   border-bottom: 0;
 }
 
-/* Inset hairlines between rows, drawn like .sp-row's, so a dashboard block reads as the same card. */
 .sp-card .pg-row + .pg-row {
   position: relative;
 }
@@ -1800,18 +1702,11 @@
   border-bottom: 0;
 }
 
-/* ---- Extensions (extensions-section.ts; docs/extensions.md "Managing extensions") ----
-   One card of extension rows, built like the setting rows: inset hairlines, 12px block padding, the
-   actions on the right. The tile is Bowser's own puzzle glyph, never a stand-in for an extension's
-   icon; it takes the accent while the extension is on (state, as everywhere on the page) and the
-   name greys while it is off. What a manifest declares opens under its row as a quiet well of
-   chips; the removal question sits in the row, never in a dialog. */
 .sp-ext-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--bw-space-3);
-  /* The button's height, so the heading does not move when the empty state hides it. */
   min-height: 32px;
   margin-bottom: var(--bw-space-2);
 }
@@ -1820,7 +1715,6 @@
   margin-bottom: 0;
 }
 
-/* The two store buttons share a row and a weight. */
 .sp-ext-installs,
 .sp-ext-state-actions {
   display: flex;
@@ -1830,7 +1724,6 @@
   gap: var(--bw-space-2);
 }
 
-/* Installing from this computer: quiet text buttons under the list. */
 .sp-ext-local {
   display: flex;
   flex-wrap: wrap;
@@ -1905,7 +1798,6 @@
   color: var(--sp-warn);
 }
 
-/* Every website: said in the primary text colour, so it is read, not skimmed. */
 .sp-ext-reach.is-broad {
   color: var(--bw-text);
 }
@@ -1953,7 +1845,6 @@
   opacity: 0.6;
 }
 
-/* Declarations and the removal question line up under the name, past the tile. */
 .sp-ext-details,
 .sp-ext-confirm {
   margin: var(--bw-space-3) 0 0 calc(32px + var(--bw-space-3));
@@ -2027,7 +1918,6 @@
   color: var(--bw-text);
 }
 
-/* Loading, unreadable and empty: one message in the card, never a blank one. */
 .sp-ext-state {
   display: flex;
   align-items: center;
@@ -2049,8 +1939,6 @@
   color: var(--sp-warn);
 }
 
-/* Empty: a compact row (mark, the words, then the two install buttons stacked at the far right)
-   rather than a tall centred stack. */
 .sp-ext-state.is-empty {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -2096,7 +1984,6 @@
   padding-inline-start: var(--bw-space-0_5);
 }
 
-/* ---- "Saved" toast ---- */
 :where(#app.sp-root) .sp-toast {
   position: fixed;
   bottom: var(--bw-space-6);
@@ -2118,7 +2005,6 @@
   pointer-events: none;
 }
 
-/* Centred under the content column, not the whole window. */
 :where(#app.sp-root) .sp:not(.is-narrow) .sp-toast {
   left: calc(var(--sp-side-w) + (100% - var(--sp-side-w)) / 2);
 }
@@ -2138,7 +2024,6 @@
   color: var(--sp-warn);
 }
 
-/* ---- Narrow: one column, the sections as a row of chips under the title and search ---- */
 .sp.is-narrow {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -2240,9 +2125,6 @@
   }
 }
 
-/* ---- Keyboard and Quick commands (docs/commands.md; built by ui/src/commands-section.ts) ----
-   The option rows are ordinary .sp-row rows. The shortcut list, the result types and the chain editor are
-   blocks of their own, made from the same card, rule, pill and field surfaces as the allow list above. */
 .sp-cmd-note {
   margin: var(--bw-space-2) 0 0;
   padding-inline-start: var(--bw-space-0_5);
@@ -2287,8 +2169,6 @@
   margin-top: var(--bw-space-3);
 }
 
-/* A category is a card of its own (as Zen's Edit and Sidebar cards): a chevron and its name, then,
-   while open, its commands as an inset list. */
 .sp-kb-cat {
   border: 1px solid var(--sp-card-edge);
   border-radius: var(--sp-r-card);
@@ -2348,7 +2228,6 @@
   padding: 0 var(--sp-row-x) var(--sp-row-x);
 }
 
-/* The inset list: its own hairline box, the field's colour a step darker than the card. */
 .sp .sp-kb-box {
   border: 1px solid var(--sp-field-edge);
   border-radius: var(--sp-r-card);
@@ -2366,7 +2245,6 @@
   padding: var(--bw-space-2) var(--bw-space-3) var(--bw-space-2) var(--sp-row-x);
 }
 
-/* Full-width rules between rows, as in the reference list. */
 .sp-kb-row + .sp-kb-row {
   border-top: 1px solid var(--sp-field-edge);
 }
@@ -2376,7 +2254,6 @@
   min-width: 0;
 }
 
-/* The shortcut, shown in a field: one fixed column, so every row's pencil and cross line up. */
 .sp-kb-keylist {
   display: flex;
   flex: none;
@@ -2410,7 +2287,6 @@
   margin-inline-start: 2px;
 }
 
-/* Several shortcuts: commas between them, each with a small cross of its own. */
 .sp-kb-chip:not(:last-child)::after {
   content: ",";
   color: var(--bw-text-2);
@@ -2430,13 +2306,10 @@
   color: var(--bw-text-2);
 }
 
-/* Each shortcut's own cross shows while the row is in use (pointer or keyboard), so a field at rest
-   reads as plain text; display, not opacity, so a resting field keeps its room for the text. */
 .sp-kb-row:is(:hover, :focus-within) .sp-kb-chip-remove {
   display: inline-grid;
 }
 
-/* The text's own clip: longer than the field, it fades out at its end rather than being cut mid-letter. */
 .sp-kb-clip {
   display: flex;
   flex: 1 1 auto;
@@ -2475,8 +2348,6 @@
   display: none;
 }
 
-/* Adding a second shortcut and browser priority wait for the pointer or the keyboard; Restore always
-   shows (it says the command is off its defaults). Opacity only, so they keep their place and focus. */
 .sp-kb-rowtools > :is(.sp-kb-add, .sp-kb-priority) {
   opacity: 0;
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
@@ -2507,8 +2378,6 @@
   white-space: nowrap;
 }
 
-/* Quick commands: result types, each with move buttons and a switch, in the inset well the toolbar
-   list and the address bar's suggestion sources use. */
 .sp-qc-types {
   display: flex;
   flex-direction: column;
@@ -2543,7 +2412,6 @@
   min-width: 0;
 }
 
-/* Command chains: the list, then the editor under it. */
 .sp-chain-line {
   position: relative;
   display: flex;
@@ -2644,7 +2512,6 @@
   flex-wrap: nowrap;
 }
 
-/* --- window and panels (thread T9) --- */
 .sp-stepper {
   display: none;
   align-items: center;
@@ -2662,14 +2529,7 @@
 :root[data-icons="mono"] .sp-nav-item[aria-current="true"] svg {
   color: var(--bw-text);
 }
-/* --- end window and panels --- */
 
-/* ==== Passwords and autofill (bowser://settings/passwords; src/passwords-section.ts) ====
- * One list card per kind of thing saved (passwords, addresses, cards), the generator, the move-in
- * card and the switches. Same row rhythm, tiles and hairlines as the rest of the page. Motion is
- * small and local: a copied check pops in, a shown password fades in, the generator's characters
- * settle in one after another, the strength meter fills segment by segment. All of it is transform
- * and opacity, and none of it runs under reduced motion. */
 .pw {
   --pw-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   --pw-ok: var(--bw-accent);
@@ -2709,7 +2569,6 @@
   color: var(--bw-text-2);
 }
 
-/* ---- Search and filter ---- */
 .pw-bar {
   display: flex;
   align-items: center;
@@ -2785,7 +2644,6 @@
   color: var(--bw-warning);
 }
 
-/* ---- Lists ---- */
 .pw-list {
   margin: 0;
   padding: 0;
@@ -2916,7 +2774,6 @@
   gap: var(--bw-space-1);
 }
 
-/* Row tools stay quiet until the row is in use, but remain reachable by keyboard and touch. */
 .pw-row .pw-act {
   opacity: 0.55;
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade), transform var(--bw-dur-base) var(--bw-ease-out);
@@ -2948,7 +2805,6 @@
   color: #fff;
 }
 
-/* Copy: the glyph gives way to a check for a moment. */
 .pw-confirm {
   position: relative;
 }
@@ -2976,7 +2832,6 @@
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade), transform var(--bw-dur-base) var(--bw-ease-out);
 }
 
-/* ---- Empty states ---- */
 .pw-empty {
   display: flex;
   flex-direction: column;
@@ -3007,7 +2862,6 @@
   color: var(--bw-text-2);
 }
 
-/* ---- Inline editors ---- */
 .pw-editor {
   display: flex;
   flex-wrap: wrap;
@@ -3072,7 +2926,6 @@
   gap: var(--bw-space-2);
 }
 
-/* ---- Strength meter ---- */
 .pw-meter {
   display: flex;
   flex: 1 1 100%;
@@ -3129,7 +2982,6 @@
   line-height: var(--bw-leading-caption);
 }
 
-/* ---- Generator ---- */
 .pw-gen-top {
   display: flex;
   align-items: center;
@@ -3244,7 +3096,6 @@
   transform: none;
 }
 
-/* ---- Moving in ---- */
 .pw-providers {
   display: flex;
   flex-wrap: wrap;
@@ -3355,7 +3206,6 @@
   margin-top: 1px;
 }
 
-/* ---- Payment cards ---- */
 .pw-cc-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 260px));
@@ -3472,7 +3322,6 @@
 .pw-valid.is-ok { color: var(--pw-ok); }
 .pw-valid.is-bad { color: var(--bw-danger); }
 
-/* ---- Switches and never-saved sites ---- */
 .pw-pref .sp-text {
   display: flex;
   flex: 1;
@@ -3482,7 +3331,6 @@
   min-width: 0;
 }
 
-/* These rows explain a choice, so their text wraps instead of running off the card. */
 .pw-pref .sp-label,
 .pw-pref .sp-desc {
   max-width: 100%;
@@ -3536,7 +3384,6 @@
   }
 }
 
-/* ---- Motion: only where motion is welcome ---- */
 @media (prefers-reduced-motion: no-preference) {
   .pw-list > .pw-item,
   .pw-cc-item {
@@ -3659,9 +3506,6 @@
   }
 }
 
-/* ---- Default-browser nudge (settings-page.ts `hero`), as Zen does it: one line, one button ----
-   Only while Bowser is known not to be the default; never in search results or on a sub-page. While
-   it shows, the Default browser row it stands for is not drawn a second time (search still finds it). */
 .sp-hero {
   display: flex;
   align-items: center;
@@ -3705,7 +3549,6 @@
   }
 }
 
-/* Groups that build their own header row (passwords, extensions): the same inset as a group title. */
 .sp-group:has(> .sp-card) > :is(.pw-head, .sp-ext-head) {
   align-items: center;
   margin: 0;
@@ -3727,11 +3570,6 @@
   padding: 0 var(--sp-row-x) var(--bw-space-3);
 }
 
-/* Labels carry the page; a setting's explanatory line is for assistive tech and search, not the eye
-   (the label, the control and the section say enough). It stays in the accessibility tree: the
-   control is still described by it, and search still matches it. Lines that carry data (a chain's
-   steps, an extension's details, a path, a status) are other elements and stay visible, and a row
-   with no control (Fill from the keyboard) keeps its line, because there the line is the content. */
 :where(#app.sp-root) :is(.sp-row[data-row], .sp-row[data-opens], .sp-row.pw-pref):has(> .sp-ctl) > .sp-text > .sp-desc:not(.sp-path) {
   position: absolute;
   width: 1px;
@@ -3741,12 +3579,6 @@
   white-space: nowrap;
 }
 
-/* ---- Welcome (bowser://settings/welcome, ui/src/welcome.ts, docs/design/welcome.md) ----
- * The first-run flow, drawn over the settings page while the tab is on the welcome section.
- * Hello and Done are a centred hero; the steps between put the question on the left and a live
- * preview of a Bowser window on the right that follows every pick (Zen's and Dia's onboarding).
- * The background is the page's own colour. Motion is transform and opacity only, and none under
- * reduced motion. */
 .wl {
   --wl-pick: var(--bw-accent);
   --wl-ink: color-mix(in srgb, var(--bw-text) 8%, transparent);
@@ -3767,7 +3599,6 @@
   display: none;
 }
 
-/* ---- top bar ---- */
 .wl-top {
   position: relative;
   display: flex;
@@ -3804,7 +3635,6 @@
   opacity: 0;
 }
 
-/* ---- the two columns ---- */
 .wl-main {
   position: relative;
   display: grid;
@@ -3820,7 +3650,6 @@
   grid-template-columns: minmax(0, 620px);
 }
 
-/* The preview window belongs to the Look step; the other steps are one centred column. */
 .wl:not([data-step="look"]) .wl-main {
   grid-template-columns: minmax(0, 480px);
 }
@@ -3842,7 +3671,6 @@
 }
 
 
-/* The Bowser logo: only on the hero and the last step, floating on a soft glow of its own blue. */
 .wl-mark {
   position: relative;
   display: none;
@@ -3957,7 +3785,6 @@
   margin-top: 0;
 }
 
-/* ---- choice tiles ---- */
 :where(#app.sp-root) .wl-tiles {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--bw-space-3);
@@ -4018,7 +3845,6 @@
   transform: none;
 }
 
-/* Rows: an icon on the left, the words beside it (privacy choices). */
 :where(#app.sp-root) .wl-tiles.is-rows .wl-tile {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -4052,8 +3878,6 @@
   color: var(--wl-pick);
 }
 
-/* The look tiles' picture: a tiny window in fixed light and dark colours (they show what each look
- * is, whatever the current one). System is split down the middle. */
 .wl-look {
   position: relative;
   display: block;
@@ -4103,7 +3927,6 @@
   background: linear-gradient(90deg, #ffffff 50%, #2a2b31 50%);
 }
 
-/* ---- accent swatches ---- */
 .wl-swatches {
   display: flex;
   flex-wrap: wrap;
@@ -4149,7 +3972,6 @@
   opacity: 0.5;
 }
 
-/* ---- buttons ---- */
 .wl .bw-button {
   height: 36px;
   padding: 0 16px;
@@ -4235,7 +4057,6 @@
   display: none;
 }
 
-/* ---- keyboard shortcuts (Done) ---- */
 .wl-keys {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4285,11 +4106,6 @@
   display: none;
 }
 
-/* ---- the mock window (big preview and tile pictures) ----
- * Bowser's chrome to scale: every size is in container units of the mock's own width, so the big
- * preview and a 200px tile picture are the same drawing. The strip and toolbar are as slim as
- * Bowser's own (about 2% and 2.6% of the window's width). Light or dark follows the welcome's
- * `data-look` (System follows the page), the accent follows `--wl-pick`. Nothing here animates. */
 .wl-pv,
 .wl-mini {
   --pv-frame: #eceef2;
@@ -4329,7 +4145,6 @@
 }
 
 .wl-mini {
-  /* A size container has no width of its own: it takes the tile's. */
   align-self: stretch;
   width: 100%;
   margin-bottom: 10px;
@@ -4339,7 +4154,6 @@
   border-radius: 3cqw;
 }
 
-/* The tab strip: small rounded islands, the current one lifted, then the caption buttons. */
 .wl-pv-strip {
   display: flex;
   flex: none;
@@ -4374,7 +4188,6 @@
     linear-gradient(-45deg, transparent 44%, var(--pv-ink) 44%, var(--pv-ink) 56%, transparent 56%) 5.9cqw 0 / 0.9cqw 0.9cqw no-repeat;
 }
 
-/* The toolbar: back, forward and reload, the centred address pill, the tools. */
 .wl-pv-bar {
   display: flex;
   flex: none;
@@ -4432,7 +4245,6 @@
   padding: 0 1cqw 1cqw;
 }
 
-/* Tabs down the side: the list holds the window's own controls and the address, then the tabs. */
 .wl-pv-side {
   display: none;
   flex: none;
@@ -4522,10 +4334,6 @@
   background: var(--pv-ink-2);
 }
 
-/* ---- logo tiles (Import's browsers, Search's engines) ----
- * Square-ish cards with the logo large in the middle and the name under it. Behind the logo, a
- * soft glow in the brand's own colour (`--wl-brand`, brand-marks.ts) fades in on hover and stays
- * on the picked one, which also gets a ring in that colour and the tick. */
 .wl-logos {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -4631,13 +4439,11 @@
   transform: none;
 }
 
-/* Search's engines: round app icons in one row. */
 .wl-logos.is-engines .wl-logo-tile {
   padding: 16px 8px 12px;
   border-radius: 20px;
 }
 
-/* ---- Import's transfer picture: [the browser] · · · [Bowser] ---- */
 .wl-transfer {
   display: flex;
   align-items: center;
@@ -4715,9 +4521,6 @@
   opacity: 0;
 }
 
-/* ---- Default's picture: a Windows "Default apps" card ----
- * One row per thing a default browser opens; the app on each flips from Edge to Bowser (a short
- * slide and fade, one row after another) when the card is `.is-set`. */
 .wl-defaults {
   display: flex;
   flex-direction: column;
@@ -4790,7 +4593,6 @@
   transform: none;
 }
 
-/* ---- Search's preview bar ---- */
 .wl-searchbar {
   display: flex;
   align-items: center;
@@ -4829,7 +4631,6 @@
   white-space: nowrap;
 }
 
-/* ---- Yes / No answers (Ad blocking) ---- */
 .wl-choices {
   display: flex;
   flex-direction: column;
@@ -4914,11 +4715,6 @@
 
 
 
-/* ---- micro-animations ----
- * Every entrance is transform and opacity only, short, and staggered by `--wl-i` (welcome.ts): the
- * step's mark, count, title and lead, then each tile or key, then the footer. A step reached with
- * Back slides in from the left. Presses scale down a touch, hovers lift, a pick pops its tick. None
- * of it runs under reduced motion, and none of it touches the mock window. */
 @keyframes wl-in {
   from {
     opacity: 0;
@@ -5091,7 +4887,6 @@
     transition-duration: 80ms;
   }
 
-  /* Progress: the current segment fills from the left. */
   .wl-dot {
     position: relative;
     overflow: hidden;
@@ -5118,7 +4913,6 @@
     background: color-mix(in srgb, var(--bw-text) 14%, transparent);
   }
 
-  /* Tiles lift on hover and give on press; the picked one's tick pops in. */
   .wl-tile {
     transition:
       transform 220ms var(--bw-ease-out),
@@ -5145,7 +4939,6 @@
     animation: wl-ring 300ms var(--bw-ease-out) both;
   }
 
-  /* Swatches: a hover grows the dot, a pick pops the ring. */
   .wl-swatch:active:not(:disabled) {
     transform: scale(0.9);
     transition-duration: 90ms;
@@ -5155,7 +4948,6 @@
     animation: wl-ring 280ms var(--bw-ease-out) both;
   }
 
-  /* Buttons: a small lift on hover, a give on press, the arrow leans forward. */
   .wl .bw-button {
     transition:
       transform 180ms var(--bw-ease-out),
@@ -5186,7 +4978,6 @@
   }
 }
 
-/* Narrow windows: one column, the preview above the question, smaller hero. */
 @media (max-width: 980px) {
   .wl-main {
     grid-template-columns: minmax(0, 560px);
@@ -5221,7 +5012,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  /* The three looks are small pictures: they stay side by side. */
   :where(#app.sp-root) .wl-tiles.is-three {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: var(--bw-space-2);

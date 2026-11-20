@@ -1,7 +1,3 @@
-// The settings page's theme rows (thread T8): schedule, custom colours, colouring mode, the page's
-// accent, saturation, contrast and the theme file. settings-page.ts hands this module its own row
-// and control helpers (so the rows look and behave like every other row) and calls `apply` with each
-// snapshot. Every change is one `themeopt` command (`key=value`); Rust checks it again.
 import { el } from './dom';
 import { textButton } from './panels/kit';
 import { stepValue } from './window-logic';
@@ -12,15 +8,12 @@ import {
 
 interface Ctl<T> { readonly root: HTMLElement; set(value: T): void; disable(off: boolean): void }
 
-/** What settings-page.ts lends this module. */
 export interface ThemeRowsHost {
   readonly card: HTMLElement;
   row(into: HTMLElement, id: string, control?: HTMLElement, options?: { stack?: boolean }): { readonly root: HTMLElement; readonly desc: HTMLElement | null };
   switchControl(onChange: (on: boolean) => void): Ctl<boolean>;
   segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void): Ctl<T | null>;
-  /** Sends one option change (`themeopt`). */
   send(key: string, value: ThemeOptionValue): void;
-  /** Sends the theme file's commands. */
   action(name: 'themeexport' | 'themeimport' | 'themereset'): void;
 }
 
@@ -28,14 +21,12 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   let latest: ThemeOptionValues = {};
   let unreadable = false;
 
-  // Theme schedule: the one core row. A line under its description says what it means now.
   const schedule = host.segmentedControl<string>('Theme schedule', SCHEDULES, (value) => host.send('theme_schedule', value));
   host.row(host.card, 'themeSchedule', schedule.root);
 
   const look = host.segmentedControl<string>('Look without a schedule', LOOKS, (value) => host.send('theme_look', value));
   const lookRow = host.row(host.card, 'themeLook', look.root).root;
 
-  // Schedule times: two time fields side by side.
   const times = el('div', 'sp-theme-times');
   const timeInputs = new Map<TimeKey, HTMLInputElement>();
   for (const [key, label] of TIME_KEYS) {
@@ -47,7 +38,6 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
     input.required = true;
     input.setAttribute('aria-label', label);
     input.addEventListener('change', () => {
-      // An empty or out-of-range time is put back; Rust refuses two equal times as well.
       if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.value) || input.value === otherTime(key)) { input.value = String(latest[key] ?? ''); return; }
       host.send(key, input.value);
     });
@@ -58,7 +48,6 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   const otherTime = (key: TimeKey): string => String(latest[key === 'theme_light_from' ? 'theme_dark_from' : 'theme_light_from'] ?? '');
   const timesRow = host.row(host.card, 'themeTimes', times).root;
 
-  // Custom colours: background, text and highlight, each with a swatch and a way back to Bowser's own.
   const colours = el('div', 'sp-theme-colours');
   const colourInputs = new Map<ColourKey, { input: HTMLInputElement; reset: HTMLButtonElement; value: HTMLElement }>();
   for (const [key, label] of COLOUR_KEYS) {
@@ -118,7 +107,6 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   const contrast = host.segmentedControl<string>('Colour contrast', CONTRASTS, (value) => host.send('theme_contrast', value));
   host.row(host.card, 'themeContrast', contrast.root);
 
-  // Theme file: one row. Export and Import open Windows' own file dialogs; the page never names a path.
   const file = el('div', 'sp-reset sp-theme-file');
   const exportButton = textButton('Export…', () => host.action('themeexport'), { icon: 'save' });
   const importButton = textButton('Import…', () => host.action('themeimport'), { icon: 'download' });
@@ -152,8 +140,6 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
         input.value = String(values[key]);
         input.disabled = disabled || !timesApply(values);
       }
-      // The look and the times only act under their own schedule: otherwise the rows leave the page
-      // (`is-na`; a search still lists them, dimmed), as the start page's rows do.
       for (const [node, applies] of [[lookRow, lookApplies(values)], [timesRow, timesApply(values)]] as const) {
         node.classList.toggle('is-off', readable && !applies);
         node.classList.toggle('is-na', readable && !applies);

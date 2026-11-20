@@ -1,7 +1,3 @@
-// Pure logic of the settings page's "Address bar", "Search engine" and "Bookmarks" sections
-// (src/chrome_host/address_page.rs): the snapshot contract, the rows the nav search indexes, the
-// command texts, and the rules for the source list and the engine editor. No DOM here;
-// test/address.mjs covers all of it.
 import type { RowSpec } from './settings-page-logic';
 import type { SnapshotMsg, SnapshotValue } from './protocol';
 
@@ -34,7 +30,6 @@ const NICK_RE = /^[a-z0-9_-]{0,16}$/;
 const SUFFIX_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)?$/;
 export const MAX_ENGINES = 40;
 
-/** Every option the page shows, as the typed object Rust sends under `s`. */
 export interface AddressValues {
   address_bar_show: boolean; address_autocomplete: boolean; address_show_full: boolean; address_select_on_activate: boolean;
   address_copy_encoded: boolean; address_qr_button: boolean;
@@ -111,7 +106,6 @@ function parseEngine(v: unknown): EngineView | null {
   return { id, name, nick, url, post, suggest, image, imagePost, builtin };
 }
 
-/** Strict validation of the `address` snapshot; `null` for anything partial, extended or malformed. */
 export function parseAddressSnapshot(d: SnapshotMsg['d']): AddressSnapshot | null {
   const keys = ['s', 'engines', 'def', 'priv', 'img', 'folders', 'guest', 'ack', 'error'];
   if (Object.keys(d).length !== keys.length || Object.keys(d).some((key) => !keys.includes(key))) return null;
@@ -135,9 +129,6 @@ export function parseAddressSnapshot(d: SnapshotMsg['d']): AddressSnapshot | nul
   return { s, engines, def: d.def as string, priv: d.priv as string, img: d.img as string, folders, guest: d.guest, ack: d.ack, error: d.error as string };
 }
 
-// ---- commands ----
-
-/** The `set` fields that change one option. `null` for a value Rust would refuse. */
 export function setFields(key: AddressKey, value: boolean | number | string): { a: 'addrset'; text: string } | null {
   if (!ADDRESS_KEYS.includes(key)) return null;
   const text = String(value);
@@ -156,19 +147,10 @@ export function isNickWord(text: string): boolean {
   return NICK_RE.test(text.replace(/^@/, '').toLowerCase());
 }
 
-// ---- the source list ----
-
-/** The enabled sources, in row order, from the `dd_sources` text. */
 export function sourceList(text: string): SourceId[] {
   return text.split(',').filter((id): id is SourceId => (SOURCE_IDS as readonly string[]).includes(id));
 }
 
-/**
- * The suggestion rows that cannot change anything with these values, so the page rests (and hides) them:
- * - `ddTypedSearches` filters the typed-history list, which only opens on an empty focused field
- *   (`dd_typed_history`) or from its button (`dd_history_button`);
- * - `ddPriorityBookmarks` lifts the Bookmarks source, so it waits for that source to be on.
- */
 export function restingAddressRows(values: Pick<AddressValues, 'dd_typed_history' | 'dd_history_button' | 'dd_sources'>): ReadonlySet<string> {
   const rest = new Set<string>();
   if (!values.dd_typed_history && !values.dd_history_button) rest.add('ddTypedSearches');
@@ -176,18 +158,15 @@ export function restingAddressRows(values: Pick<AddressValues, 'dd_typed_history
   return rest;
 }
 
-/** Every source in the order the editor lists them: the enabled ones in row order, then the rest. */
 export function sourceRows(enabled: readonly SourceId[]): Array<{ readonly id: SourceId; readonly on: boolean }> {
   return [...enabled.map((id) => ({ id, on: true })), ...SOURCE_IDS.filter((id) => !enabled.includes(id)).map((id) => ({ id, on: false }))];
 }
 
-/** `dd_sources` text after switching `id` on (at the end of the enabled ones) or off. */
 export function toggleSource(enabled: readonly SourceId[], id: SourceId, on: boolean): string {
   const rest = enabled.filter((item) => item !== id);
   return (on ? [...rest, id] : rest).join(',');
 }
 
-/** `dd_sources` text after moving enabled source `id` one place up (-1) or down (+1). */
 export function moveSource(enabled: readonly SourceId[], id: SourceId, delta: -1 | 1): string {
   const list = [...enabled];
   const from = list.indexOf(id);
@@ -196,8 +175,6 @@ export function moveSource(enabled: readonly SourceId[], id: SourceId, delta: -1
   [list[from], list[to]] = [list[to]!, list[from]!];
   return list.join(',');
 }
-
-// ---- the engine editor ----
 
 export interface EngineDraft {
   name: string;
@@ -226,7 +203,6 @@ function httpsTemplate(text: string): boolean {
   }
 }
 
-/** The first thing wrong with an engine draft, in the page's words, or null when Bowser will take it. */
 export function engineProblem(draft: EngineDraft, others: readonly EngineView[], selfId: string | null): string | null {
   const name = draft.name.trim();
   if (name === '' || name.length > 40 || hasControl(name)) return 'Give the engine a name of up to 40 characters.';
@@ -263,7 +239,6 @@ export type EngineOp =
   | { readonly op: 'move'; readonly id: string; readonly index: number }
   | { readonly op: 'restore' };
 
-/** The `set` fields of an engine change: the operation, then tab-separated fields. */
 export function engineFields(change: EngineOp): { a: 'engine'; text: string } | null {
   let parts: string[];
   switch (change.op) {
@@ -279,25 +254,18 @@ export function engineFields(change: EngineOp): { a: 'engine'; text: string } | 
   return { a: 'engine', text: parts.join('\t') };
 }
 
-/** Engine ids ordered as the list shows them after moving `id` to `index`. */
 export function moved(engines: readonly EngineView[], id: string, index: number): string[] {
   const ids = engines.map((e) => e.id).filter((x) => x !== id);
   ids.splice(Math.max(0, Math.min(ids.length, index)), 0, id);
   return ids;
 }
 
-/**
- * The name in the search-engine menu. The stored default id is `optimised`: DuckDuckGo’s HTML
- * search with sponsored results off (`k1=-1`). The id stays, so settings.txt is unchanged.
- * The separate `duckduckgo` engine is the main site, so the menu can tell the two apart.
- */
 export function engineChoiceLabel(id: string, name: string): string {
   if (id === 'optimised') return 'DuckDuckGo';
   if (id === 'duckduckgo') return 'DuckDuckGo.com';
   return name;
 }
 
-/** The short name Simple shows for the settings.txt search engine, before the address list arrives. */
 export function searchEngineLabel(id: string | null): string {
   if (id === 'optimised') return 'DuckDuckGo';
   if (id === 'google') return 'Google';
@@ -305,36 +273,26 @@ export function searchEngineLabel(id: string | null): string {
   return '';
 }
 
-/** The label an engine shows in lists: its name, and its nickname when asked. */
 export function engineLabel(engine: Pick<EngineView, 'name' | 'nick'>, showNickname: boolean): string {
   return showNickname && engine.nick !== '' ? `${engine.name} (${engine.nick})` : engine.name;
 }
 
-/** The monogram a search-field button shows for an engine (its first letter, upper case). */
 export function monogram(name: string): string {
   const first = Array.from(name.trim())[0] ?? '?';
   return first.toUpperCase();
 }
 
-/** Which search rows cannot change anything with these options (address-section.ts rests them). */
 export interface SearchRowsOff {
-  /** The search field's own options (engine icon, remembered engine, kept text, its suggestions): there is no field. */
   readonly field: boolean;
-  /** Suggestions for plain typing: the address field does not search, or the drop-down's Suggestions source is off. */
   readonly suggestions: boolean;
-  /** Suggestions after an engine nickname: the drop-down's Suggestions source is off. */
   readonly nicknameSuggestions: boolean;
 }
 
-/** Mirrors src/address_suggest.rs `remote_query` and src/win32/address_bar.rs (the nickname and field suggestions). */
 export function searchRowsOff(s: Pick<AddressValues, 'search_field' | 'search_in_address' | 'dd_sources'>): SearchRowsOff {
   const source = sourceList(s.dd_sources).includes('search');
   return { field: s.search_field === 'off', suggestions: !s.search_in_address || !source, nicknameSuggestions: !source };
 }
 
-// ---- rows (the nav search index) ----
-
-/** The privacy trade-off of `search_suggestions`, shown under its row. */
 export const SEARCH_SUGGESTIONS_NOTE = 'Sends what you type to your search engine before you press Enter. Never in private windows.';
 
 const S = (id: string, section: RowSpec['section'], label: string, description: string, keywords: string): RowSpec => ({ id, section, label, description, keywords });
@@ -361,7 +319,6 @@ export const ADDRESS_ROWS: readonly RowSpec[] = [
   S('addrExpansion', 'address', 'Ctrl+Enter suffix', '', 'domain expansion ctrl enter suffix com www Domain expansion Ctrl+Enter turns one word into www.word.suffix. Empty turns it off.'),
   S('engines', 'search', 'Engines', '', 'search engines add edit remove reorder nickname url suggest post image restore defaults Search engines Add, edit, order and remove the engines the address bar and the search field use.'),
   S('searchDefault', 'search', 'Search engine', '', 'default engine optimised google duckduckgo bing search address bar Search engine DuckDuckGo, with no sponsored results. Type img before a query for images.'),
-  // The one row with a sub-line: turning it on sends typing to the engine, so the row says so.
   S('searchSuggestions', 'search', 'Search suggestions', SEARCH_SUGGESTIONS_NOTE, 'search suggestions autocomplete autofill predictions google engine network privacy typing as you type Show search suggestions Needs Search from address on and the Suggestions source in Address bar suggestions.'),
   S('searchPrivate', 'search', 'Private search', '', 'private window search engine incognito Private window search engine Used in private tabs. Default means the engine above.'),
   S('searchImage', 'search', 'Image search', '', 'image search engine reverse picture Image search engine Used by “Search for this image” on a picture.'),
