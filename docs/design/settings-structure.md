@@ -77,14 +77,14 @@ Shown rows first, then More (in brackets):
 | | Bookmarks bar | [Groups on bar, Bar folder, Bar position, Bar display, Pin groups] |
 | | Window | [Rounded page, Auto-hide, Hidden bars, Full screen, Animation, Steppers, Fade inactive, Scrollbars, Plain icons, Reset] |
 | | Panels | [Close button, Folder counts, Auto-close, Reset] |
-| **Tabs** | Tab bar (`tabs`) | Tab position (Top / Side) [Scroll tabs, Wheel switch, Tight when max, Active width, Load progress, Click to previous, Title alerts, Unread dots, Dim sleeping, Inactive days, Preview images, Preview memory] |
-| | New tabs | New tab page, Page address, New tab position [Background, Duplicate, Focus page] |
+| **Tabs** | Tab bar (`tabs`) | Tab position (Top / Side) [Keep tabs wide, Active tab min width, Wheel switches tabs, No gap when maximised, Load progress, Click active to go back, Unread dots, Title counts as unread, Dim sleeping, Fade unused tabs after, Preview images, Preview memory] |
+| | New tabs | New tab page, Page address, New tab position [Links in background, Duplicated tab, Keep in group, Focus page] |
 | | Start page (`startpage`) | Speed dials, Tile size, Site names, Max columns [Add site tile, Group to show, Drag to reorder] |
 | | Start page widgets | Widgets [Widget columns, Widget background, Custom colour, Widget height, Drag to rearrange] |
-| | Groups and workspaces (`stacks`) | Auto group, Workspaces, Rules (sub-page) [Edge split, Tile titles, Tight tiles, Workspace wheel, Tab counts] |
-| | Closing | [Related tab, After close, Close in place, Keep window, Confirm close, Double-click, Close on left, Always close] |
-| | Pinned and restored | [Close pinned, Separator, Stay on site, Load pinned, Lazy restore] |
-| | Selecting and audio | [Multi-select, Include active, Tab audio] |
+| | Groups and workspaces (`stacks`) | Auto group, Workspaces, Rules (sub-page) [Wheel switches workspaces, Workspace tab counts, Edge split, Tile titles, Tight tiles] |
+| | Closing | [Back to opener, After close, Close under pointer, Keep window, Confirm close, Double-click, Close on left, Close on every tab] |
+| | Pinned and restored | [Close pinned, Pinned separator, Stay on site, Load tabs when selected, Load pinned at once] |
+| | Selecting and audio | [Multi-select, Include active tab, Tab audio] |
 | **Privacy** (Privacy and security) | Blocking (`privacy`) | Blocking, Cookie notices, YouTube ads, Block lists (sub-page) [Skipped sites] |
 | | History and tracking | History, Keep history, Tracking |
 | | Site data | Clear data, Site rules, Dashboard (sub-pages) |
@@ -106,6 +106,13 @@ Shown rows first, then More (in brackets):
 | | Media (`media`) | Playback (the on-device check) |
 | **About** | Updates (`updates`) | Automatic updates, Status |
 | | About Bowser (`about`) | Version, Settings file, Reset |
+
+A Tabs row that cannot act rests: disabled and out of the page (`is-na`, a search still finds it)
+until it can (`tabRowRests` in `ui/src/tab-options-logic.ts`). The tab bar's own options (Keep tabs
+wide, Active tab min width, Wheel switches tabs, No gap when maximised, Close under pointer) while
+tabs are on the side; Focus page while a new tab opens no page; Title counts as unread without Unread
+dots; Include active tab without Multi-select; Load pinned at once without Load tabs when selected;
+Wheel switches workspaces, Workspace tab counts and Rules without Workspaces.
 
 What moved, in short: Performance left Privacy for System (with Media, which no longer has a nav
 entry of its own); Default browser left About for General; the start page's dials and widgets left

@@ -9,7 +9,7 @@ import { textButton } from './panels/kit';
 import type { PanelFields, SettingsSection, SnapshotMsg } from './protocol';
 import {
   BAR_DISPLAYS, BAR_DISPLAY_LABELS, BAR_POSITIONS, MAX_CONFIRM, MAX_ENGINES, MAX_RESULTS, MIN_CONFIRM, MIN_RESULTS, SEARCH_FIELD_MODES, SOURCE_LABELS,
-  EMPTY_ENGINE, draftOfEngine, engineChoiceLabel, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
+  EMPTY_ENGINE, draftOfEngine, restingAddressRows, searchRowsOff, engineChoiceLabel, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
   type AddressKey, type AddressSnapshot, type BarDisplay, type BarPosition, type EngineDraft, type EngineOp, type EngineView, type SearchFieldMode, type SourceId,
 } from './address-settings-logic';
 
@@ -24,11 +24,20 @@ export interface AddressHost {
   readonly barCard: HTMLElement;
   readonly switchControl: (onChange: (on: boolean) => void) => { readonly root: HTMLElement; set(value: boolean): void; disable(off: boolean): void };
   readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
+  /** Called after each snapshot is drawn, so the page's rows that follow these options can follow them. */
+  readonly painted?: () => void;
 }
 
 export interface AddressSection {
   /** Applies an `address` snapshot. */
   receive(message: SnapshotMsg): void;
+  /** Whether "Show the full address" is on (false until the first snapshot). */
+  fullAddress(): boolean;
+  /**
+   * The bookmarks bar's own rows (folder, position, display) cannot act: `off` disables and dims them,
+   * `gone` takes them out of the page (`is-na`) while the bar is never shown. Kept across snapshots.
+   */
+  barRows(off: boolean, gone: boolean): void;
 }
 
 interface Painter { (snapshot: AddressSnapshot): void }
@@ -44,10 +53,14 @@ export function mountAddressSections(host: AddressHost): AddressSection {
     host.send(fields);
   };
 
-  const toggle = (cardNode: HTMLElement, id: string, key: AddressKey, options: { stack?: boolean } = {}): void => {
+  /** The switch rows by row id, so `restingAddressRows` can rest the ones that cannot act. */
+  const switches = new Map<string, Resting>();
+  const toggle = (cardNode: HTMLElement, id: string, key: AddressKey, options: { stack?: boolean } = {}): Resting => {
     const control = host.switchControl((on) => put(key, on));
-    host.row(cardNode, id, control.root, options);
+    const { root } = host.row(cardNode, id, control.root, options);
+    switches.set(id, { root, control });
     painters.push((s) => control.set(Boolean(s.s[key])));
+    return { root, control };
   };
 
   // ---- Address bar ----
@@ -97,7 +110,7 @@ export function mountAddressSections(host: AddressHost): AddressSection {
 
   const chooseCard = host.card('search', 'Which engine');
   const defaultSelect = engineSelect(host, chooseCard, 'searchDefault', 'Default search engine', false, (id) => host.send(engineFields({ op: 'default', id }) ?? { a: 'engine', text: '' }));
-  toggle(chooseCard, 'searchSuggestions', 'search_suggestions');
+  const suggestions = toggle(chooseCard, 'searchSuggestions', 'search_suggestions');
   const privateSelect = engineSelect(host, chooseCard, 'searchPrivate', 'Private window search engine', true, (id) => host.send(engineFields({ op: 'private', id }) ?? { a: 'engine', text: '' }));
   const imageSelect = engineSelect(host, chooseCard, 'searchImage', 'Image search engine', false, (id) => host.send(engineFields({ op: 'image', id }) ?? { a: 'engine', text: '' }));
   painters.push((s) => {
@@ -110,17 +123,30 @@ export function mountAddressSections(host: AddressHost): AddressSection {
   const mode = host.segmentedControl<SearchFieldMode>('Search field', SEARCH_FIELD_MODES.map((m) => [m, m === 'off' ? 'Off' : m === 'field' ? 'Text field' : 'Button'] as const), (value) => put('search_field', value));
   host.row(fieldOptionsCard, 'searchField', mode.root);
   painters.push((s) => mode.set(s.s.search_field));
+  // Nicknames also label the address bar's drop-down and the engine list, so that row stays with the field off.
   toggle(fieldOptionsCard, 'searchNickname', 'search_show_nickname');
-  toggle(fieldOptionsCard, 'searchIcon', 'search_show_icon');
-  toggle(fieldOptionsCard, 'searchKeepEngine', 'search_keep_engine');
-  toggle(fieldOptionsCard, 'searchKeepText', 'search_keep_text');
-  toggle(fieldOptionsCard, 'searchSuggestField', 'search_suggest_field');
+  const fieldRows = [
+    toggle(fieldOptionsCard, 'searchIcon', 'search_show_icon'),
+    toggle(fieldOptionsCard, 'searchKeepEngine', 'search_keep_engine'),
+    toggle(fieldOptionsCard, 'searchKeepText', 'search_keep_text'),
+    toggle(fieldOptionsCard, 'searchSuggestField', 'search_suggest_field'),
+  ];
 
   const behaviourCard = host.card('search', 'Searching');
   toggle(behaviourCard, 'searchNewTab', 'search_new_tab');
   toggle(behaviourCard, 'searchInAddress', 'search_in_address');
   toggle(behaviourCard, 'searchSelection', 'search_selection_background');
-  toggle(behaviourCard, 'searchSuggestAddress', 'search_suggest_address');
+  const nicknameSuggestions = toggle(behaviourCard, 'searchSuggestAddress', 'search_suggest_address');
+  // A row whose switch cannot change anything right now leaves the page (a search still finds it,
+  // dimmed), as the start page's rows do (settings-start.ts): the field's own options while there is
+  // no search field, and the engine suggestions while the drop-down's Suggestions source is off (or,
+  // for plain typing, while the address field does not search at all).
+  painters.push((s) => {
+    const off = searchRowsOff(s.s);
+    for (const row of fieldRows) rest(row, off.field);
+    rest(suggestions, off.suggestions);
+    rest(nicknameSuggestions, off.nicknameSuggestions);
+  });
 
   const scopeCard = host.card('search', 'Scoped nicknames');
   const scope = (id: string, key: 'nick_bookmarks' | 'nick_history' | 'nick_tabs', fallback: string): void => {
@@ -172,7 +198,7 @@ export function mountAddressSections(host: AddressHost): AddressSection {
   const folderHost = el('div', 'sp-select-host');
   let folderSelect: SelectField<string> | null = null;
   let folderKey = '';
-  host.row(host.barCard, 'bmBarFolder', folderHost);
+  const folderRow = host.row(host.barCard, 'bmBarFolder', folderHost).root;
   painters.push((s) => {
     const key = s.folders.map((f) => `${f.id}:${f.title}`).join('|');
     const value = String(s.folders.some((f) => f.id === s.s.bm_bar_folder) ? s.s.bm_bar_folder : 0);
@@ -188,16 +214,28 @@ export function mountAddressSections(host: AddressHost): AddressSection {
       });
       folderSelect.button.setAttribute('aria-labelledby', 'sp-l-bmBarFolder');
       folderHost.replaceChildren(folderSelect.root);
+      folderSelect.button.toggleAttribute('disabled', barOff);
     } else {
       folderSelect.set(value);
     }
   });
   const position = host.segmentedControl<BarPosition>('Bookmarks bar position', BAR_POSITIONS.map((p) => [p, p === 'top' ? 'Top' : 'Bottom'] as const), (value) => put('bm_bar_position', value));
-  host.row(host.barCard, 'bmBarPosition', position.root);
+  const positionRow = host.row(host.barCard, 'bmBarPosition', position.root).root;
   painters.push((s) => position.set(s.s.bm_bar_position));
   const display = host.segmentedControl<BarDisplay>('Bookmarks bar display', BAR_DISPLAYS.map((d) => [d, BAR_DISPLAY_LABELS[d]] as const), (value) => put('bm_bar_display', value));
-  host.row(host.barCard, 'bmBarDisplay', display.root);
+  const displayRow = host.row(host.barCard, 'bmBarDisplay', display.root).root;
   painters.push((s) => display.set(s.s.bm_bar_display));
+  let barOff = false;
+  let barGone = false;
+  const paintBarRows = (): void => {
+    folderSelect?.button.toggleAttribute('disabled', barOff);
+    position.disable(barOff);
+    display.disable(barOff);
+    for (const node of [folderRow, positionRow, displayRow]) {
+      node.classList.toggle('is-off', barOff && barGone);
+      node.classList.toggle('is-na', barGone);
+    }
+  };
 
   return {
     receive(message) {
@@ -205,12 +243,40 @@ export function mountAddressSections(host: AddressHost): AddressSection {
       if (!parsed) return;
       snapshot = parsed;
       for (const paint of painters) paint(parsed);
+      paintBarRows();
+      host.painted?.();
+      // A suggestion row that cannot change anything with these values is disabled and leaves the page
+      // (`is-na`, as on the start page; a search still finds it, dimmed). Only the rows that rule can
+      // rest are touched: the search rows follow `searchRowsOff` in their own painter.
+      const resting = restingAddressRows(parsed.s);
+      for (const id of RESTING_ADDRESS_IDS) {
+        const row = switches.get(id);
+        if (row) rest(row, resting.has(id));
+      }
       // The answer to the change (Saved, or why not) comes with the settings snapshot's own toast.
+    },
+    fullAddress: () => snapshot?.s.address_show_full === true,
+    barRows(off, gone) {
+      barOff = off;
+      barGone = gone;
+      paintBarRows();
     },
   };
 }
 
 // ---- small controls ----
+
+/** A switch row the section can rest: disabled, dimmed and out of the page (`is-na`). */
+/** The rows `restingAddressRows` may rest. */
+const RESTING_ADDRESS_IDS = ['ddTypedSearches', 'ddPriorityBookmarks'] as const;
+
+interface Resting { readonly root: HTMLElement; readonly control: { disable(off: boolean): void } }
+
+function rest(row: Resting, off: boolean): void {
+  row.control.disable(off);
+  row.root.classList.toggle('is-off', off);
+  row.root.classList.toggle('is-na', off);
+}
 
 interface Field<T> { readonly root: HTMLElement; set(value: T): void }
 

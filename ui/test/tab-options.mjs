@@ -164,6 +164,93 @@ test('a new tab opened from a grouped tab joins its group by default, and the Ne
   assert.match(page, /group\('newTabs', 'New tabs', 'tabs', \[[^\]]*'tabs_new_tab_in_group'[^\]]*\]\)/);
 });
 
+// ---- settings audit: no option on screen that cannot act ----
+
+test('a row rests exactly while what it tunes cannot act', () => {
+  const values = { ...settingsFixture.snap.d.tabOptions };
+  const top = { tabsOnSide: false, homepage: '' };
+  const side = { tabsOnSide: true, homepage: '' };
+  const rests = (key, change = {}, context = top) => options.tabRowRests(key, { ...values, ...change }, context);
+  // The tab bar's own options: tabs.ts reads them for the horizontal strip only; sidebar.ts never does.
+  for (const key of ['tabs_scroll', 'tabs_active_min_width', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_align_close_button']) {
+    assert.ok(options.STRIP_ONLY_KEYS.includes(key), key);
+    assert.equal(rests(key), false, `${key} acts with tabs on top`);
+    assert.equal(rests(key, {}, side), true, `${key} rests with tabs on the side`);
+  }
+  const sidebar = read(join(srcDir, 'sidebar.ts'));
+  for (const field of ['scroll', 'minWidth', 'wheel', 'removeSpacing', 'alignClose']) {
+    assert.doesNotMatch(sidebar, new RegExp(`value\\.${field}\\b`), `the side list never reads ${field}`);
+  }
+  // Tab bar hidden (Appearance > Layout): nothing draws the tabs, so every option about the drawn list rests;
+  // the ones that act through shortcuts and menus stay.
+  const hidden = { tabsOnSide: false, homepage: '', tabListHidden: true };
+  for (const key of options.TAB_LIST_KEYS) assert.equal(rests(key, {}, hidden), true, `${key} rests with no tab bar`);
+  for (const key of ['tabs_close_related', 'tabs_keep_window', 'tabs_mute_mode', 'tabs_lazy_restore', 'tabs_link_background']) {
+    assert.equal(rests(key, {}, hidden), false, `${key} still acts with no tab bar`);
+  }
+  for (const key of options.STRIP_ONLY_KEYS) assert.ok(options.TAB_LIST_KEYS.includes(key), key);
+  // Options the side list does honour stay live there.
+  for (const key of ['tabs_close_left', 'tabs_close_always', 'tabs_load_indicator', 'tabs_pinned_separator', 'tabs_selection', 'tabs_dim_hibernated']) {
+    assert.equal(rests(key, {}, side), false, key);
+  }
+  // Focus page only has a page to focus when a new tab opens one.
+  assert.equal(rests('tabs_focus_page'), true, 'the start page: nothing to focus');
+  assert.equal(rests('tabs_focus_page', { tabs_new_tab_page: 'blank' }), true);
+  assert.equal(rests('tabs_focus_page', { tabs_new_tab_page: 'url', tabs_new_tab_url: '' }), true, 'no address yet');
+  assert.equal(rests('tabs_focus_page', { tabs_new_tab_page: 'url', tabs_new_tab_url: 'https://example.com/' }), false);
+  assert.equal(rests('tabs_focus_page', { tabs_new_tab_page: 'homepage' }), true, 'no homepage set: the start page opens');
+  assert.equal(rests('tabs_focus_page', { tabs_new_tab_page: 'homepage' }, { tabsOnSide: false, homepage: 'https://home.example/' }), false);
+  assert.equal(options.homepageChoiceTip(''), options.NO_HOMEPAGE_TIP);
+  assert.equal(options.homepageChoiceTip('https://home.example/'), '');
+  // The address only for a specific page.
+  assert.equal(rests('tabs_new_tab_url'), true);
+  assert.equal(rests('tabs_new_tab_url', { tabs_new_tab_page: 'url' }), false);
+  // Switches that tune another switch.
+  assert.equal(rests('tabs_title_notifications'), false);
+  assert.equal(rests('tabs_title_notifications', { tabs_unread_indicator: false }), true, 'a title count shows only as the unread dot');
+  assert.equal(rests('tabs_selection_active', { tabs_selection: false }), true);
+  assert.equal(rests('tabs_load_pinned', { tabs_lazy_restore: false }), true, 'every tab loads at once anyway');
+  assert.equal(rests('tabs_load_pinned'), false);
+  for (const key of ['tabs_workspace_scroll', 'tabs_workspace_counts', 'workspaceRules']) {
+    assert.equal(rests(key), false, key);
+    assert.equal(rests(key, { tabs_workspaces: false }), true, `${key} waits for Workspaces`);
+  }
+  // The Rust rules these mirror.
+  const rust = read(join(root, 'src', 'tab_options.rs'));
+  assert.match(rust, /pub fn loads_at_restore\(options: &TabOptions, pinned: bool\) -> bool \{\n\s*!options\.lazy_restore \|\| \(options\.load_pinned && pinned\)/);
+  assert.match(rust, /NewTabPage::Homepage => homepage\.map_or\(NewTabTarget::Nothing, NewTabTarget::Page\)/);
+});
+
+test('labels say what the option does: no terse names, and the old names still find the row', () => {
+  const byKey = (key) => options.TAB_OPTIONS.find((s) => s.key === key);
+  const renamed = {
+    tabs_scroll: ['Keep tabs wide', 'Scroll tabs'],
+    tabs_remove_spacing_maximised: ['No gap when maximised', 'Tight when max'],
+    tabs_minimise_active: ['Click active to go back', 'Click to previous'],
+    tabs_align_close_button: ['Close under pointer', 'Close in place'],
+    tabs_title_notifications: ['Title counts as unread', 'Title alerts'],
+    tabs_close_related: ['Back to opener', 'Related tab'],
+    tabs_lazy_restore: ['Load tabs when selected', 'Lazy restore'],
+    tabs_workspace_counts: ['Workspace tab counts', 'Tab counts'],
+  };
+  for (const [key, [label, old]] of Object.entries(renamed)) {
+    assert.equal(byKey(key).label, label, key);
+    assert.ok(byKey(key).keywords.includes(old), `${key}: a search for “${old}” still finds it`);
+  }
+  // Crowded tabs scroll either way; the switch is about how wide they stay, and says so.
+  assert.match(byKey('tabs_scroll').aria, /readable width/);
+  assert.doesNotMatch(byKey('tabs_scroll').label, /scroll/i);
+  // The workspace counts are drawn on the rail's buttons only; the words do not promise the menu.
+  assert.doesNotMatch(byKey('tabs_workspace_counts').keywords, /workspace menu/);
+  // Every switch has a full accessible name; the visible label stays one short line.
+  for (const spec of options.TAB_OPTIONS.filter((s) => s.kind === 'toggle')) {
+    assert.ok(typeof spec.aria === 'string' && spec.aria.length > spec.label.length - 1, `${spec.key} has an accessible name`);
+    assert.ok(spec.label.length <= 26, `${spec.key}: “${spec.label}” fits one line`);
+  }
+  const rows = options.tabOptionRows();
+  assert.equal(rows.find((r) => r.id === 'tabs_scroll').aria, byKey('tabs_scroll').aria, 'the row carries the accessible name');
+});
+
 // ---- the strip's marks and inputs ----
 
 test('a load shows in the way the option says, and never goes unseen', () => {

@@ -206,6 +206,8 @@ export interface HoverIslandMsg {
   readonly rows: readonly HoverRowMsg[];
   readonly more: number;
   readonly close: string;
+  /** Opened to edit the group (a command, not a hover): focus and select the name field. */
+  readonly edit?: true;
 }
 export type HoverMsg = HoverTooltipMsg | HoverCardMsg | HoverIslandMsg;
 export interface HoverHideMsg { readonly t: 'hoverhide' }
@@ -1044,7 +1046,8 @@ export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
       };
     }
     case 'island': {
-      if (!hasOnlyKeys(raw, ISLAND_KEYS) || !hasAllKeys(raw, ISLAND_KEYS)) return null;
+      if (!hasOnlyKeys(raw, [...ISLAND_KEYS, 'edit']) || !hasAllKeys(raw, ISLAND_KEYS)) return null;
+      if ('edit' in raw && raw.edit !== true) return null;
       const { name, hint, slot, more, close } = raw;
       const swatches = parseColours(raw.swatches, MAX_HOVER_SWATCHES);
       const rows = parseHoverRows(raw.rows);
@@ -1052,7 +1055,7 @@ export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
       if (!isStr(hint, MAX_ISLAND_NAME * 2) || Array.from(hint).length > MAX_ISLAND_NAME) return null;
       if (!isStr(close, MAX_ISLAND_NAME * 2) || !isInt(more, 0, MAX_ID) || !swatches || !rows) return null;
       if (!isInt(slot, 0, Math.max(0, swatches.length - 1))) return null;
-      return { t: 'hover', tok, kind: 'island', name, hint, slot, swatches, rows, more, close };
+      return { t: 'hover', tok, kind: 'island', name, hint, slot, swatches, rows, more, close, ...(raw.edit === true ? { edit: true } : {}) };
     }
     default:
       return null;

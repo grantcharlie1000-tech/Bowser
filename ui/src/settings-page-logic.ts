@@ -25,6 +25,9 @@ const SEARCH_ENGINES = ['optimised', 'google', 'duckduckgo'] as const;
 export type SearchEngine = typeof SEARCH_ENGINES[number];
 export const EFFICIENCY_MODES = ['auto', 'on', 'off'] as const;
 export type EfficiencyMode = typeof EFFICIENCY_MODES[number];
+export const EFFICIENCY_LABELS: Readonly<Record<EfficiencyMode, string>> = { auto: 'Auto', on: 'On', off: 'Off' };
+/** What each choice means (src/efficiency.rs): Auto is in force on battery or with Battery saver on. */
+export const EFFICIENCY_ARIA: Readonly<Record<EfficiencyMode, string>> = { auto: 'On battery or with Battery saver on', on: 'Always', off: 'Never' };
 export type TrackingPrevention = 'balanced' | 'strict';
 // --- layout (thread T6) --- the layouts (six now), the Layout block's `layout` object and its presets live in layout-logic.ts.
 import {
@@ -583,6 +586,27 @@ export type Draft = Pick<SettingsSnapshot,
   | 'window' // --- window and panels (thread T9) ---
 >;
 
+/**
+ * The rows of the page's own controls that cannot change anything in this state, so the page rests (and
+ * hides) them, as the start page does:
+ * - the spoiler mode, covers and image scan only matter while spoiler protection is on;
+ * - "Auto-translate" only acts on a page Bowser offers to translate (`translate::should_offer`);
+ * - Ctrl+Tab order and the two chord switches are shortcuts, and with shortcuts off no chord runs;
+ *   Ctrl+S only exists in the vertical layouts (`shortcuts::GatedChords`).
+ */
+export function restingPageRows(
+  draft: Pick<Draft, 'spoilerProtection' | 'tabLayout'>,
+  translateOffer: boolean,
+  shortcutsEnabled: boolean,
+): ReadonlySet<string> {
+  const rest = new Set<string>();
+  if (!draft.spoilerProtection) for (const id of ['spoilerMode', 'spoilerReducedEffects', 'spoilerOcr']) rest.add(id);
+  if (!translateOffer) rest.add('translateAuto');
+  if (!shortcutsEnabled) for (const id of ['ctrlTabMru', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs']) rest.add(id);
+  if (draft.tabLayout !== 'vertical' && draft.tabLayout !== 'vertical-right') rest.add('ctrlSVerticalTabs');
+  return rest;
+}
+
 export function draftOf(snapshot: SettingsSnapshot): Draft {
   const {
     tabLayout, sidebarWidth, sidebarPinned, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow, searchEngine, automaticTabGrouping, efficiencyMode,
@@ -721,6 +745,11 @@ export interface RowSpec {
   readonly keywords: string;
   /** The change waits for a restart. */
   readonly restart?: boolean;
+  /**
+   * The change reaches pages as they load: a page already open keeps what it loaded with until it is
+   * reloaded. Said in the row's tooltip and its control's accessible description, never as a sub-line.
+   */
+  readonly reload?: boolean;
   /** Saved, but Bowser does not act on it yet: the page says so instead of pretending. */
   readonly notYet?: boolean;
   /** Where the row is drawn (`rowTier`); a row that sets none gets the table's choice. */
@@ -779,7 +808,7 @@ export const AREAS: readonly AreaSpec[] = [
   ] },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '', parts: ['appearance'], groups: [
     group('theme', 'Theme', 'appearance', ['themeMode', 'themeAccent', 'theme', 'websiteAppearance', 'themeSchedule', 'themeLook', 'themeTimes', 'themeColours', 'themeColouring', 'themeAccentPage', 'themeSaturation', 'themeContrast', 'themeFile', 'forceDark', 'privateTheme']),
-    group('layout', 'Layout', 'appearance', ['layoutPreset', 'layout', 'sidebarWidth', 'sidebarPinned', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus']),
+    group('layout', 'Layout', 'appearance', ['layoutPreset', 'layout', 'sidebarWidth', 'sidebarPinned', 'tabBarVisible', 'addressBarVisible', 'statusBar', 'uiDensity', 'compactMenus']),
     group('toolbar', 'Toolbar', 'appearance', ['toolbarButtons', 'centredAddressBar', 'minimalUrl', 'bookmarksBar', 'showLoadProgress', 'addrFull', 'addrShow', 'addrQr']),
     group('text', 'Text and zoom', 'appearance', ['fontSize', 'defaultZoom', 'uiFont', 'uiZoom', 'showZoomIndicator', 'ptZoomScope', 'ptWheelZoom']),
     group('bookmarksBar', 'Bookmarks bar', 'appearance', ['bookmarksBarTabGroups', 'bmBarFolder', 'bmBarPosition', 'bmBarDisplay', 'pinNewTabGroups']),
@@ -787,16 +816,16 @@ export const AREAS: readonly AreaSpec[] = [
     group('panels', 'Panels', 'appearance', ['panelCloseButton', 'panelFolderCounts', 'panelAutoClose', 'panelReset']),
   ] },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split groups start page speed dial', parts: ['tabs', 'stacks', 'startpage'], groups: [
-    group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_active_min_width', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_title_notifications', 'tabs_unread_indicator', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
+    group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_active_min_width', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_unread_indicator', 'tabs_title_notifications', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
     group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_new_tab_in_group', 'tabs_focus_page']),
     // The start page is what "New tab page: Start" shows, so its two groups follow New tabs. The speed
     // dial rows and the widget rows are apart, each under its own switch, so a row behind More still
     // says which switch it belongs to.
     group('startPage', 'Start page', 'startpage', ['startDials', 'startThumbSize', 'startTitles', 'startColumns', 'startAddButton', 'startGroupReopen', 'startDragReorder']),
     group('startWidgets', 'Start page widgets', 'startpage', ['startWidgets', 'startWidgetColumns', 'startWidgetBg', 'startWidgetColor', 'startWidgetHeight', 'startWidgetDrag']),
-    group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']),
+    group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'tabs_workspace_scroll', 'tabs_workspace_counts', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight']),
     group('closing', 'Closing', 'tabs', ['tabs_close_related', 'tabs_close_activation', 'tabs_align_close_button', 'tabs_keep_window', 'tabs_confirm_close', 'tabs_double_click', 'tabs_close_left', 'tabs_close_always']),
-    group('pinned', 'Pinned and restored', 'tabs', ['tabs_pinned_close', 'tabs_pinned_separator', 'tabs_pinned_restrict', 'tabs_load_pinned', 'tabs_lazy_restore']),
+    group('pinned', 'Pinned and restored', 'tabs', ['tabs_pinned_close', 'tabs_pinned_separator', 'tabs_pinned_restrict', 'tabs_lazy_restore', 'tabs_load_pinned']),
     group('selecting', 'Selecting and audio', 'tabs', ['tabs_selection', 'tabs_selection_active', 'tabs_mute_mode']),
   ] },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy', lead: '', aliases: 'privacy and security', parts: ['privacy'], groups: [
@@ -936,6 +965,8 @@ export function rowTier(row: RowSpec): RowTier {
 
 /** The note under a row whose change waits for a restart. */
 export const RESTART_NOTE = 'Applies after restart';
+/** What a `reload` row says (tooltip and accessible description): open pages keep what they loaded. */
+export const RELOAD_NOTE = 'Applies to pages as they load. Reload an open page to apply it there.';
 /** The note under a row (or a whole group of rows) Bowser saves but does not act on yet. */
 export const NOT_YET_NOTE = 'Has no effect yet. Bowser keeps your choice for when it does.';
 export const NOT_YET_GROUP_NOTE = 'These have no effect yet. Bowser keeps your choices for when they do.';
@@ -967,17 +998,20 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'sidebarPinned', section: 'appearance', label: 'Pin sidebar', aria: 'Pin vertical tabs', description: '', keywords: 'vertical tabs pin sidebar hover expand overlay edge compact zen auto hide retract Pin vertical tabs Keeps the sidebar, with the address bar in it, open beside the page. Off, it hides and the page fills the window; rest the pointer on the window’s edge to slide it back over the page.' },
   { id: 'tabBarVisible', section: 'appearance', label: 'Tab bar', aria: 'Show the tab bar', description: '', keywords: 'tab bar show hide tabs visible Show the tab bar Off, the tabs are reached with Ctrl+Tab, the tab list and Quick commands.' },
   { id: 'addressBarVisible', section: 'appearance', label: 'Address bar', aria: 'Show the address bar row', description: '', keywords: 'address bar show hide toolbar row visible ctrl l Show the address bar row The whole row: navigation, the address field and the menu. Off, Ctrl+L brings it back until the address field loses focus.' },
-  { id: 'showTitleBar', section: 'appearance', label: 'Title bar', aria: 'Show the title bar when the tab bar is on a side', description: '', keywords: 'title bar window buttons caption vertical side page title Show the title bar when the tab bar is on a side A row above the address bar with the page title and the window buttons. With the address bar along the bottom, the row is always there.' },
   { id: 'statusBar', section: 'appearance', label: 'Status bar', description: '', keywords: 'status bar info overlay link address hover hide Status bar Bowser has no status bar of its own. The address of a link under the pointer shows in a small overlay at the bottom of the page; Hidden turns that off.' },
   { id: 'uiDensity', section: 'appearance', label: 'Density', aria: 'User interface density', description: '', keywords: 'density regular compact rows spacing dense User interface density Compact shortens the rows of the tab sidebar, the panels and Bowser’s own pages.' },
   { id: 'compactMenus', section: 'appearance', label: 'Compact menus', aria: 'Compact menu layout', description: '', keywords: 'compact menus dense rows menu layout Compact menu layout Shorter rows in Bowser’s menus.' },
   { id: 'uiZoom', section: 'appearance', label: 'UI zoom', aria: 'User interface zoom', description: '', keywords: 'ui zoom scale interface size percent slider text User interface zoom Scales the text of Bowser’s bars, panels and pages, on top of the font size. Select the value to type one.' },
+  // No "Show the title bar" row: the window lays a title row out by itself (the vertical sidebar's
+  // column has its own, and a toolbar away from the top always gets one), so `show_title_bar` never
+  // changed anything (src/chrome/layout.rs, `a_title_row_asked_for_beside_a_zen_sidebar_is_its_own_title_row`).
+  // The key stays in settings.txt and the layout's save for older files.
   // --- end layout ---
   // Light, dark or follow Windows: the everyday choice. It writes the same `theme_schedule` and `theme_look` keys as
   // the Schedule and Look rows behind More (those add the timed schedule).
   { id: 'themeMode', section: 'appearance', label: 'Mode', aria: 'Light, dark or system', description: '', keywords: 'theme mode light dark system night day appearance colour color scheme follow windows dark mode light mode Mode' },
-  { id: 'theme', section: 'appearance', label: 'Palette', aria: 'Colour palette', description: '', keywords: 'dark light colour scheme helium system prefer system colour windows accent palette theme Colour palette Bowser’s own colours, or your Windows accent colour.' },
-  { id: 'themeAccent', section: 'appearance', label: 'Accent', aria: 'Accent colour', description: '', keywords: 'colour accent override custom theme reset Accent colour A colour for buttons and highlights. Reset uses the default.' },
+  { id: 'theme', section: 'appearance', label: 'Palette', aria: 'Colour palette', description: '', keywords: 'dark light colour scheme helium system prefer system colour windows accent palette theme Colour palette Bowser’s own colours, or your Windows accent colour. Picking one puts a custom accent back to the palette’s.' },
+  { id: 'themeAccent', section: 'appearance', label: 'Accent', aria: 'Accent colour', description: '', keywords: 'colour accent override custom theme reset Accent colour A colour for buttons and highlights, in place of the palette’s. Reset goes back to the palette’s accent.' },
   { id: 'websiteAppearance', section: 'appearance', label: 'Websites', description: '', keywords: 'dark light auto mode prefers color scheme websites page theme appearance Websites Ask sites for a light page, a dark page, or the same as Windows.' },
   { id: 'forceDark', section: 'appearance', label: 'Force dark', aria: 'Force dark theme on all websites', description: '', keywords: 'force dark mode night websites invert auto dark Force dark theme on all websites Darkens pages that have no dark theme of their own, in open tabs at once and in the pages you open next.' },
   { id: 'privateTheme', section: 'appearance', label: 'Private theme', aria: 'Private tab theme', description: '', keywords: 'private incognito inprivate theme dark light window colour Private tab theme How Bowser’s own windows look while a private tab is shown: the same as normal, light or dark.' },
@@ -986,8 +1020,8 @@ const BUILT_ROWS: readonly RowSpec[] = [
   // --- end theme options ---
   // --- toolbars and feeds (thread T13) --- the editor for the three bars (a sub-page); it replaces the old checklist.
   { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbar', aria: 'Customise your toolbar', description: '', keywords: 'toolbar toolbars buttons customize customise address bar tab bar back forward reload bookmark new tab split reader site information downloads extensions closed tabs command chain button add remove move reset preview Customise your toolbars Choose the buttons on the address bar and the tab bar, and put a command or a chain of commands on either.' },
-  { id: 'centredAddressBar', section: 'appearance', label: 'Centre address', aria: 'Centre the address bar', description: '', keywords: 'address bar centre centered position Centre the address bar Keeps the address bar centred in the toolbar.' },
-  { id: 'minimalUrl', section: 'appearance', label: 'Short address', aria: 'Show a simplified address while unfocused', description: '', keywords: 'url simplified host domain minimal address bar focus Show a simplified address while unfocused Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.' },
+  { id: 'centredAddressBar', section: 'appearance', label: 'Centre address', aria: 'Centre the address bar', description: '', keywords: 'address bar centre centered position Centre the address bar Keeps the address bar centred in the toolbar. Only where it has a row of its own above or below the tabs: not beside vertical tabs, in one row with the tabs, or under them.' },
+  { id: 'minimalUrl', section: 'appearance', label: 'Short address', aria: 'Show a simplified address while unfocused', description: '', keywords: 'url simplified host domain minimal address bar focus Show a simplified address while unfocused Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address. Off while Full address is on.' },
   { id: 'showLoadProgress', section: 'appearance', label: 'Load progress', aria: 'Show a loading progress bar', description: '', keywords: 'progress loading bar indicator Show a loading progress bar A thin bar tracks page loads in the toolbar.' },
   // The one group setting: groups have a single look, so there is nothing else to choose. Applies at once.
   { id: 'grouping', section: 'stacks', label: 'Auto group', aria: 'Group tabs automatically', description: '', keywords: 'automatic auto tab groups grouping islands stacks site domain sort Group tabs automatically Tabs from one site share a group. Drag a tab into a group to add it by hand.' },
@@ -999,13 +1033,13 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin groups', aria: 'Pin new tab groups to the bookmarks bar', description: '', keywords: 'pin tab groups bookmarks bar Pin new tab groups to the bookmarks bar A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.' },
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S', aria: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: '', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut Ctrl+S hides or pins the sidebar in the vertical layout Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.' },
   // --- window and panels (thread T9) --- each row below acts at once; all sit behind More options. Not here, on purpose:
-  // "open settings in a tab" and "open popups in tabs" (Bowser already always does), "show title bar" (Layout's
-  // title row), "reset toolbars" (the toolbar editor) and the Windows and Reading list panels (Bowser has neither).
+  // "open settings in a tab" and "open popups in tabs" (Bowser already always does), "show title bar" (the window
+  // lays its title row out by itself), "reset toolbars" (the toolbar editor) and the Windows and Reading list panels (Bowser has neither).
   { id: 'winAnimations', section: 'appearance', label: 'Animation', aria: 'Use animation', description: '', keywords: 'animation motion transitions reduced motion prefers reduced motion slide Use animation Bowser’s own transitions and the panel slide. Off, they snap. Bowser also stays still when Windows has animations off.' },
   { id: 'winRangeButtons', section: 'appearance', label: 'Steppers', aria: 'Buttons instead of sliders', description: '', keywords: 'sliders range buttons stepper plus minus Buttons instead of sliders Range controls on this page, such as the sidebar width and the interface zoom, show minus and plus buttons instead of a slider.' },
   { id: 'winFade', section: 'appearance', label: 'Fade inactive', aria: 'Fade colours in background windows', description: '', keywords: 'fade colours background window inactive dim grey desaturate Fade colours in background windows Bowser’s bars and panels lose their colour while another window is in front.' },
   { id: 'winScrollbars', section: 'appearance', label: 'Scrollbars', aria: 'Simple scrollbars', description: '', keywords: 'scrollbars simple thin slim overlay Simple scrollbars Thin, quiet scrollbars in Bowser’s own pages and panels. Web pages keep theirs.' },
-  { id: 'winMonoIcons', section: 'appearance', label: 'Plain icons', aria: 'Monochrome settings icons', description: '', keywords: 'monochrome icons settings colour accent plain Monochrome settings icons The icons in this page’s list draw in plain text colour, without the accent.' },
+  { id: 'winMonoIcons', section: 'appearance', label: 'Plain icons', aria: 'Monochrome settings icons', description: '', keywords: 'monochrome icons settings colour accent plain Monochrome settings icons The icon of the section you are on, in this page’s list, draws in plain text colour instead of the accent.' },
   { id: 'panelCloseButton', section: 'appearance', label: 'Close button', aria: 'Show the close button on panels', description: '', keywords: 'panel close button x header Show the close button on panels The X in a panel’s header. Off, Escape and the panel’s rail button still close it.' },
   { id: 'panelFolderCounts', section: 'appearance', label: 'Folder counts', aria: 'Show folder counters', description: '', keywords: 'folder counters count number bookmarks panel items Show folder counters How many items a bookmarks folder holds, beside its name.' },
   { id: 'panelAutoClose', section: 'appearance', label: 'Auto-close', aria: 'Close floating panels when you click elsewhere', description: '', keywords: 'floating panel auto close dismiss click outside overlay flyout Close floating panels when you click elsewhere Bookmarks and Customize float over the page. Off, they stay until you close them.' },
@@ -1022,7 +1056,7 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Groups on bar', aria: 'Show tab groups in the bookmarks bar', description: '', keywords: 'tab groups bookmarks bar islands Show tab groups in the bookmarks bar Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
   // --- layout (thread T6) --- the side panel's edge follows the layout preset above (opposite vertical tabs).
-  { id: 'fontSize', section: 'appearance', label: 'Text size', description: '', keywords: 'font size small medium large text Text size The size of text on Bowser’s own pages.' },
+  { id: 'fontSize', section: 'appearance', label: 'Text size', description: '', keywords: 'font size small medium large text Text size The size of text in Bowser’s bars, menus, panels and pages. Web pages keep theirs; Page zoom sets those.' },
   { id: 'uiFont', section: 'appearance', label: 'Font', aria: 'Customise fonts', description: '', keywords: 'font family typeface custom ui Customise fonts A font family to use instead of the system font.' },
   { id: 'defaultZoom', section: 'appearance', label: 'Page zoom', description: '', keywords: 'zoom default starting percent page Page zoom The zoom new pages start at.' },
   { id: 'showZoomIndicator', section: 'appearance', label: 'Zoom indicator', aria: 'Show the zoom indicator', description: '', keywords: 'zoom indicator toolbar percent Show the zoom indicator Shows the zoom level in the toolbar when it isn’t 100%.' },
@@ -1046,8 +1080,8 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'startThumbSize', section: 'startpage', label: 'Tile size', description: '', keywords: 'speed dial thumbnail size tiny small medium large huge tiles Tile size How large each speed dial tile is.' },
   { id: 'startDragReorder', section: 'startpage', label: 'Drag to reorder', aria: 'Drag speed dials to reorder them', description: '', keywords: 'speed dial drag drop reorder move sort Drag to reorder Drag speed dials to reorder them, or onto a folder to put them inside it. Alt and the arrow keys do the same.' },
   { id: 'startHomepage', section: 'startpage', label: 'Homepage', description: '', keywords: 'home page homepage address url Homepage The Home button opens this. Leave it empty for the start page.' },
-  { id: 'startupMode', section: 'startpage', label: 'Startup', aria: 'On startup', description: '', keywords: 'startup launch open start page last session where you left off homepage specific pages restore when bowser starts On startup What opens when Bowser starts.' },
-  { id: 'startupPages', section: 'startpage', label: 'Startup pages', aria: 'Pages to open at startup', description: '', keywords: 'startup pages specific urls tabs launch Pages to open at startup One address per line, up to eight. Used when Bowser starts with specific pages.' },
+  { id: 'startupMode', section: 'startpage', label: 'Startup', aria: 'What opens in front of your tabs at startup', description: '', keywords: 'startup launch open start page last session continue where you left off your tabs homepage specific pages restore when bowser starts On startup Your open tabs always come back. Tabs + homepage or Tabs + pages also opens those in front of them; a page already open is shown, not opened twice.' },
+  { id: 'startupPages', section: 'startpage', label: 'Startup pages', aria: 'Pages to open at startup', description: '', keywords: 'startup pages specific urls tabs launch Pages to open at startup One address per line, up to eight. Used when Startup is Tabs + pages.' },
   { id: 'startWidgets', section: 'startpage', label: 'Widgets', aria: 'Show widgets on the start page', description: '', keywords: 'widgets dashboard start page top sites sticky note date privacy statistics webpage Show the dashboard Widgets under the speed dials: top sites, bookmarks, a sticky note, the date, privacy statistics and a web page.' },
   { id: 'startWidgetColumns', section: 'startpage', label: 'Widget columns', description: '', keywords: 'widgets columns row dashboard Widget columns The most widgets in a row, 1 to 4.' },
   { id: 'startWidgetHeight', section: 'startpage', label: 'Widget height', description: '', keywords: 'widgets height tall regular dashboard Widget height Regular or tall widgets.' },
@@ -1055,37 +1089,37 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'startWidgetColor', section: 'startpage', label: 'Custom colour', aria: 'Custom widget colour', description: '', keywords: 'widgets colour color custom background Custom widget colour Used when the widget background is Custom.' },
   { id: 'startWidgetDrag', section: 'startpage', label: 'Drag to rearrange', aria: 'Drag to rearrange widgets', description: '', keywords: 'widgets drag rearrange reorder move Drag to rearrange widgets Drag a widget by its handle, or press Alt and an arrow key on it.' },
   // --- end start page ---
-  { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.' },
-  { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.' },
-  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'YouTube ads', aria: 'Block YouTube video ads', description: '', keywords: 'youtube video ads block skip Block YouTube video ads Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.' },
+  { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.', reload: true },
+  { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.', reload: true },
+  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'YouTube ads', aria: 'Block YouTube video ads', description: '', keywords: 'youtube video ads block skip Block YouTube video ads Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.', reload: true },
   // Spoiler Firewall for GTA VI (src/spoiler.rs): one line each like every row; the longer wording is the control's aria text and the search keywords.
-  { id: 'spoilerProtection', section: 'privacy', label: 'GTA VI spoilers', aria: 'Hide GTA VI spoilers', description: '', keywords: 'spoiler spoilers gta 6 vi grand theft auto rockstar firewall protection shield hide block leak ending Hide GTA VI spoilers Spoiler Firewall for GTA VI is built in and on by default. It covers every tab, including private tabs and guest windows.' },
-  { id: 'spoilerMode', section: 'privacy', label: 'Hide', aria: 'How much to hide', description: '', keywords: 'spoiler mode lockdown strict balanced gta firewall level How much to hide' },
-  { id: 'spoilerReducedEffects', section: 'privacy', label: 'Simple covers', aria: 'Simpler spoiler covers', description: '', keywords: 'spoiler reduced effects motion blur animation performance accessibility gta Simpler spoiler covers Opaque covers with no blur or animation. Lighter on slow computers.' },
-  { id: 'spoilerOcr', section: 'privacy', label: 'Scan images', aria: 'Scan images for text on this device', description: '', keywords: 'spoiler ocr image text screenshot scan on-device gta Scan images for text Reads text in images on sites like X, Reddit and YouTube so a spoiler inside a screenshot is hidden too. Nothing leaves your computer. Needs a Windows OCR language; images in other formats may not be read.' },
+  { id: 'spoilerProtection', section: 'privacy', label: 'GTA VI spoilers', aria: 'Hide GTA VI spoilers', description: '', keywords: 'spoiler spoilers gta 6 vi grand theft auto rockstar firewall protection shield hide block leak ending Hide GTA VI spoilers Spoiler Firewall for GTA VI is built in and on by default. It covers every tab, including private tabs and guest windows.', reload: true },
+  { id: 'spoilerMode', section: 'privacy', label: 'How much to hide', description: '', keywords: 'spoiler mode lockdown strict balanced gta firewall level hide How much to hide', reload: true },
+  { id: 'spoilerReducedEffects', section: 'privacy', label: 'Simple covers', aria: 'Simpler spoiler covers', description: '', keywords: 'spoiler reduced effects motion blur animation performance accessibility gta Simpler spoiler covers Opaque covers with no blur or animation. Lighter on slow computers.', reload: true },
+  { id: 'spoilerOcr', section: 'privacy', label: 'Scan images', aria: 'Scan images for text on this device', description: '', keywords: 'spoiler ocr image text screenshot scan on-device gta Scan images for text Reads text in images on sites like X, Reddit and YouTube so a spoiler inside a screenshot is hidden too. Nothing leaves your computer. Needs a Windows OCR language; images in other formats may not be read.', reload: true },
   { id: 'spoilerFeed', section: 'privacy', label: 'Term updates', aria: 'Download spoiler term updates', description: '', keywords: 'spoiler term updates feed word list download signed gta names missions Download spoiler term updates Fetches a small signed word list about every 12 hours so new names and missions are covered before Bowser itself updates. It sends no browsing data and can only add protection.' },
   { id: 'spoilerNote', section: 'privacy', label: 'Spoiler limits', aria: SPOILER_LIMITS_NOTE, description: '', keywords: 'spoiler limits limitations images screenshots video notifications unofficial gta What spoiler protection cannot do ' + SPOILER_LIMITS_NOTE },
-  { id: 'allow', section: 'privacy', label: 'Skipped sites', aria: 'Sites the blocker skips', description: '', keywords: 'allow list exceptions whitelist adblock Sites the blocker skips The blocker never blocks on these sites.' },
-  { id: 'tracking', section: 'privacy', label: 'Tracking', aria: 'Tracking prevention', description: '', keywords: 'privacy cookies strict balanced fingerprinting Tracking prevention Balanced is the default. Strict blocks more trackers but can break some sites.', restart: true },
+  { id: 'allow', section: 'privacy', label: 'Skipped sites', aria: 'Sites the blocker skips', description: '', keywords: 'allow list exceptions whitelist adblock Sites the blocker skips The blocker never blocks on these sites.', reload: true },
+  { id: 'tracking', section: 'privacy', label: 'Tracking', aria: 'Tracking prevention', description: '', keywords: 'privacy cookies strict balanced fingerprinting Tracking prevention Balanced is the default. Strict blocks more trackers but can break some sites. Applies at once, to open tabs too.' },
   { id: 'history', section: 'privacy', label: 'History', aria: 'Save history', description: '', keywords: 'history visits record browsing save Save history Pages you visit are listed in History and suggested in the address bar.' },
   { id: 'historyRetention', section: 'privacy', label: 'Keep history', aria: 'Keep history for', description: '', keywords: 'history retention expire delete old days week month year forever session Keep history for Older visits are deleted from the history list. Session only clears it when Bowser closes.' },
   { id: 'siteRules', section: 'privacy', label: 'Site rules', aria: 'Sites with their own choices', description: '', keywords: 'site exceptions per site level blocking cookie notices list shield Sites with their own choices Give one site its own blocking level or cookie-notice choice.' },
   { id: 'blockLists', section: 'privacy', label: 'Block lists', aria: 'Blocking lists', description: '', keywords: 'sources filter lists easylist easyprivacy subscription url file add cookie list Blocking lists Switch lists on or off, add one from an address or a file, or remove one you added.' },
   { id: 'deleteData', section: 'privacy', label: 'Clear data', aria: 'Clear browsing data', description: '', keywords: 'clear delete browsing data history cookies cache storage logins sign-ins autofill site settings hour day week Cannot be undone Clear browsing data Delete history, cookies, cache and other site data for a period you choose.' },
   { id: 'dashboard', section: 'privacy', label: 'Dashboard', aria: 'Privacy dashboard', description: '', keywords: 'clear cookies cache data permissions camera microphone location notifications statistics Privacy dashboard Review site permissions and blocking statistics.' },
-  { id: 'efficiency', section: 'performance', label: 'Efficiency', description: '', keywords: 'battery power eco energy saver laptop efficiency mode Efficiency On battery, hidden tabs sleep sooner and use less memory.' },
+  { id: 'efficiency', section: 'performance', label: 'Efficiency', aria: 'Efficiency mode', description: '', keywords: 'battery power eco energy saver laptop efficiency mode Efficiency While it is in force, hidden tabs use less memory and sleep sooner. Auto: on battery or with Battery saver on.' },
   { id: 'sleep', section: 'performance', label: 'Sleep tabs', aria: 'Sleep unused tabs', description: '', keywords: 'memory discard suspend hibernate inactive hidden tabs Sleep unused tabs Hidden tabs go to sleep after a while to free memory.' },
-  { id: 'sleepAfter', section: 'performance', label: 'Sleep after', description: '', keywords: 'delay timeout minutes memory Sleep after How long a tab stays hidden before it sleeps.' },
+  { id: 'sleepAfter', section: 'performance', label: 'Sleep after', aria: 'Sleep tabs after', description: '', keywords: 'delay timeout minutes memory Sleep after How long a tab stays hidden before it sleeps. Only while Sleep tabs is on.' },
   ...ADDRESS_ROWS.filter((row) => row.section !== 'appearance'),
   ...PAGE_TOOLS_ROWS, // --- page tools (T7) ---
   ...FEED_ROWS, // --- toolbars and feeds (thread T13) ---
   // --- keyboard and quick commands (docs/commands.md) ---
   { id: 'kbEnabled', section: 'keyboard', label: 'Shortcuts', aria: 'Keyboard shortcuts', description: '', keywords: 'keyboard shortcuts enable disable hotkeys keybindings keys ctrl shift k Keyboard shortcuts Turn Bowser’s shortcuts on or off. Quick commands stays available.' },
-  { id: 'kbSingleKey', section: 'keyboard', label: 'Single-key', aria: 'Allow single-key shortcuts', description: '', keywords: 'single key shortcuts letter number plain keys Allow single-key shortcuts Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.' },
+  { id: 'kbSingleKey', section: 'keyboard', label: 'Single-key shortcuts', aria: 'Allow single-key shortcuts', description: '', keywords: 'single key shortcuts letter number plain keys Allow single-key shortcuts Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.' },
   { id: 'kbAltMenu', section: 'keyboard', label: 'Alt menu', aria: 'Alt opens the menu', description: '', keywords: 'alt key menu windows Alt opens the menu Pressing and releasing Alt on its own opens the Bowser menu. Off, it does nothing.' },
   { id: 'kbFocusCycling', section: 'keyboard', label: 'F6 focus', aria: 'F6 moves between the address bar and the page', description: '', keywords: 'f6 focus cycle address bar page tab F6 moves between the address bar and the page F6 jumps from the address bar to the page, and back. Off, F6 always goes to the address bar.' },
   { id: 'kbSites', section: 'keyboard', label: 'Site shortcuts', aria: 'Prioritise website shortcuts on these sites', description: '', keywords: 'website shortcuts priority sites page keys web app gmail docs Prioritise website shortcuts on these sites On a site listed here, shortcuts the page uses go to the page. The browser keeps the shortcuts marked Browser priority below. The “Prioritise website shortcuts on this site” command adds or removes the site you are on.' },
-  { id: 'kbEditor', section: 'keyboard', label: 'Bindings', aria: 'Edit shortcuts', description: '', keywords: 'shortcuts assign rebind remap clear restore reset cheat sheet ctrl f1 keybindings browser priority Shortcuts Give a command several shortcuts, clear them or restore the defaults. Ctrl+F1 shows the cheat sheet. Editing shortcuts such as Ctrl+C and Ctrl+V cannot be taken.' },
+  { id: 'kbEditor', section: 'keyboard', label: 'Key bindings', aria: 'Edit shortcuts', description: '', keywords: 'shortcuts assign rebind remap clear restore reset cheat sheet ctrl f1 keybindings browser priority Shortcuts Give a command several shortcuts, clear them or restore the defaults. Ctrl+F1 shows the cheat sheet. Editing shortcuts such as Ctrl+C and Ctrl+V cannot be taken.' },
   { id: 'qcTypes', section: 'commands', label: 'Result types', description: '', keywords: 'quick commands palette results types order prefix bookmark note tab history command action workspace calculator Result types Choose which kinds of result Quick commands shows and in what order. Type bkm:, tb:, cmd: and similar before a search to look in one place. Shift or the right arrow completes the top result.' },
   { id: 'qcMax', section: 'commands', label: 'Result limit', aria: 'Visible results', description: '', keywords: 'quick commands palette results limit maximum number Visible results The most results shown for a typed search.' },
   { id: 'qcKeepLast', section: 'commands', label: 'Remember search', aria: 'Keep the last typed search', description: '', keywords: 'quick commands palette remember last typed value query Keep the last typed search Quick commands opens with what you typed last time, selected, so the first key you press replaces it.' },
@@ -1095,7 +1129,7 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'chains', section: 'commands', label: 'Chains', aria: 'Command chains', description: '', keywords: 'command chains macro sequence delay milliseconds test clone create edit delete automation Command chains Run several commands one after another, with a delay in milliseconds before each. Run a chain from Quick commands, give it a shortcut in Keyboard, or test it here.' },
   // --- end keyboard and quick commands ---
   { id: 'downloadDir', section: 'downloads', label: 'Download folder', description: '', keywords: 'download folder directory save path where change location Download folder' },
-  { id: 'downloadAsk', section: 'downloads', label: 'Ask where', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above.' },
+  { id: 'downloadAsk', section: 'downloads', label: 'Ask where to save', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above. On, the Save dialog opens in it.' },
   { id: 'media', section: 'media', label: 'Playback', aria: 'Media support', description: '', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode Media support Runs on this device only and sends nothing.' },
   { id: 'passwords', section: 'passwords', label: 'Passwords and autofill', description: '', keywords: 'password passwords saved logins sign-in credentials autofill auto fill form address addresses name email phone card cards credit debit payment checkout generator generate strong import export csv chrome edge firefox safari 1password bitwarden lastpass dashlane nordpass proton keepass passkeys weak reused' },
   { id: 'extensions', section: 'extensions', label: 'Extensions', description: '', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable installed Extensions Turn extensions on or off, or remove one.' },

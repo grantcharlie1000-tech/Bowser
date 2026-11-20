@@ -661,6 +661,8 @@
    whose every row has left (the start page's rows under More) goes with them. */
 :where(#app.sp-root) .sp-row.is-na:not(:where(.is-searching) *) { display: none; }
 :where(#app.sp-root) .sp-group:has(.sp-row.is-na):not(:has(.sp-row:not(.is-na))):not(:where(.is-searching) *) { display: none; }
+/* A More whose every row has left (each tunes something switched off) goes too: its button would open on nothing. */
+:where(#app.sp-root) .sp-more:has(.sp-row.is-na):not(:has(.sp-row:not(.is-na))):not(:where(.is-searching) *) { display: none; }
 
 @media (forced-colors: active) {
   :where(#app.sp-root) .sp-row.is-off > .sp-text > .sp-label {

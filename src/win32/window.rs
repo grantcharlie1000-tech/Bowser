@@ -202,7 +202,9 @@ enum DeferredChromeCommand {
     // --- tab options --- the strip's Closed tabs button: the list of closed tabs at the point.
     ClosedTabs { x: i32, y: i32 },
     // --- end tab options ---
-    IslandMenu { id: TabId, x: i32, y: i32 },
+    /// The group editor for `id`'s island at (x, y). `edit`: opened by a command (not the ball), so
+    /// its name field takes the keyboard.
+    IslandMenu { id: TabId, x: i32, y: i32, edit: bool },
     BeginDrag,
     ToggleMaximize,
     SystemMenu,
@@ -2700,6 +2702,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         }
         // Take the URL first so the app borrow ends before submit_url borrows it again.
         let launch_decided = App::launch_has_target(&app); // --- start page ---
+        let launch_restores = App::launch_restores(&app);
         App::restore_pending_session(&app);
         sync_split_ratio(hwnd, App::split_view(&app));
         if App::split_view(&app).is_some()
@@ -2708,7 +2711,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             App::update_split_bounds(&app, panes);
         }
         App::submit_initial_url(&app);
-        App::apply_startup_plan(&app, launch_decided); // --- start page --- homepage or specific pages
+        App::apply_startup_plan(&app, launch_decided, launch_restores); // --- start page --- homepage or specific pages, in front of restored tabs
         // A link that arrived while the window was being created opens now, after restore.
         App::release_external_urls(&app);
         // Further windows left open when Bowser last stopped come back as windows of their own.
@@ -4281,7 +4284,7 @@ unsafe extern "system" fn window_proc(
                                 .unwrap_or(false);
                                 if domain_group {
                                     if let Some(anchor) = ball_anchor(hwnd, id) {
-                                        island_menu::open_now(hwnd, app, id, anchor);
+                                        island_menu::open_now(hwnd, app, id, anchor, false);
                                     }
                                 } else {
                                     let app = app.clone();
@@ -4317,7 +4320,7 @@ unsafe extern "system" fn window_proc(
                         Hit::SidebarGroup(i) => {
                             card::cancel(hwnd);
                             if let Some((id, anchor)) = sidebar_group_ball(hwnd, i) {
-                                island_menu::open_now(hwnd, app, id, anchor);
+                                island_menu::open_now(hwnd, app, id, anchor, false);
                             }
                         }
                         Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => {
@@ -5269,7 +5272,7 @@ pub(super) fn open_stack_editor(hwnd: HWND, app: &AppRef, id: TabId) {
         .map(|ball| (ball.left + ball.width() / 2, ball.bottom))
         .or_else(|| cursor_client_point(hwnd));
     if let Some((x, y)) = anchor {
-        defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id, x, y });
+        defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id, x, y, edit: true });
     }
 }
 /// --- tab stacks (T10) --- the tab a native tab drag released now stacks onto: the one the held tab
@@ -11232,10 +11235,10 @@ fn run_deferred_html_command(hwnd: HWND) {
             show_closed_tabs_menu(hwnd, &app, x, y);
         }
         // --- end tab options ---
-        DeferredChromeCommand::IslandMenu { id, x, y } => {
+        DeferredChromeCommand::IslandMenu { id, x, y, edit } => {
             if App::tab_ids(&app).contains(&id) {
                 card::cancel(hwnd);
-                island_menu::open_now(hwnd, &app, id, Rect::new(x, y, x + 1, y + 1));
+                island_menu::open_now(hwnd, &app, id, Rect::new(x, y, x + 1, y + 1), edit);
             }
         }
         DeferredChromeCommand::BeginDrag => begin_html_drag(hwnd),
@@ -11408,7 +11411,7 @@ fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
             let Some((x, y)) = cursor_client_point(hwnd) else {
                 return;
             };
-            defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id: group.tab, x, y });
+            defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id: group.tab, x, y, edit: false });
         }
         // The handle was dragged (or moved by the keyboard): the whole island moves in front of
         // `before` (`0` = the end of the strip). An unknown `before` is ignored, like `tabmove`'s.

@@ -2269,7 +2269,9 @@ pub fn card_json(tok: u32, card: &HoverCard) -> String {
 
 /// `{"v":1,"t":"hover","tok":..,"kind":"island",...}`. Same caps as [`card_json`]; the name and
 /// hint are capped at `MAX_GROUP_NAME_CHARS`.
-pub fn island_json(tok: u32, island: &HoverIsland) -> String {
+/// `edit`: the menu was opened to edit the group, so the page focuses and selects the name field
+/// (`"edit":true`, left out otherwise).
+pub fn island_json(tok: u32, island: &HoverIsland, edit: bool) -> String {
     let mut budget = MAX_HOVER_FAV_TEXT;
     let hidden = island.rows.len().saturating_sub(MAX_HOVER_ROWS);
     let swatches = island.swatches.len().min(MAX_HOVER_SWATCHES);
@@ -2289,6 +2291,9 @@ pub fn island_json(tok: u32, island: &HoverIsland) -> String {
         write_hover_rows(out, &island.rows, &mut budget);
         out.uint("more", (island.more + hidden) as u64);
         out.string("close", truncate_chars(&island.close, MAX_GROUP_NAME_CHARS));
+        if edit {
+            out.bool("edit", true);
+        }
     })
 }
 
@@ -5069,7 +5074,7 @@ mod tests {
         assert!(card.contains("\"marker\":-1"));
         assert!(card.contains("\"markers\":[\"#fff\",\"\"]"));
         assert!(card.ends_with("\"fav\":\"\"}"), "the card lists no other tabs: {card}");
-        let island = island_json(2, &HoverIsland {
+        let model = HoverIsland {
             name: "n".repeat(100),
             hint: "Docs".into(),
             slot: 40,
@@ -5077,10 +5082,16 @@ mod tests {
             rows,
             more: 0,
             close: "Close Tab Island · 1 Tab".into(),
-        });
+        };
+        let island = island_json(2, &model, false);
         assert!(island.contains(&format!("\"name\":\"{}\"", "n".repeat(MAX_GROUP_NAME_CHARS))));
         assert!(island.contains("\"slot\":1"));
         assert!(island.contains("\"more\":3"));
+        assert!(!island.contains("\"edit\""), "a hover or a click on the ball leaves the keyboard alone");
+        // Opened to edit the group ("Add tab to new group"): the page focuses the name field.
+        let editing = island_json(2, &model, true);
+        assert!(editing.ends_with(",\"edit\":true}"), "{editing}");
+        assert_eq!(editing.replace(",\"edit\":true}", "}"), island);
     }
 
     #[test]
@@ -5119,7 +5130,7 @@ mod tests {
             rows: vec![HoverRow { title: "Docs".into(), active: false, png: None }],
             more: 0,
             close: "Close Tab Island · 1 Tab".into(),
-        });
+        }, false);
         let fixture = format!(
             "{{\"tooltip\":{},\"card\":{card},\"island\":{island},\"hide\":{}}}\n",
             tooltip_json(6, "Back"),

@@ -5,6 +5,17 @@
 
 export const STARTUP_MODES = ['start_page', 'last_session', 'homepage', 'specific_pages'] as const;
 export type StartupMode = typeof STARTUP_MODES[number];
+/**
+ * The choices the settings page offers. The saved tabs come back on every start, so each choice is what
+ * opens in front of them; `start_page` (from before tabs always came back) is read as `last_session`
+ * and never offered (src/start_page.rs `Startup`).
+ */
+export const STARTUP_CHOICES = ['last_session', 'homepage', 'specific_pages'] as const;
+export type StartupChoice = typeof STARTUP_CHOICES[number];
+/** The choice a saved mode is: the old `start_page` is `last_session`. */
+export function startupChoice(mode: StartupMode): StartupChoice {
+  return mode === 'start_page' ? 'last_session' : mode;
+}
 export const GROUP_REOPEN = ['last', 'first'] as const;
 export type GroupReopen = typeof GROUP_REOPEN[number];
 export const TITLE_MODES = ['always', 'never', 'auto'] as const;

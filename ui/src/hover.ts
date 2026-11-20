@@ -292,7 +292,15 @@ function buildIsland(msg: HoverIslandMsg, act: Act): IslandView {
   // The popup never activates on its own: the field asks Rust for the keyboard when clicked.
   input.addEventListener('pointerdown', () => act({ a: 'focus' }));
   input.addEventListener('input', syncClear);
-  input.addEventListener('blur', commit);
+  // Leaving the field for a control of this menu (a swatch, a member row, Close) commits at that
+  // control's click instead (below). Committing here, on the press, made Rust redraw the menu between
+  // the press and the release, so the control under the pointer was replaced and the click was lost:
+  // the first colour picked after typing a name did nothing.
+  input.addEventListener('blur', (ev) => {
+    const to = ev.relatedTarget;
+    if (to !== null && to !== undefined && menu.contains(to as Node)) return;
+    commit();
+  });
   input.addEventListener('keydown', (ev) => {
     if (ev.isComposing) return;
     if (ev.key === 'Enter') {
@@ -377,6 +385,10 @@ export function startHover(root: HTMLElement): void {
     }
     document.body.dataset.hoverKind = msg.kind;
     if (root.firstElementChild !== content || root.childElementCount !== 1) root.replaceChildren(content);
+    // Opened to edit ("Add tab to new group"): the name field has the keyboard as soon as Rust
+    // activates the popup, with the name selected, so typing names the group and Enter keeps it.
+    // Only once it is in the document: focus() on a detached field does nothing.
+    if (msg.kind === 'island' && msg.edit === true && island) { island.input.focus(); island.input.select(); }
     // Layout is synchronous: the popup is hidden, so no animation frame may run before Rust shows it.
     const box = content.getBoundingClientRect();
     sendPopupSize(msg.tok, Math.max(1, Math.min(4000, Math.ceil(box.width))), Math.max(1, Math.min(4000, Math.ceil(box.height))));

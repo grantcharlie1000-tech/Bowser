@@ -17,6 +17,7 @@ import { mountProtection } from './panels/protection'; // blocking, history and 
 import { mountExtensionsSection } from './extensions-section';
 import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
+import { parseCommandsSnapshot } from './commands-logic';
 import { mountStartSection, startPageShown } from './settings-start'; // --- start page ---
 import { mountProfiles, paintDisc } from './settings-profiles'; // --- profiles ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
@@ -32,7 +33,7 @@ import { REFRESH_CHOICES, feedAssignment, refreshLabel, type RefreshChoice } fro
 import {
   DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
   TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig, presetSidebarPinned,
-  rememberOwnLayout, selectedTile, tabBarEdge, uiZoomText, type LayoutConfig, type Preset, type StatusBar,
+  centringApplies, rememberOwnLayout, selectedTile, sidebarShown, tabBarEdge, uiZoomText, type LayoutConfig, type Preset, type StatusBar,
   type UiDensity,
 } from './layout-logic';
 // --- end layout ---
@@ -40,14 +41,17 @@ import { mountPageToolsSection } from './page-tools-section'; // --- page tools 
 import { mountPasswordsSection } from './passwords-section';
 import { mountWelcome } from './welcome'; // the first-run welcome (docs/design/welcome.md)
 import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
-import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
-  BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
+  TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, homepageChoiceTip, numberLabel, tabRowRests, textApplies,
+  type TabOptionSpec, type TabOptionValues, type TabRowContext,
+} from './tab-options-logic';
+import {
+  BOOKMARKS_BAR_MODES, EFFICIENCY_ARIA, EFFICIENCY_LABELS, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   ROWS, SPOILER_LIMITS_NOTE, SPOILER_MODES, SPOILER_MODE_HINTS, SPOILER_MODE_LABELS, SPOILER_OFF_WARNING, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
-  addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
+  addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, restingPageRows, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SpoilerMode, type TabLayout, type ThemeMode, type TrackingPrevention,
-  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RESTART_NOTE, anchorGroup, areaOf, placementOf, rowTier, type AreaSpec,
+  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RELOAD_NOTE, RESTART_NOTE, anchorGroup, areaOf, placementOf, rowTier, type AreaSpec,
   SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_GROUPS, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
   addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
@@ -102,6 +106,12 @@ export function isTyping(target: EventTarget | null): boolean {
   if (!node || typeof node.tagName !== 'string') return false;
   const tag = node.tagName.toUpperCase();
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || node.isContentEditable === true;
+}
+
+/** A row whose control cannot act now: dimmed (`is-off`) and out of the page (`is-na`; a search still finds it), as settings-start.ts does. */
+function restRow(row: HTMLElement, off: boolean): void {
+  row.classList.toggle('is-off', off);
+  row.classList.toggle('is-na', off);
 }
 
 function cmd(fields: PanelFields): boolean {
@@ -428,6 +438,14 @@ export function startSettingsPage(root: HTMLElement): void {
   const sectionNodes = new Map<SettingsSection, HTMLElement>();
   const navButtons = new Map<SettingsSection, HTMLButtonElement>();
   const rows = new Map<string, RowNode>();
+  /** Row `id` cannot act now: dimmed (`is-off`) and, with `gone`, out of the page (`is-na`). */
+  const rest = (id: string, off: boolean, gone = false): void => {
+    const node = rows.get(id)?.root;
+    node?.classList.toggle('is-off', off);
+    node?.classList.toggle('is-na', gone);
+  };
+  /** Row `id` only tunes something that is off: out of the page (a search still lists it, dimmed). */
+  const away = (id: string, gone: boolean): void => rest(id, gone, gone);
   const groups: Group[] = [];
   let cardSeq = 0;
 
@@ -539,9 +557,12 @@ export function startSettingsPage(root: HTMLElement): void {
         }
         const described = [desc?.id, flag?.id].filter((part): part is string => part !== undefined).join(' ');
         if (described !== '' && !target.hasAttribute('aria-describedby')) target.setAttribute('aria-describedby', described);
+        if (spec.reload) target.setAttribute('aria-description', RELOAD_NOTE);
       }
       node.append(wrap);
     }
+    // A change that reaches pages as they load says so in the row's tooltip (no sub-line).
+    if (spec.reload) node.setAttribute('data-tip', RELOAD_NOTE);
     into.append(node);
     const result = { spec, root: node, label, desc, card: into, flag, target };
     rows.set(id, result);
@@ -653,8 +674,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(layoutCard, 'tabBarVisible', tabBarVisible.root);
   const addressBarVisible = switchControl((on) => change((d) => { d.layout.addressBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'addressBarVisible', addressBarVisible.root);
-  const titleBar = switchControl((on) => change((d) => { d.layout.showTitleBar = on; rememberOwnLayout(d); }));
-  row(layoutCard, 'showTitleBar', titleBar.root);
   const statusBarCtl = segmentedControl<StatusBar>('Status bar', STATUS_BARS.map((key) => [key, key === 'overlay' ? 'Overlay' : 'Hidden', STATUS_BAR_LABELS[key]] as const), (value) => change((d) => { d.layout.statusBar = value; rememberOwnLayout(d); }));
   row(layoutCard, 'statusBar', statusBarCtl.root);
   const densityCtl = segmentedControl<UiDensity>('Density', UI_DENSITIES.map((key) => [key, key === 'regular' ? 'Regular' : 'Compact'] as const), (value) => change((d) => { d.layout.uiDensity = value; }));
@@ -699,7 +718,9 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // Theme
   const themeCard = card('appearance', 'Theme');
-  const theme = segmentedControl<ThemeMode>('Palette', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium' : 'System', key === 'helium' ? 'Helium colours' : 'System'] as const), (value) => change((d) => { d.theme = value; }));
+  // A custom accent wins over either palette (theme.rs `resolved_accent`), so picking a palette puts the
+  // accent back to that palette's; while one is chosen no palette shows as picked, so either can be.
+  const theme = segmentedControl<ThemeMode>('Palette', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium' : 'Windows', key === 'helium' ? 'Helium colours' : 'Windows accent colour'] as const), (value) => change((d) => { d.theme = value; d.themeAccent = ''; }));
   row(themeCard, 'theme', theme.root);
   const accentInput = el('input', 'sp-color');
   accentInput.type = 'color';
@@ -1255,7 +1276,7 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // Performance
   const powerCard = card('performance', 'Power');
-  const efficiency = segmentedControl<EfficiencyMode>('Efficiency mode', EFFICIENCY_MODES.map((mode) => [mode, mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'] as const), (value) => change((d) => { d.efficiencyMode = value; }));
+  const efficiency = segmentedControl<EfficiencyMode>('Efficiency mode', EFFICIENCY_MODES.map((mode) => [mode, EFFICIENCY_LABELS[mode], EFFICIENCY_ARIA[mode]] as const), (value) => change((d) => { d.efficiencyMode = value; }));
   row(powerCard, 'efficiency', efficiency.root);
   const memoryCard = card('performance', 'Memory');
   const sleep = switchControl((on) => change((d) => { d.sleepEnabled = on; }));
@@ -1284,7 +1305,7 @@ export function startSettingsPage(root: HTMLElement): void {
       sleepSelect.set(String(value));
     }
   };
-  row(memoryCard, 'sleepAfter', sleepHost);
+  const sleepAfterRow = row(memoryCard, 'sleepAfter', sleepHost);
 
   // --- start page --- the Start page section builds its own rows through this page's helpers
   const startSection = mountStartSection({
@@ -1307,7 +1328,37 @@ export function startSettingsPage(root: HTMLElement): void {
     barCard: bookmarksCard,
     switchControl,
     segmentedControl,
+    painted: () => paintDependents(),
   });
+
+  /**
+   * Rows that cannot act in the state other rows leave them in. Each is disabled and dimmed (`is-off`);
+   * one that only tunes something switched off also leaves the page (`is-na`; a search still lists it),
+   * as the start page's rows do. An unreadable file locks every control and the banner says why, so
+   * the rows are not dimmed for that.
+   */
+  const paintDependents = (): void => {
+    const s = snapshot;
+    const d = draft;
+    if (!s || !d) return;
+    const readable = s.readable;
+    // "Centre address" moves the field only where it has a toolbar row of its own beside free room.
+    const centring = centringApplies(d.tabLayout, d.layout.tabBarVisible, d.layout.addressBarPosition);
+    centred.disable(!readable || !centring);
+    rest('centredAddressBar', readable && !centring);
+    // "Full address" shows everything, so the short form has nothing to shorten (omnibox.rs `address_display`).
+    const full = addressSections.fullAddress();
+    minimal.disable(!readable || full);
+    rest('minimalUrl', readable && full);
+    // The bookmarks bar's own rows only matter while it can show; pinning groups only while they show on it.
+    const bar = d.bookmarksBar !== 'never';
+    bookmarksGroups.disable(!readable || !bar);
+    away('bookmarksBarTabGroups', readable && !bar);
+    const barGroups = bar && d.bookmarksBarTabGroups;
+    pinGroups.disable(!readable || !barGroups);
+    away('pinNewTabGroups', readable && !barGroups);
+    addressSections.barRows(!readable || !bar, readable && !bar);
+  };
   // Simple cannot wait for the address list: the settings engine id is enough for a right-aligned name.
   const engineValue = el('span', 'sp-value sp-engine-value');
   rows.get('searchDefault')?.root.querySelector('.sp-ctl')?.append(engineValue);
@@ -1450,7 +1501,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // Updates
   const updateCard = card('updates');
   const autoUpdate = switchControl((on) => { if (cmd({ a: 'autoupdate', on })) pending += 1; });
-  row(updateCard, 'autoUpdate', autoUpdate.root);
+  const autoUpdateRow = row(updateCard, 'autoUpdate', autoUpdate.root);
   const statusBox = el('div', 'sp-update');
   const statusIcon = el('span', 'sp-update-icon');
   const statusText = el('div', 'sp-text');
@@ -1885,6 +1936,27 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   lockLater();
 
+  // ---- rows that cannot act now ----
+  // As on the start page: a row whose switch cannot change anything in this state is disabled and leaves
+  // the page (`is-na`; a search still finds it, dimmed), instead of looking live. `restingPageRows` says
+  // which; the Keyboard's own snapshot says whether shortcuts are on at all.
+  let shortcutsOn = true;
+  const restingControls: ReadonlyArray<readonly [string, { disable(off: boolean): void }]> = [
+    ['spoilerMode', spoilerMode], ['spoilerReducedEffects', spoilerEffects], ['spoilerOcr', spoilerOcr], ['translateAuto', translateAuto],
+    ['ctrlTabMru', mru], ['ctrlShiftCCopyLink', copyLink], ['ctrlSVerticalTabs', vTabs],
+  ];
+  const paintResting = (readable: boolean, translateOn: boolean): void => {
+    if (!draft) return;
+    const resting = restingPageRows(draft, translateOn, shortcutsOn);
+    for (const [id, control] of restingControls) {
+      const off = resting.has(id);
+      control.disable(!readable || off);
+      const node = rows.get(id)?.root;
+      node?.classList.toggle('is-off', readable && off);
+      node?.classList.toggle('is-na', readable && off);
+    }
+  };
+
   // ---- applying a snapshot ----
   const apply = (s: SettingsSnapshot): void => {
     const settle = pending === 0;
@@ -1896,7 +1968,6 @@ export function startSettingsPage(root: HTMLElement): void {
     layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
     tabBarVisible.set(d.layout.tabBarVisible);
     addressBarVisible.set(d.layout.addressBarVisible);
-    titleBar.set(d.layout.showTitleBar);
     statusBarCtl.set(d.layout.statusBar);
     densityCtl.set(d.layout.uiDensity);
     compactMenus.set(d.layout.compactMenus);
@@ -1920,7 +1991,11 @@ export function startSettingsPage(root: HTMLElement): void {
     width.value = String(d.sidebarWidth);
     paintWidth();
     pinStrip.set(d.sidebarPinned);
-    pinStrip.disable(!s.readable || (d.tabLayout !== 'vertical' && d.tabLayout !== 'vertical-right'));
+    // The sidebar's width and pin act only while the tabs are a sidebar on screen: otherwise the rows leave.
+    const sidebar = sidebarShown(d.tabLayout, d.layout.tabBarVisible);
+    pinStrip.disable(!s.readable || !sidebar);
+    width.disabled = !s.readable || !sidebar;
+    for (const id of ['sidebarWidth', 'sidebarPinned']) away(id, s.readable && !sidebar);
     grouping.set(d.automaticTabGrouping);
     previewImages.set(d.tabPreviewImages);
     previewMemory.set(d.tabPreviewMemory);
@@ -1929,7 +2004,7 @@ export function startSettingsPage(root: HTMLElement): void {
     edgeDrop.set(d.splitEdgeDrop);
     paintRules(s.workspaceRules); // --- tab stacks (T10) ---
     vTabs.set(d.ctrlSVerticalTabs);
-    theme.set(d.theme);
+    theme.set(d.themeAccent === '' ? d.theme : null);
     paintAccent(d.themeAccent);
     // --- toolbars and feeds (thread T13) ---
     toolbarOpen.disabled = !s.readable;
@@ -1946,6 +2021,7 @@ export function startSettingsPage(root: HTMLElement): void {
     frameless.set(d.frameless);
     // --- auto-hide (T11) --- the bar list only matters while the master switch is on.
     for (const [bar, sw] of autoHideBarSwitches) { sw.set(autoHideBarsList(d.autoHideBars).includes(bar)); sw.disable(!s.readable || !d.frameless); }
+    away('autoHideBars', s.readable && !d.frameless);
     autoHideFullscreen.set(d.autoHideFullscreen);
     // --- end auto-hide ---
     rounded.set(d.roundedContentFrame);
@@ -1980,16 +2056,46 @@ export function startSettingsPage(root: HTMLElement): void {
     efficiency.set(d.efficiencyMode);
     sleep.set(d.sleepEnabled);
     paintSleepSelect(d.sleepAfterSecs);
-    sleepSelect?.button.toggleAttribute('disabled', !d.sleepEnabled);
+    // "Sleep after" only acts while Sleep tabs is on: otherwise it rests and leaves the page (search still finds it).
+    sleepSelect?.button.toggleAttribute('disabled', !s.readable || !d.sleepEnabled);
+    restRow(sleepAfterRow.root, s.readable && !d.sleepEnabled);
     downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Downloads';
     downloadAsk.set(s.downloadAsk);
     translateOffer.set(s.translateOffer);
     translateAuto.set(s.translateAuto);
     paintTranslateSelect(s.translateTarget, s.translateTargets);
-    for (const control of tabControls.values()) { control.set(s.tabOptions); control.disable(!s.readable); }
+    // A tab option that cannot act now (tabs on the side, the switch it tunes off, a new tab with no page)
+    // rests: disabled, dimmed and out of the page until it can (`is-na`; a search still finds it).
+    const tabContext: TabRowContext = { tabsOnSide: simpleTabChoice(tabBarEdge(d.tabLayout)) === 'side', homepage: d.start.homepage, tabListHidden: !d.layout.tabBarVisible };
+    for (const [key, control] of tabControls) {
+      const rests = tabRowRests(key, s.tabOptions, tabContext);
+      control.set(s.tabOptions);
+      control.disable(!s.readable || rests);
+      const node = rows.get(key)?.root;
+      if (node) { setClass(node, 'is-off', s.readable && rests); setClass(node, 'is-na', s.readable && rests); }
+    }
+    // "New tab page: Homepage" with no homepage set opens the start page; its choice says so on hover.
+    const homeChoice = Array.from(rows.get('tabs_new_tab_page')?.root.querySelectorAll<HTMLElement>('[role="radio"]') ?? []).find((radio) => radio.textContent === 'Homepage');
+    const homeTip = homepageChoiceTip(d.start.homepage);
+    if (homeTip !== '') homeChoice?.setAttribute('data-tip', homeTip);
+    else homeChoice?.removeAttribute('data-tip');
+    // The workspace rules wait while Workspaces is off: their opener and their form rest too.
+    const rulesRest = tabRowRests('workspaceRules', s.tabOptions, tabContext);
+    for (const control of [ruleSite, ruleAdd]) control.disabled = rulesRest;
+    ruleSelect?.button.toggleAttribute('disabled', rulesRest);
+    const rulesOpener = openers.get('workspaceRules');
+    if (rulesOpener) {
+      rulesOpener.button.disabled = rulesRest;
+      setClass(rulesOpener.root, 'is-off', rulesRest);
+      setClass(rulesOpener.root, 'is-na', rulesRest);
+    }
+    const rulesNode = rows.get('workspaceRules')?.root;
+    if (rulesNode) setClass(rulesNode, 'is-off', rulesRest);
     themeRows.apply(s.themeOptions, s.readable, d.window.rangeButtons); // --- theme options ---
     autoUpdate.set(s.autoUpdate);
+    // A build that cannot update itself (a developer build) has nothing for the switch to turn on.
     autoUpdate.disable(s.update === 'unavailable');
+    restRow(autoUpdateRow.root, s.update === 'unavailable');
     const view = updateView(s);
     statusBox.dataset.tone = view.tone;
     statusIcon.replaceChildren(view.busy ? el('span', 'bw-spinner') : icon(view.tone === 'warn' ? 'warning' : view.action === 'restart' ? 'download' : 'check', { size: 20 }));
@@ -2012,22 +2118,18 @@ export function startSettingsPage(root: HTMLElement): void {
       layout, grouping, tracking, efficiency, sleep,
       previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, centred, minimal, loadProgress, frameless, autoHideFullscreen,
       rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube, spoilerSwitch,
-      presets, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
+      presets, tabBarVisible, addressBarVisible, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
       winAnimations, winRangeButtons, winFade, winScrollbars, winMonoIcons, panelClose, panelCounts, panelAutoClose, // --- window and panels (thread T9) ---
     ]) control.disable(!s.readable);
     paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
-    // The mode and the effects only matter while protection is on.
-    spoilerMode.disable(!s.readable || !d.spoilerProtection);
-    spoilerEffects.disable(!s.readable || !d.spoilerProtection);
-    spoilerOcr.disable(!s.readable || !d.spoilerProtection);
+    paintDependents(); // after the group-wide disable too: these rows also follow other rows
+    // The mode, the covers and the image scan only matter while protection is on: `paintResting` below.
     spoilerFeed.disable(!s.readable);
     spoilerOff.disabled = !s.readable;
     downloadAsk.disable(!s.readable);
     translateOffer.disable(!s.readable);
-    translateAuto.disable(!s.readable);
     translateSelect?.button.toggleAttribute('disabled', !s.readable);
     downloadChange.disabled = !s.readable;
-    width.disabled = !s.readable;
     allowInput.disabled = !s.readable;
     addButton.disabled = !s.readable;
     accentInput.disabled = !s.readable;
@@ -2039,6 +2141,7 @@ export function startSettingsPage(root: HTMLElement): void {
     themeMode.disable(!s.readable);
     tabPosition.set(simpleTabChoice(tabBarEdge(d.tabLayout)));
     tabPosition.disable(!s.readable);
+    paintResting(s.readable, s.translateOffer);
     lockLater(); // --- settings slim ---
     // A snapshot during a search (a change just saved) keeps the results where the reader is.
     if (query !== '') filter(false);
@@ -2396,6 +2499,12 @@ export function startSettingsPage(root: HTMLElement): void {
     if (message.t === 'snap' && message.p === 'passwords') { passwordsSection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'commands') {
       commandSections.receive(message);
+      const on = parseCommandsSnapshot(message.d)?.shortcutsEnabled;
+      if (on !== undefined && on !== shortcutsOn) {
+        shortcutsOn = on;
+        if (snapshot) paintResting(snapshot.readable, snapshot.translateOffer);
+        if (query !== '') filter(false);
+      }
       return;
     }
     if (message.t === 'snap' && message.p === 'address') { // --- address bar, search and bookmarks ---

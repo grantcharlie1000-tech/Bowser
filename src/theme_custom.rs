@@ -442,6 +442,8 @@ pub fn user_theme(settings: &Settings, system_accent: Option<Rgba>, page_accent:
         colouring: options.colouring,
         contrast: options.contrast,
         accent_from_page,
+        // With no accent at all, the limit applies to the palette's own accent colours.
+        own_accent_saturation: (accent.is_none() && options.saturation < 100).then_some(options.saturation),
     }
 }
 
@@ -879,6 +881,41 @@ mod tests {
         settings.themes.saturation = 0;
         let grey = user_theme(&settings, system, page).accent.unwrap();
         assert!(grey.r == grey.g && grey.g == grey.b, "saturation 0 is grey: {grey:?}");
+        assert_eq!(user_theme(&settings, system, page).own_accent_saturation, None, "a chosen accent is limited itself");
+    }
+
+    /// Settings > Appearance > Saturation did nothing on the default theme (Helium, no accent picked):
+    /// there was no accent to limit. The palette's own accent colours are limited instead.
+    #[test]
+    fn the_saturation_limit_reaches_the_palettes_own_accent_when_none_is_chosen() {
+        use crate::theme::{palette_base, themed, Appearance};
+        let mut settings = Settings::default();
+        assert_eq!(user_theme(&settings, None, None).own_accent_saturation, None, "100% changes nothing");
+        settings.themes.saturation = 0;
+        let user = user_theme(&settings, None, None);
+        assert_eq!((user.accent, user.own_accent_saturation), (None, Some(0)));
+        assert!(!user.is_plain(), "installed, so every palette read follows it");
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            for solid in [false, true] {
+                let base = palette_base(appearance, solid);
+                let (p, look) = themed(appearance, solid, &user);
+                assert_eq!(look, appearance);
+                for colour in [p.omnibox_focus_border, p.progress_fill] {
+                    assert!(colour.r == colour.g && colour.g == colour.b, "{appearance}/{solid}: grey at 0%: {colour:?}");
+                }
+                assert_ne!(base.progress_fill, p.progress_fill, "{appearance}/{solid}: the limit is visible");
+                assert_eq!((p.window, p.tab_text_active, p.omnibox_text), (base.window, base.tab_text_active, base.omnibox_text), "nothing else moves");
+            }
+        }
+        // With the bars tinted, the tint is the limited accent too.
+        settings.themes.colouring = Colouring::TabBar;
+        let tinted = themed(Appearance::Light, true, &user_theme(&settings, None, None)).0;
+        assert_eq!(tinted.tab_active_border.r, tinted.tab_active_border.g);
+        // `theme=system` resolves an accent: that colour is limited, the palette's own is not touched.
+        settings.theme = Theme::System;
+        let system = user_theme(&settings, Some(Rgba::hex(0x0078D7, 0xFF)), None);
+        assert_eq!(system.own_accent_saturation, None);
+        assert!(system.accent.is_some_and(|c| c.r == c.g && c.g == c.b));
     }
     /// Regression (v0.0.19 "the colours have been desaturated"): the settings Bowser had before the
     /// theme options (nothing, `theme=system`, `theme_accent`) draw exactly v0.0.18's palettes. A picked
