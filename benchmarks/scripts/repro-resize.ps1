@@ -1,5 +1,5 @@
 # Reproduces the "broken after a corner resize" report on a hosted Windows runner: Bowser on the Classic
-# layout (tabs on top, toolbar below, bookmarks bar on) with a blank new tab in front, then real mouse
+# layout (tabs on top, toolbar below, bookmarks bar at its default: off) with a blank new tab in front, then real mouse
 # drags of each window corner. After every drag it saves a screenshot of the window, the window's and the
 # client's screen rectangles, and every child window's rectangle (the HTML chrome hosts) next to them.
 # `BOWSER_PAINT_LOG` makes Bowser log where the overlay frames the page and where each child window is.
@@ -78,7 +78,7 @@ Note ("screen {0}x{1}" -f $screen.Width, $screen.Height)
 # ---- Bowser on a fresh profile with the Classic layout ----
 $data = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }) ("bowser-resize-" + (Get-Random))
 New-Item -ItemType Directory -Force $data | Out-Null
-$settings = "tab_layout=tabs-top`nbookmarks_bar=always`ncentred_address_bar=true`n"
+$settings = "tab_layout=tabs-top`ncentred_address_bar=true`n"
 [IO.File]::WriteAllText((Join-Path $data 'settings.txt'), $settings, (New-Object Text.UTF8Encoding $false))
 # The first-run welcome is answered, so it never takes the new tab (profile.rs `import-offer.txt`).
 [IO.File]::WriteAllText((Join-Path $data 'import-offer.txt'), "answered`n", (New-Object Text.UTF8Encoding $false))
