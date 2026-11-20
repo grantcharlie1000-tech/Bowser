@@ -167,6 +167,15 @@
   object-fit: contain;
 }
 
+/* A mostly dark icon (GitHub's, Rust's) on dark glass: a light backing, as for a tab's icon, so it
+   does not vanish. kit.ts measures each icon once (`.is-dark`). */
+:root[data-scheme="dark"] .pn-favicon.is-image.is-dark {
+  box-sizing: border-box;
+  padding: 1px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.88);
+}
+
 .pn-favicon {
   display: grid;
   flex: none;

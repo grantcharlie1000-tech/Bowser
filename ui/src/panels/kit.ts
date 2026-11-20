@@ -88,12 +88,46 @@ export function faviconTile(text: string, uri?: string): HTMLElement {
     img.draggable = false;
     img.src = uri;
     img.setAttribute('aria-hidden', 'true');
+    markDarkIcon(img, uri);
     return img;
   }
   const tile = el('span', 'pn-favicon');
   tile.setAttribute('aria-hidden', 'true');
   tile.textContent = tileLetter(text);
   return tile;
+}
+
+/** Icons measured so far: whether each is mostly dark (by data URI). */
+const darkIcons = new Map<string, boolean>();
+
+/**
+ * Marks an icon that is mostly dark ink (GitHub's, Rust's) with `.is-dark`, so the dark scheme can
+ * give it a light backing instead of letting it vanish into the glass. Measured once per icon,
+ * from its own pixels (a data: URI, so the canvas is never tainted).
+ */
+function markDarkIcon(img: HTMLImageElement, uri: string): void {
+  const known = darkIcons.get(uri);
+  if (known !== undefined) { img.classList.toggle('is-dark', known); return; }
+  if (typeof img.decode !== 'function' || typeof document.createElement('canvas').getContext !== 'function') return;
+  img.decode().then(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 16;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return;
+    context.drawImage(img, 0, 0, 16, 16);
+    const pixels = context.getImageData(0, 0, 16, 16).data;
+    let ink = 0, light = 0;
+    for (let at = 0; at < pixels.length; at += 4) {
+      const alpha = (pixels[at + 3] ?? 0) / 255;
+      if (alpha < 0.2) continue;
+      const luminance = (0.2126 * (pixels[at] ?? 0) + 0.7152 * (pixels[at + 1] ?? 0) + 0.0722 * (pixels[at + 2] ?? 0)) / 255;
+      ink += alpha;
+      light += alpha * luminance;
+    }
+    const dark = ink > 16 && light / ink < 0.28;
+    darkIcons.set(uri, dark);
+    img.classList.toggle('is-dark', dark);
+  }).catch(() => { /* not an image after all: left as it is */ });
 }
 
 /** Sentence-case sticky section header. */

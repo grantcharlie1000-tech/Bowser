@@ -483,6 +483,16 @@
   background: var(--bw-accent);
 }
 
+/* A tab group chip's dot takes the group's own colour (Rust's palette index); none: the accent. */
+.bm-dot[data-colour="0"] { background: var(--bw-group-0); }
+.bm-dot[data-colour="1"] { background: var(--bw-group-1); }
+.bm-dot[data-colour="2"] { background: var(--bw-group-2); }
+.bm-dot[data-colour="3"] { background: var(--bw-group-3); }
+.bm-dot[data-colour="4"] { background: var(--bw-group-4); }
+.bm-dot[data-colour="5"] { background: var(--bw-group-5); }
+.bm-dot[data-colour="6"] { background: var(--bw-group-6); }
+.bm-dot[data-colour="7"] { background: var(--bw-group-7); }
+
 .bm-item.is-group:not(.is-live) {
   opacity: 0.7;
 }
