@@ -1,9 +1,3 @@
-// The settings page (?view=settings), drawn by Bowser over a `bowser://settings` tab
-// (docs/design/settings-page.md, styles/settings.css). Rust sends `state` (theme), `snap`
-// (p "settings") and `settingsgo`; the page sends `{t:"set",a,...}` commands only. Every value it
-// sends is checked again in Rust (chrome_host/settings.rs). Text from Rust reaches the DOM through
-// textContent only. The page never changes its own URL (the bridge checks it exactly), so sections
-// are buttons and scroll positions, not links or fragments.
 import { onInbound, send, sendPanel, type Inbound, type PanelFields, type SettingsSection } from './protocol';
 import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
@@ -13,33 +7,29 @@ import { glyphTile } from './settings-tiles';
 import { selectField, type SelectField } from './panels/select';
 import { radioGroup, textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
-import { mountProtection } from './panels/protection'; // blocking, history and website appearance (thread T3)
+import { mountProtection } from './panels/protection';
 import { mountExtensionsSection } from './extensions-section';
 import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
 import { parseCommandsSnapshot } from './commands-logic';
-import { mountStartSection, startPageShown } from './settings-start'; // --- start page ---
-import { mountProfiles, paintDisc } from './settings-profiles'; // --- profiles ---
-import { mountThemeRows } from './settings-themes'; // --- theme options ---
-import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
-import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
+import { mountStartSection, startPageShown } from './settings-start';
+import { mountProfiles, paintDisc } from './settings-profiles';
+import { mountThemeRows } from './settings-themes';
+import { themeAssignment, type ThemeOptionValue } from './theme-options-logic';
+import { mountAddressSections } from './address-section';
 import { parseAddressSnapshot, searchEngineLabel } from './address-settings-logic';
-import { WINDOW_APPEARANCE_KEYS, WINDOW_PANEL_KEYS, resetWindowGroup, stepValue, windowGroupIsDefault } from './window-logic'; // --- window and panels (thread T9) ---
-// --- toolbars and feeds (thread T13) ---
+import { WINDOW_APPEARANCE_KEYS, WINDOW_PANEL_KEYS, resetWindowGroup, stepValue, windowGroupIsDefault } from './window-logic';
 import { BAR_KEYS, DEFAULTS, itemsText } from './bars-logic';
 import { REFRESH_CHOICES, feedAssignment, refreshLabel, type RefreshChoice } from './feeds-settings-logic';
-// --- end toolbars and feeds ---
-// --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
   DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
   TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig, presetSidebarPinned,
   centringApplies, rememberOwnLayout, selectedTile, sidebarShown, tabBarEdge, uiZoomText, type LayoutConfig, type Preset, type StatusBar,
   type UiDensity,
 } from './layout-logic';
-// --- end layout ---
-import { mountPageToolsSection } from './page-tools-section'; // --- page tools (T7) ---
+import { mountPageToolsSection } from './page-tools-section';
 import { mountPasswordsSection } from './passwords-section';
-import { mountWelcome } from './welcome'; // the first-run welcome (docs/design/welcome.md)
+import { mountWelcome } from './welcome';
 import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import {
   TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, homepageChoiceTip, numberLabel, tabRowRests, textApplies,
@@ -53,12 +43,11 @@ import {
   type SettingsSnapshot, type SpoilerMode, type TabLayout, type ThemeMode, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RELOAD_NOTE, RESTART_NOTE, anchorGroup, areaOf, placementOf, rowTier, type AreaSpec,
   SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_GROUPS, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
-  AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
-  addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
+  AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar,
+  addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules,
   MAX_BACKUP_PASSWORD, backupPasswordProblem,
 } from './settings-page-logic';
 
-/** --- settings slim --- the disclosures remember whether they are open (a per-viewer convenience only). */
 const OPEN_KEY = 'bowser.settings.more';
 function readOpen(): Set<string> {
   try {
@@ -69,22 +58,20 @@ function readOpen(): Set<string> {
   }
 }
 function writeOpen(open: ReadonlySet<string>): void {
-  try { localStorage.setItem(OPEN_KEY, JSON.stringify([...open])); } catch { /* storage unavailable: the state lasts this visit */ }
+  try { localStorage.setItem(OPEN_KEY, JSON.stringify([...open])); } catch {  }
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-/** How long a Tabs number field waits after its last change before it saves. */
 const TAB_NUMBER_DEBOUNCE_MS = 400;
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'home', appearance: 'sidebar', tabs: 'tab-switch', privacy: 'shield', performance: 'workspace-bolt',
   search: 'search', keyboard: 'command', commands: 'quick-commands', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
-  startpage: 'home', // --- start page ---
-  address: 'address-bar', bookmarks: 'bookmark', // --- wave-1 integration ---
-  pagetools: 'image', // --- page tools (T7) ---
+  startpage: 'home',
+  address: 'address-bar', bookmarks: 'bookmark',
+  pagetools: 'image',
   passwords: 'key',
-  stacks: 'tab-group', // --- T10 --- (drawn in the Tabs and start page area, never in the nav on its own)
+  stacks: 'tab-group',
 };
-/** Each group's glyph, beside its title (settings.css, "Group cards"). */
 const GROUP_ICONS: Readonly<Record<string, IconName>> = {
   profiles: 'person', startup: 'enter', search: 'search', searchField: 'address-bar', searchScopes: 'grid',
   downloads: 'folder-download', defaultBrowser: 'globe',
@@ -100,7 +87,6 @@ const GROUP_ICONS: Readonly<Record<string, IconName>> = {
   'simple-start': 'search', 'simple-look': 'droplet', 'simple-privacy': 'shield', 'simple-browser': 'person',
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
-/** Whether a key press lands in a field that takes text (an input, a textarea, a select or an editable node). */
 export function isTyping(target: EventTarget | null): boolean {
   const node = target as { tagName?: unknown; isContentEditable?: unknown } | null;
   if (!node || typeof node.tagName !== 'string') return false;
@@ -108,7 +94,6 @@ export function isTyping(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || node.isContentEditable === true;
 }
 
-/** A row whose control cannot act now: dimmed (`is-off`) and out of the page (`is-na`; a search still finds it), as settings-start.ts does. */
 function restRow(row: HTMLElement, off: boolean): void {
   row.classList.toggle('is-off', off);
   row.classList.toggle('is-na', off);
@@ -117,8 +102,6 @@ function restRow(row: HTMLElement, off: boolean): void {
 function cmd(fields: PanelFields): boolean {
   return sendPanel('set', fields);
 }
-
-// ---- Small controls with setters (a snapshot updates them in place, so focus never jumps) ----
 
 interface Control<T> { readonly root: HTMLElement; set(value: T): void; disable(off: boolean): void }
 
@@ -151,19 +134,8 @@ export function segmentedControl<T extends string>(label: string, options: Reado
   return control;
 }
 
-/**
- * A small picture of a Bowser window in a layout: window buttons, toolbar, tab row or sidebar, page. Takes the tab
- * layout alone (the "style at the top" tiles) or a whole configuration (the preset tiles, thread
- * T6): tabs on any edge or hidden, the address bar on top or along the bottom or hidden, and the
- * title row that holds the window buttons when neither is at the top.
- */
 function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
   const c: LayoutConfig = typeof config === 'string' ? { ...DEFAULT_LAYOUT_CONFIG, tabLayout: config } : config;
-  // Drawn from Bowser's own chrome (toolbar.css, tabs.css, sidebar.css): tab islands with a favicon
-  // and a title, the selected one a raised neutral island; back and forward in a small pill, the
-  // address pill in the middle and the search pill at the right; the window buttons on the top row;
-  // in a vertical layout the sidebar holds the address field, the pinned tiles and the tab rows; the
-  // page is a rounded frame with content in it. Units: a 144 x 92 window.
   const W = 144;
   const H = 92;
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -178,11 +150,9 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
     svg.append(node);
   };
   const ROW = 13;
-  /** Minimise, maximise, close: three short marks at the right end of the top row. */
   const captions = (y: number): void => {
     for (let i = 0; i < 3; i++) rect('sp-art-mark', W - 25 + i * 7, y + 6, 4, 1.2, 0.6);
   };
-  /** One tab: an island (the selected one raised) holding a favicon and a title. */
   const tab = (x: number, y: number, w: number, on: boolean): void => {
     rect(on ? 'sp-art-island is-on' : 'sp-art-island', x, y, w, 9, 3);
     rect('sp-art-fav', x + 3, y + 2.5, 4, 4, 1);
@@ -193,7 +163,6 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
     const w = Math.min(32, (right - x - (n - 1) * 2) / n);
     for (let i = 0; i < n; i++) tab(x + i * (w + 2), y + 2, w, i === 1);
   };
-  /** Back and forward, the address pill (a lock and the address), the search pill. */
   const toolbar = (y: number, right: number): void => {
     rect('sp-art-pill', 5, y + 2, 17, 9, 4.5);
     rect('sp-art-mark', 8.5, y + 6, 3.5, 1.2, 0.6);
@@ -208,7 +177,6 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
     rect('sp-art-line', x + 10, y + 5.75, Math.min(30, width - 16), 1.5, 0.75);
     rect('sp-art-pill', right - search, y + 2, search - 2, 9, 4.5);
   };
-  /** Simple: one row with navigation, a shorter address pill and the tabs. */
   const singleRow = (y: number, right: number): void => {
     rect('sp-art-pill', 5, y + 2, 17, 9, 4.5);
     rect('sp-art-pill', 25, y + 2, 30, 9, 4.5);
@@ -216,7 +184,6 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
     rect('sp-art-line', 35, y + 5.75, 14, 1.5, 0.75);
     tabRow(59, y, right);
   };
-  /** The page: a rounded frame with a heading, a few lines of text and a picture. */
   const pageArea = (x: number, y: number, w: number, h: number): void => {
     rect('sp-art-page', x, y, w, h, 4);
     if (w < 30 || h < 20) return;
@@ -227,7 +194,6 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
     const pic = Math.min(w - text - pad * 3, 34);
     if (pic > 12) rect('sp-art-pic', x + w - pad - pic, y + pad, pic, Math.min(h - pad * 2, pic * 0.7), 2.5);
   };
-  /** A vertical sidebar: (with the address bar) navigation and the address field, then pinned tiles and tab rows. */
   const sidebar = (x: number, top: number, bottom: number, zen: boolean): void => {
     const w = 38;
     let y = top + 2;
@@ -254,7 +220,6 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
   const addressTop = c.addressBarVisible && c.addressBarPosition === 'top';
   const addressBottom = c.addressBarVisible && c.addressBarPosition === 'bottom';
   const side = edge === 'left' || edge === 'right';
-  // --- zen sidebar --- a vertical layout's sidebar holds the address bar, and the page runs the full height.
   const zen = side && c.addressBarVisible;
   type Row = 'toolbar' | 'tabs' | 'single' | 'title';
   const top: Row[] = [];
@@ -296,16 +261,11 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
   return svg;
 }
 
-// ---- The page ----
-
 interface RowNode {
   readonly spec: RowSpec; readonly root: HTMLElement; readonly label: HTMLElement; readonly desc: HTMLElement | null; readonly card: HTMLElement;
-  /** "Applies after restart" or "no effect yet", when the row has one. */
   readonly flag: HTMLElement | null;
-  /** The control the label and description are wired to. */
   readonly target: HTMLElement | null;
 }
-/** A group: its heading (outside the card) and the card that holds its rows. */
 interface Group { readonly root: HTMLElement; readonly heading: HTMLElement | null; card: HTMLElement }
 
 export function startSettingsPage(root: HTMLElement): void {
@@ -313,9 +273,7 @@ export function startSettingsPage(root: HTMLElement): void {
   installTooltips(root);
   let snapshot: SettingsSnapshot | null = null;
   let draft: Draft | null = null;
-  /** Changes sent and not yet answered: while any are out, a snapshot does not reset the controls. */
   let pending = 0;
-  /** What the next "saved" answer means, when it is more than a save (a backup was written). */
   let savedNote: string | null = null;
   let entered = false;
   let current: SettingsSection = 'profile';
@@ -355,11 +313,9 @@ export function startSettingsPage(root: HTMLElement): void {
   const navList = el('ul', 'sp-nav-list');
   nav.append(indicator, navList);
   side.append(brand, search, nav);
-  // Simple is the view Settings opens on. All is one click away. The choice is remembered here, not in settings.txt.
   let prefer: SettingsView = (() => { try { return readSettingsView(localStorage.getItem(SETTINGS_VIEW_KEY)); } catch { return 'simple'; } })();
-  /** A deep link to a section shows All for that visit without forgetting a saved Simple choice. */
   let sectionHold = false;
-  const writeView = (value: SettingsView): void => { try { localStorage.setItem(SETTINGS_VIEW_KEY, value); } catch { /* this visit only */ } };
+  const writeView = (value: SettingsView): void => { try { localStorage.setItem(SETTINGS_VIEW_KEY, value); } catch {  } };
   let chooseView: (value: SettingsView) => void = () => {};
   const viewCtl = segmentedControl<SettingsView>('Settings view', [['simple', 'Simple'], ['all', 'All settings']], (value) => chooseView(value));
   viewCtl.root.classList.add('sp-view');
@@ -378,9 +334,6 @@ export function startSettingsPage(root: HTMLElement): void {
   empty.hidden = true;
   const emptyText = el('p');
   empty.append(icon('search', { size: 24 }), emptyText);
-  // The nudge at the top (Simple and All, never in search results or on a sub-page), as Zen does it:
-  // one line and one button, only while Bowser is known not to be the default browser. The Default
-  // browser row stays the control that search finds.
   const hero = el('section', 'sp-hero');
   hero.setAttribute('aria-labelledby', 'sp-hero-title');
   const heroTitle = el('p', 'sp-hero-title');
@@ -407,20 +360,18 @@ export function startSettingsPage(root: HTMLElement): void {
   page.append(side, main, count, toast);
   root.replaceChildren(page);
 
-  // ---- toast: "Saved", or what went wrong ----
   let toastTimer = 0;
   const showToast = (text: string, ok: boolean): void => {
     toastIcon.replaceChildren(icon(ok ? 'check' : 'warning', { size: 14 }));
     toastText.textContent = text;
     toast.classList.toggle('is-error', !ok);
     toast.classList.remove('is-on');
-    void toast.offsetWidth; // restart the entrance when a second save lands during the first toast
+    void toast.offsetWidth;
     toast.classList.add('is-on');
     window.clearTimeout(toastTimer);
     toastTimer = window.setTimeout(() => toast.classList.remove('is-on'), ok ? 1600 : 4200);
   };
 
-  // ---- sending ----
   const save = (): void => {
     if (!draft || !snapshot?.readable) return;
     const text = saveText(draft);
@@ -434,25 +385,18 @@ export function startSettingsPage(root: HTMLElement): void {
     save();
   };
 
-  // ---- sections, cards and rows ----
   const sectionNodes = new Map<SettingsSection, HTMLElement>();
   const navButtons = new Map<SettingsSection, HTMLButtonElement>();
   const rows = new Map<string, RowNode>();
-  /** Row `id` cannot act now: dimmed (`is-off`) and, with `gone`, out of the page (`is-na`). */
   const rest = (id: string, off: boolean, gone = false): void => {
     const node = rows.get(id)?.root;
     node?.classList.toggle('is-off', off);
     node?.classList.toggle('is-na', gone);
   };
-  /** Row `id` only tunes something that is off: out of the page (a search still lists it, dimmed). */
   const away = (id: string, gone: boolean): void => rest(id, gone, gone);
   const groups: Group[] = [];
   let cardSeq = 0;
 
-  // --- settings structure --- one section per area (its heading, lead and nav item). Each part of the
-  // page builds its rows into a staging part per Rust section (never shown); `arrange` then moves every
-  // row into its group (AREAS in settings-page-logic.ts), so where a row is built and where it is drawn
-  // are independent.
   const areaNodes = new Map<SettingsSection, HTMLElement>();
   for (const spec of AREAS) {
     const area = el('section', 'sp-sec');
@@ -496,7 +440,6 @@ export function startSettingsPage(root: HTMLElement): void {
     items[next]?.focus();
   });
 
-  /** A group in `section`: an optional heading above a card of rows. Returns the card. */
   const card = (section: SettingsSection, heading?: string): HTMLElement => {
     const group = el('div', 'sp-group');
     const node = el('div', 'sp-card');
@@ -515,7 +458,6 @@ export function startSettingsPage(root: HTMLElement): void {
     return node;
   };
 
-  /** A row: label, description and (optionally) a control on the right, inside `into`. */
   const row = (into: HTMLElement, id: string, control?: HTMLElement, options: { stack?: boolean; label?: string } = {}): RowNode => {
     const spec = ROWS.find((r) => r.id === id);
     if (!spec) throw new Error(`no row ${id}`);
@@ -533,8 +475,6 @@ export function startSettingsPage(root: HTMLElement): void {
       desc.textContent = spec.description;
       text.append(desc);
     }
-    // A change that waits for a restart says so (one quiet line), so a privacy choice such as Strict
-    // tracking prevention is never taken to be in force before it is.
     let flag: HTMLElement | null = null;
     if (spec.restart) {
       flag = el('span', 'sp-flag');
@@ -561,7 +501,6 @@ export function startSettingsPage(root: HTMLElement): void {
       }
       node.append(wrap);
     }
-    // A change that reaches pages as they load says so in the row's tooltip (no sub-line).
     if (spec.reload) node.setAttribute('data-tip', RELOAD_NOTE);
     into.append(node);
     const result = { spec, root: node, label, desc, card: into, flag, target };
@@ -569,7 +508,6 @@ export function startSettingsPage(root: HTMLElement): void {
     return result;
   };
 
-  /** A titled group of rows inside a card: the shape the Privacy dashboard and the protection blocks share. */
   const dashSection = (title: string): PageSection => {
     const root = el('div', 'sp-group');
     const heading = el('h3', 'sp-group-h');
@@ -580,26 +518,19 @@ export function startSettingsPage(root: HTMLElement): void {
     root.append(heading, box);
     return { root, body };
   };
-  // Blocking level, history retention and website appearance (thread T3). Rust sends their snapshot
-  // as `protection`; their controls sit in the rows below and their blocks follow the Privacy rows.
-  // The level is a saved setting too, so the page's own draft is kept in step with it.
   const protection = mountProtection({ toast: showToast, section: dashSection, onLevel: (value) => { if (draft) draft.blockerEnabled = value !== 'none'; } });
 
-  // You and Bowser
   const profileCard = card('profile');
   const avatar = el('span', 'sp-avatar');
   avatar.setAttribute('aria-hidden', 'true');
   const profileRow = row(profileCard, 'profile', avatar);
   profileRow.root.classList.add('is-profile');
   profileRow.root.prepend(profileRow.root.lastElementChild ?? avatar);
-  // In Simple the profile row carries the way to the profile manager (All settings > Profiles). All
-  // settings draws the manager right under it, so there the button stays hidden (settings.css).
   const profileManage = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('profile', false, true); }, { aria: 'Manage profiles' });
   profileManage.classList.add('sp-profile-manage');
   const profileManageWrap = el('div', 'sp-ctl sp-profile-manage-wrap');
   profileManageWrap.append(profileManage);
   profileRow.root.append(profileManageWrap);
-  // --- profiles --- the manager: every profile, the current one's look, and a form that adds one.
   const profilesView = mountProfiles({
     send: (text, answered) => {
       const sent = cmd({ a: 'profile', text });
@@ -612,11 +543,6 @@ export function startSettingsPage(root: HTMLElement): void {
   profilesRow.root.append(...profilesView.parts);
   row(profileCard, 'import', textButton('Choose file…', () => cmd({ a: 'import' }), { icon: 'download' }));
 
-  // Appearance: the two big visual choices first, then the chrome, tabs and text.
-  // --- layout (thread T6) --- the Layout block: the presets as thumbnails, which also decide where
-  // every bar sits; the top style, sidebar width, the show/hide switches, the title row, the status bar, the
-  // density and the UI zoom behind More options (rowTier). Each pick saves the whole draft; a
-  // configuration that is no preset is remembered as Saved (rememberOwnLayout).
   const layoutCard = card('appearance', 'Layout');
   let savedTile: HTMLButtonElement | null = null;
   const presetTile = (key: Preset | 'saved') => (button: HTMLButtonElement): void => {
@@ -634,7 +560,6 @@ export function startSettingsPage(root: HTMLElement): void {
     if (config && pinned !== null) d.sidebarPinned = pinned;
   }));
   row(layoutCard, 'layoutPreset', presets.root, { stack: true });
-  /** The Saved tile shows the saved arrangement, or stays dimmed until there is one. */
   const paintSavedTile = (saved: string, readable: boolean): void => {
     if (!savedTile) return;
     const config = parseLayoutConfig(saved);
@@ -650,7 +575,6 @@ export function startSettingsPage(root: HTMLElement): void {
     button.append(layoutArt(key), name);
   }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); }));
   row(layoutCard, 'layout', layout.root, { stack: true });
-  // --- end layout --- (the rest of the block follows the sidebar width row)
   const width = el('input', 'sp-range');
   width.type = 'range';
   width.min = String(MIN_SIDEBAR);
@@ -669,7 +593,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(layoutCard, 'sidebarWidth', widthWrap);
   const pinStrip = switchControl((on) => change((d) => { d.sidebarPinned = on; }));
   row(layoutCard, 'sidebarPinned', pinStrip.root);
-  // --- layout (thread T6) --- the rest of the Layout block
   const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'tabBarVisible', tabBarVisible.root);
   const addressBarVisible = switchControl((on) => change((d) => { d.layout.addressBarVisible = on; rememberOwnLayout(d); }));
@@ -680,7 +603,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(layoutCard, 'uiDensity', densityCtl.root);
   const compactMenus = switchControl((on) => change((d) => { d.layout.compactMenus = on; }));
   row(layoutCard, 'compactMenus', compactMenus.root);
-  // UI zoom: a slider, the value as a field you can type into, and Reset.
   const uiZoomRange = el('input', 'sp-range');
   uiZoomRange.type = 'range';
   uiZoomRange.min = String(MIN_UI_ZOOM);
@@ -714,19 +636,14 @@ export function startSettingsPage(root: HTMLElement): void {
     change((d) => { d.layout.uiZoom = typed; });
   });
   row(layoutCard, 'uiZoom', uiZoomWrap);
-  // --- end layout ---
 
-  // Theme
   const themeCard = card('appearance', 'Theme');
-  // A custom accent wins over either palette (theme.rs `resolved_accent`), so picking a palette puts the
-  // accent back to that palette's; while one is chosen no palette shows as picked, so either can be.
   const theme = segmentedControl<ThemeMode>('Palette', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium' : 'Windows', key === 'helium' ? 'Helium colours' : 'Windows accent colour'] as const), (value) => change((d) => { d.theme = value; d.themeAccent = ''; }));
   row(themeCard, 'theme', theme.root);
   const accentInput = el('input', 'sp-color');
   accentInput.type = 'color';
   accentInput.setAttribute('aria-label', 'Accent colour');
   accentInput.addEventListener('change', () => change((d) => { d.themeAccent = accentInput.value.toLowerCase(); }));
-  /** The accent the chrome shows when none is chosen (the theme's focus colour), so the swatch is never a made-up black. */
   let themeAccentShown = '';
   const paintAccent = (chosen: string): void => {
     const shown = chosen !== '' ? chosen : /^#[0-9a-f]{6}$/i.test(themeAccentShown) ? themeAccentShown.toLowerCase() : '#000000';
@@ -737,8 +654,6 @@ export function startSettingsPage(root: HTMLElement): void {
   const accentWrap = el('div', 'sp-reset');
   accentWrap.append(accentInput, accentReset);
   row(themeCard, 'themeAccent', accentWrap);
-  // --- theme options --- the schedule (core), then the colours, the colouring mode, the page's accent,
-  // saturation, contrast and the theme file (behind More options). Each is its own `themeopt` command.
   const sendThemeOption = (key: string, value: ThemeOptionValue): void => {
     const text = themeAssignment(key, value);
     if (text === null) { showToast('That value is not allowed.', false); return; }
@@ -750,32 +665,23 @@ export function startSettingsPage(root: HTMLElement): void {
     switchControl,
     segmentedControl,
     send: sendThemeOption,
-    // A cancelled file dialog answers with nothing, so the file commands are not counted as pending.
     action: (name) => { if (cmd({ a: name }) && name === 'themereset') pending += 1; },
   });
-  // --- end theme options ---
-  // Light, dark or follow Windows (Simple shows this same row). Timed schedules stay in Schedule behind More.
   const themeMode = segmentedControl<'light' | 'dark' | 'system'>('Mode', [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']], (value) => {
     if (value === 'system') sendThemeOption('theme_schedule', 'system');
     else { sendThemeOption('theme_schedule', 'none'); sendThemeOption('theme_look', value); }
   });
   row(themeCard, 'themeMode', themeMode.root);
 
-  // Website appearance and the private tab theme (thread T3). --- settings slim --- they join the
-  // Theme card, so the core view is one card of colour choices.
   row(themeCard, 'websiteAppearance', protection.websiteAppearance.root);
   row(themeCard, 'forceDark', protection.forceDark.root);
   row(themeCard, 'privateTheme', protection.privateTheme.root);
 
-  // Toolbars (thread T13): the editor for the address bar and the tab bar (the panel bar was the removed rail's).
-  // The address bar's list is part of the page's Save (`toolbar_buttons`); the other two bars are each a `baropt` command.
   const toolbarCard = card('appearance', 'Toolbar');
   const sendBarOption = (text: string | null): void => {
     if (text === null) { showToast('That value is not allowed.', false); return; }
     if (cmd({ a: 'baropt', text })) pending += 1;
   };
-  // Customise opens (or closes) the customiser docked beside the page, so the bar it edits stays in view;
-  // Reset to default puts both bars back at once.
   const toolbarControls = el('div', 'sp-ctl-pair');
   const toolbarOpen = textButton('Customise', () => cmd({ a: 'opentoolbar' }), { icon: 'customize', aria: 'Customise your toolbar' });
   const toolbarReset = textButton('Reset to default', () => {
@@ -785,7 +691,6 @@ export function startSettingsPage(root: HTMLElement): void {
   toolbarControls.append(toolbarOpen, toolbarReset);
   row(toolbarCard, 'toolbarButtons', toolbarControls);
 
-  // Address bar (--- settings slim --- in the Toolbar card it belongs to)
   const addressCard = toolbarCard;
   const centred = switchControl((on) => change((d) => { d.centredAddressBar = on; }));
   row(addressCard, 'centredAddressBar', centred.root);
@@ -794,23 +699,17 @@ export function startSettingsPage(root: HTMLElement): void {
   const loadProgress = switchControl((on) => change((d) => { d.showLoadProgress = on; }));
   row(addressCard, 'showLoadProgress', loadProgress.root);
 
-  // Tab groups: one switch, drawn first in the Groups section (below). The new-tab position, Ctrl+Tab
-  // order and tab preview rows live in the Tabs section (wave-1 integration), which also owns
-  // `new_tab_beside_active` through its position row.
   const grouping = switchControl((on) => change((d) => { d.automaticTabGrouping = on; }));
   const mru = switchControl((on) => change((d) => { d.ctrlTabMru = on; }));
-  // --- T10 --- drawn in Tab stacks, tiling and workspaces, beside the other tiling options.
   const edgeDrop = switchControl((on) => change((d) => { d.splitEdgeDrop = on; }));
   const previewImages = switchControl((on) => change((d) => { d.tabPreviewImages = on; }));
   const previewMemory = switchControl((on) => change((d) => { d.tabPreviewMemory = on; }));
   const pinGroups = switchControl((on) => change((d) => { d.pinNewTabGroups = on; }));
   const vTabs = switchControl((on) => change((d) => { d.ctrlSVerticalTabs = on; }));
 
-  // Window
   const windowCard = card('appearance', 'Window');
   const rounded = switchControl((on) => change((d) => { d.roundedContentFrame = on; }));
   row(windowCard, 'roundedContentFrame', rounded.root);
-  // --- auto-hide (T11) --- the master switch, and the two rows behind "More options" (see ROWS).
   const frameless = switchControl((on) => change((d) => { d.frameless = on; }));
   row(windowCard, 'frameless', frameless.root);
   const autoHideBarSwitches = new Map<AutoHideBar, Control<boolean>>();
@@ -832,8 +731,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(windowCard, 'autoHideBars', autoHideList, { stack: true });
   const autoHideFullscreen = switchControl((on) => change((d) => { d.autoHideFullscreen = on; }));
   row(windowCard, 'autoHideFullscreen', autoHideFullscreen.root);
-  // --- end auto-hide ---
-  // --- window and panels (thread T9) --- Window appearance and Panels: each switch saves the draft and acts at once.
   const winAnimations = switchControl((on) => change((d) => { d.window.animations = on; }));
   row(windowCard, 'winAnimations', winAnimations.root);
   const winRangeButtons = switchControl((on) => change((d) => { d.window.rangeButtons = on; }));
@@ -855,7 +752,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(panelsCard, 'panelAutoClose', panelAutoClose.root);
   const panelReset = textButton('Reset', () => change((d) => { d.window = resetWindowGroup(d.window, WINDOW_PANEL_KEYS); }), { aria: 'Reset panel options' });
   row(panelsCard, 'panelReset', panelReset);
-  // The slider rows get minus and plus buttons; which of the two shows follows "Buttons instead of sliders".
   const addSteppers = (wrap: HTMLElement, range: HTMLInputElement, label: string, commit: (value: number) => void): void => {
     const group = el('div', 'sp-stepper');
     const step = (direction: -1 | 1): void => {
@@ -872,9 +768,7 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   addSteppers(widthWrap, width, 'sidebar width', (value) => { paintWidth(); change((d) => { d.sidebarWidth = value; }); });
   addSteppers(uiZoomWrap, uiZoomRange, 'interface zoom', (value) => { paintUiZoom(value); change((d) => { d.layout.uiZoom = value; }); });
-  // --- end window and panels ---
 
-  // Bookmarks bar
   const bookmarksCard = card('appearance', 'Bookmarks');
   const bookmarksBarCtl = segmentedControl<BookmarksBarMode>('Bookmarks bar', BOOKMARKS_BAR_MODES.map((key) => [key, key === 'always' ? 'Always' : key === 'never' ? 'Never' : 'New tab', key === 'always' ? 'Always show' : key === 'never' ? 'Always hide' : 'Only on the new tab'] as const), (value) => change((d) => { d.bookmarksBar = value; }));
   row(bookmarksCard, 'bookmarksBar', bookmarksBarCtl.root);
@@ -882,9 +776,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(bookmarksCard, 'bookmarksBarTabGroups', bookmarksGroups.root);
   row(bookmarksCard, 'pinNewTabGroups', pinGroups.root);
 
-  // --- layout (thread T6) --- the side panel's edge is the Panels choice of the Layout block above.
-
-  // Fonts and zoom (--- settings slim --- one card)
   const fontsCard = card('appearance', 'Text');
   const fontSizeCtl = segmentedControl<FontSize>('Font size', FONT_SIZES.map((key) => [key, key === 'small' ? 'Small' : key === 'medium' ? 'Medium' : 'Large', key === 'medium' ? 'Medium (recommended)' : key === 'small' ? 'Small' : 'Large'] as const), (value) => change((d) => { d.fontSize = value; }));
   row(fontsCard, 'fontSize', fontSizeCtl.root);
@@ -918,7 +809,6 @@ export function startSettingsPage(root: HTMLElement): void {
   const zoomIndicator = switchControl((on) => change((d) => { d.showZoomIndicator = on; }));
   row(zoomCard, 'showZoomIndicator', zoomIndicator.root);
 
-  // Translation: each control is its own command, applied at once and never part of `save`.
   const translateCard = card('appearance', 'Translation');
   const translateOffer = switchControl((on) => { if (cmd({ a: 'translateoffer', on })) pending += 1; });
   row(translateCard, 'translateOffer', translateOffer.root);
@@ -949,11 +839,9 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   row(translateCard, 'translateTarget', translateHost);
 
-  // The three shortcut switches are built into Shortcuts and commands, after the Keyboard rows.
   const shiftRightClick = switchControl((on) => change((d) => { d.shiftRightClickContext = on; }));
   const copyLink = switchControl((on) => change((d) => { d.ctrlShiftCCopyLink = on; }));
 
-  // Tabs: every option is a `tabopt` command of its own (`key=value`), applied at once, never part of `save`.
   const tabControls = new Map<string, { set(values: TabOptionValues): void; disable(off: boolean): void }>();
   const sendTabOption = (key: string, value: boolean | number | string): void => {
     const text = assignmentText(key, value);
@@ -989,8 +877,6 @@ export function startSettingsPage(root: HTMLElement): void {
         const wrap = el('div', 'sp-zoom-wrap');
         wrap.append(input, suffix);
         const paint = (n: number): void => { input.value = String(n); suffix.textContent = numberLabel(spec, n); };
-        // Each save is a full read, merge and write in Rust, so a run of spinner steps sends only its
-        // last value: 400 ms after the last change, or at once when the field loses focus.
         let timer = 0;
         let queued: number | null = null;
         const flush = (): void => {
@@ -1008,10 +894,8 @@ export function startSettingsPage(root: HTMLElement): void {
           timer = window.setTimeout(flush, TAB_NUMBER_DEBOUNCE_MS);
         });
         input.addEventListener('blur', flush);
-        // Closing or hiding the page inside the wait still saves the value the field shows.
         window.addEventListener('pagehide', flush);
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
-        // A host update while a value waits must not repaint the field under the user.
         tabControls.set(spec.key, { set: (values) => { if (queued === null) paint(Number(values[spec.key] ?? spec.default)); }, disable: (off) => { input.disabled = off; } });
         return wrap;
       }
@@ -1035,7 +919,6 @@ export function startSettingsPage(root: HTMLElement): void {
       }
     }
   };
-  // --- tab stacks, tiling and workspaces (T10) --- the workspace rules editor, a sub-page of its own.
   let ruleWorkspaces: readonly string[] = [];
   let ruleList: WorkspaceRules['rules'] = [];
   let ruleWorkspace = '';
@@ -1108,9 +991,6 @@ export function startSettingsPage(root: HTMLElement): void {
     }));
     rulesList.hidden = value.rules.length === 0;
   };
-  // --- end tab stacks ---
-  // Tabs on top or down the side (Simple shows this same row): the Classic or Vertical left preset, as
-  // Appearance > Layout would set it. Tabs along the bottom are neither, so neither shows selected.
   const tabPosition = segmentedControl<'top' | 'side'>('Tab position', [['top', 'Top'], ['side', 'Side']], (value) => change((d) => {
     const edge = tabBarEdge(d.tabLayout);
     if (value === 'side') {
@@ -1122,8 +1002,6 @@ export function startSettingsPage(root: HTMLElement): void {
   }));
   row(card('tabs', 'Tab bar'), 'tabPosition', tabPosition.root);
   for (const cardKey of TAB_CARDS) {
-    // --- T10 --- the stacks card is its own part of the Tabs and start page area. Groups come first,
-    // as a card holding their one switch.
     if (cardKey === 'stacks') row(card('stacks', 'Groups'), 'grouping', grouping.root);
     const tabCard = card('tabs', TAB_CARD_TITLES[cardKey]);
     for (const spec of cardSpecs(cardKey)) row(tabCard, spec.key, buildTabControl(spec));
@@ -1133,7 +1011,6 @@ export function startSettingsPage(root: HTMLElement): void {
       rulesRow.root.classList.add('is-wrap', 'is-tight');
       rulesRow.root.append(rulesList, ruleError);
     }
-    // --- wave-1 integration --- the older tab rows join the Tabs section's tab bar card.
     if (cardKey === 'bar') {
       row(tabCard, 'ctrlTabMru', mru.root);
       row(tabCard, 'tabPreviewImages', previewImages.root);
@@ -1141,9 +1018,7 @@ export function startSettingsPage(root: HTMLElement): void {
     }
   }
 
-  // Privacy and security
   const blockCard = card('privacy', 'Blocking');
-  // The old on/off switch is the "None" choice of the blocking level (blocker_enabled=false).
   row(blockCard, 'blocker', protection.level.root);
   row(blockCard, 'cookieNotices', protection.cookieNotices.root);
   const blockYoutube = switchControl((on) => change((d) => { d.blockYoutubeVideoAds = on; }));
@@ -1196,14 +1071,10 @@ export function startSettingsPage(root: HTMLElement): void {
     }));
     allowList.hidden = sites.length === 0;
   };
-  // The field and Add sit beside the label; the skipped sites and any error wrap beneath them.
   const allowRow = row(blockCard, 'allow', allowForm);
   allowRow.root.classList.add('is-wrap', 'is-tight');
   allowRow.root.append(allowList, allowError);
 
-  // Spoiler protection: built in and on by default (src/spoiler.rs). Turning it off takes a second,
-  // explicit step that says what it costs; the mode and the effects follow the switch. Rows are one
-  // line like every other: the longer wording is each control's accessible text and the row's tooltip.
   const spoilerCard = card('privacy', 'Spoiler protection');
   const spoilerSwitch = switchControl((on) => {
     if (on) { offAsked = false; paintOffAsk(); change((d) => { d.spoilerProtection = true; }); return; }
@@ -1250,8 +1121,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(trackCard, 'history', history.root);
   row(trackCard, 'historyRetention', protection.retention.root);
 
-  // The blocks of the protection controls (thread T3): per-site choices, the rule lists and Delete
-  // Browsing Data. Each is one block, so search treats it as one row.
   for (const [id, block] of [['siteRules', protection.sites], ['blockLists', protection.lists], ['deleteData', protection.deleteData]] as const) {
     const host = el('div', 'sp-dash');
     host.dataset.row = id;
@@ -1260,8 +1129,6 @@ export function startSettingsPage(root: HTMLElement): void {
     rows.set(id, { spec: ROWS.find((r) => r.id === id)!, root: host, label: el('span'), desc: null, card: host, flag: null, target: null });
   }
 
-  // The Privacy dashboard lives here, not in a window of its own: Rust sends its `privacy` snapshots
-  // to this page and takes its `priv` commands. Search treats the whole block as the `dashboard` row.
   const dashHost = el('div', 'sp-dash');
   dashHost.dataset.row = 'dashboard';
   const dashStatus = el('p', 'sp-note sp-dash-status');
@@ -1274,7 +1141,6 @@ export function startSettingsPage(root: HTMLElement): void {
   rows.set('dashboard', { spec: dashboardSpec, root: dashHost, label: el('span'), desc: null, card: dashHost, flag: null, target: null });
   const receiveDashboard = mountPrivacyDashboard({ column: dashColumn, status: dashStatus, scroll: main, section: dashSection });
 
-  // Performance
   const powerCard = card('performance', 'Power');
   const efficiency = segmentedControl<EfficiencyMode>('Efficiency mode', EFFICIENCY_MODES.map((mode) => [mode, EFFICIENCY_LABELS[mode], EFFICIENCY_ARIA[mode]] as const), (value) => change((d) => { d.efficiencyMode = value; }));
   row(powerCard, 'efficiency', efficiency.root);
@@ -1307,7 +1173,6 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   const sleepAfterRow = row(memoryCard, 'sleepAfter', sleepHost);
 
-  // --- start page --- the Start page section builds its own rows through this page's helpers
   const startSection = mountStartSection({
     card: (section, heading) => card(section, heading),
     row: (into, id, control, options) => row(into, id, control, options),
@@ -1316,10 +1181,7 @@ export function startSettingsPage(root: HTMLElement): void {
     segmentedControl,
     toast: (text, ok) => showToast(text, ok),
   });
-  // --- end start page ---
 
-  // Address bar, search engines and bookmarks (src/address-section.ts): its own snapshot, its own
-  // commands in the `set` family. The bookmarks bar's rows join the page's existing ones in Appearance.
   const addressSections = mountAddressSections({
     send: cmd,
     toast: (text, ok) => showToast(text, ok),
@@ -1331,26 +1193,17 @@ export function startSettingsPage(root: HTMLElement): void {
     painted: () => paintDependents(),
   });
 
-  /**
-   * Rows that cannot act in the state other rows leave them in. Each is disabled and dimmed (`is-off`);
-   * one that only tunes something switched off also leaves the page (`is-na`; a search still lists it),
-   * as the start page's rows do. An unreadable file locks every control and the banner says why, so
-   * the rows are not dimmed for that.
-   */
   const paintDependents = (): void => {
     const s = snapshot;
     const d = draft;
     if (!s || !d) return;
     const readable = s.readable;
-    // "Centre address" moves the field only where it has a toolbar row of its own beside free room.
     const centring = centringApplies(d.tabLayout, d.layout.tabBarVisible, d.layout.addressBarPosition);
     centred.disable(!readable || !centring);
     rest('centredAddressBar', readable && !centring);
-    // "Full address" shows everything, so the short form has nothing to shorten (omnibox.rs `address_display`).
     const full = addressSections.fullAddress();
     minimal.disable(!readable || full);
     rest('minimalUrl', readable && full);
-    // The bookmarks bar's own rows only matter while it can show; pinning groups only while they show on it.
     const bar = d.bookmarksBar !== 'never';
     bookmarksGroups.disable(!readable || !bar);
     away('bookmarksBarTabGroups', readable && !bar);
@@ -1359,12 +1212,9 @@ export function startSettingsPage(root: HTMLElement): void {
     away('pinNewTabGroups', readable && !barGroups);
     addressSections.barRows(!readable || !bar, readable && !bar);
   };
-  // Simple cannot wait for the address list: the settings engine id is enough for a right-aligned name.
   const engineValue = el('span', 'sp-value sp-engine-value');
   rows.get('searchDefault')?.root.querySelector('.sp-ctl')?.append(engineValue);
 
-  // Page tools (src/page-tools-section.ts): its own snapshot and commands in the `set` family. The few core
-  // rows and the rest behind "More options" are decided by row id in settings-page-logic.ts.
   const pageToolsSection = mountPageToolsSection({
     send: cmd,
     toast: (text, ok) => showToast(text, ok),
@@ -1374,8 +1224,6 @@ export function startSettingsPage(root: HTMLElement): void {
     segmentedControl,
   });
 
-  // Feeds (thread T13, docs/feeds.md): open the panel, the address bar's feed button, and when Feeds fetches. Each is
-  // its own command (`openfeeds`, `baropt`), applied at once; the rows join the page's search like any other.
   const feedsCard = card('address', 'Feeds');
   const feedsOpen = textButton('Open', () => cmd({ a: 'openfeeds' }), { icon: 'feed', aria: 'Open Feeds' });
   row(feedsCard, 'feedsOpen', feedsOpen);
@@ -1393,24 +1241,17 @@ export function startSettingsPage(root: HTMLElement): void {
   feedsRefreshHost.append(feedsRefreshSelect.root);
   row(feedsCard, 'feedsRefresh', feedsRefreshHost);
 
-  // Keyboard and Quick commands (docs/commands.md): each control is its own command, answered by the
-  // `commands` snapshot, never part of `save`. The rows join the page's search like any other.
   const commandSections = mountCommandsSections({ send: cmd, toast: (text, ok) => showToast(text, ok) });
   sectionNodes.get('keyboard')?.append(...commandSections.keyboard);
   sectionNodes.get('commands')?.append(...commandSections.commands);
   for (const found of commandSections.rows) rows.set(found.spec.id, { ...found, flag: null, target: null });
   groups.push(...commandSections.groups);
-  // The chord switches (Shortcuts > Keys and clicks; `arrange` puts Ctrl+Tab order beside them).
   const shortcutsCard = card('keyboard', 'Keys and clicks');
   row(shortcutsCard, 'shiftRightClickContext', shiftRightClick.root);
   row(shortcutsCard, 'ctrlShiftCCopyLink', copyLink.root);
   row(shortcutsCard, 'ctrlSVerticalTabs', vTabs.root);
 
-  // Downloads (docs/design/downloads.md "Settings"): both controls are their own commands, never
-  // part of `save`; Rust shows the native folder picker and answers with the next snapshot.
   const downloadsCard = card('downloads');
-  // Not counted as pending: a cancelled picker answers with nothing, and the path is read straight
-  // from each snapshot, never from the draft.
   const downloadChange = textButton('Change', () => { cmd({ a: 'downloadfolder' }); }, { icon: 'folder' });
   downloadChange.setAttribute('aria-label', 'Change download location');
   const downloadDirRow = row(downloadsCard, 'downloadDir', downloadChange);
@@ -1422,7 +1263,6 @@ export function startSettingsPage(root: HTMLElement): void {
   const downloadAsk = switchControl((on) => { if (cmd({ a: 'downloadask', on })) pending += 1; });
   row(downloadsCard, 'downloadAsk', downloadAsk.root);
 
-  // Media
   const mediaCard = card('media');
   const mediaStatus = el('span', 'sp-media-status');
   const recheck = textButton('Check again', () => checkMedia(), { icon: 'reload', subtle: true });
@@ -1466,7 +1306,6 @@ export function startSettingsPage(root: HTMLElement): void {
     void runMediaCheck(browserProbes()).then((report) => {
       if (run !== mediaRun) return;
       recheck.disabled = false;
-      // The results speak for themselves; the status line only reports a check in progress or a failure.
       mediaStatus.textContent = '';
       paintMedia(report);
     }, () => {
@@ -1476,7 +1315,6 @@ export function startSettingsPage(root: HTMLElement): void {
     });
   };
   mediaStatus.textContent = '';
-  // The check runs once, the first time the Media card comes into view (observed once `arrange` has placed it).
   const mediaObserver = new IntersectionObserver((entries, observer) => {
     if (entries.some((entry) => entry.isIntersecting) && snapshot) {
       observer.disconnect();
@@ -1484,11 +1322,8 @@ export function startSettingsPage(root: HTMLElement): void {
     }
   }, { root: main });
 
-  // Extensions: a block of its own, like the Privacy dashboard. Rust sends its `extensions` snapshots to
-  // this page and takes its extension commands in the `set` family; search treats it as one row.
   const extensions = mountExtensionsSection({ send: cmd, toast: (text, ok) => showToast(text, ok) });
   sectionNodes.get('extensions')?.append(extensions.root);
-  // Passwords and autofill (src/passwords-section.ts): a block of its own with its `passwords` snapshot.
   const passwordsSection = mountPasswordsSection({ send: cmd, toast: (text, ok) => showToast(text, ok), switchControl });
   sectionNodes.get('passwords')?.append(passwordsSection.root);
   const passwordsSpec = ROWS.find((r) => r.id === 'passwords')!;
@@ -1498,7 +1333,6 @@ export function startSettingsPage(root: HTMLElement): void {
   const extensionsSpec = ROWS.find((r) => r.id === 'extensions')!;
   rows.set('extensions', { spec: extensionsSpec, root: extensions.root, label: el('span'), desc: null, card: extensions.root, flag: null, target: null });
 
-  // Updates
   const updateCard = card('updates');
   const autoUpdate = switchControl((on) => { if (cmd({ a: 'autoupdate', on })) pending += 1; });
   const autoUpdateRow = row(updateCard, 'autoUpdate', autoUpdate.root);
@@ -1518,7 +1352,6 @@ export function startSettingsPage(root: HTMLElement): void {
   updateRow.root.replaceChildren(statusBox);
   updateRow.root.classList.add('is-status');
 
-  // About
   const aboutCard = card('about');
   const version = el('span', 'sp-value');
   row(aboutCard, 'version', version);
@@ -1540,8 +1373,6 @@ export function startSettingsPage(root: HTMLElement): void {
   resetBox.append(cancel, reset);
   paintReset();
   row(aboutCard, 'reset', resetBox);
-  // Back up and restore: the password goes to Bowser with the command and is cleared from the page at once;
-  // Bowser shows Windows' own dialog for the file, so the page never names a path.
   const backupCard = card('about');
   const passwordField = (aria: string, autocomplete: string): HTMLInputElement => {
     const input = el('input', 'bw-input sp-backup-password');
@@ -1581,13 +1412,10 @@ export function startSettingsPage(root: HTMLElement): void {
   const defaultBrowserRow = row(defaultBrowserCard, 'defaultBrowser', defaultBrowserButton);
   defaultBrowserRow.root.classList.add('is-tight');
 
-  // ---- --- settings structure --- arranging the rows: groups, More, sub-pages, "Inactive" ----
-
   interface Disclosure {
     readonly key: string; readonly root: HTMLElement; readonly button: HTMLButtonElement; readonly body: HTMLElement;
     readonly groups: Map<string, Group>; count: number;
   }
-  /** Where each row ended up: its area, its group, its disclosure (null when shown), or its sub-page. */
   interface Place { readonly area: string; readonly group: string; readonly disclosure: Disclosure | null; readonly page: boolean }
   interface Opener { readonly id: string; readonly root: HTMLElement; readonly label: HTMLElement; readonly desc: HTMLElement | null; readonly button: HTMLButtonElement }
   interface SubPage { readonly id: string; readonly root: HTMLElement; readonly heading: HTMLElement; readonly area: AreaSpec }
@@ -1607,14 +1435,12 @@ export function startSettingsPage(root: HTMLElement): void {
     setClass(d.root, 'is-open', open);
     setHidden(d.body, !open);
   };
-  /** One disclosure row: a full-width button in a card, its body (groups of rows) below it. */
   const disclosure = (key: string, label: string, aria: string): Disclosure => {
     const root = el('div', 'sp-more');
     root.dataset.more = key;
     const button = el('button', 'sp-more-btn');
     button.type = 'button';
     button.id = `sp-more-b-${key}`;
-    // Every area has a "More" button: the accessible name says whose it is.
     button.setAttribute('aria-label', aria);
     const text = el('span', 'sp-text');
     const name = el('span', 'sp-label');
@@ -1636,7 +1462,6 @@ export function startSettingsPage(root: HTMLElement): void {
       writeOpen(openState);
       paintDisclosure(d, open);
     });
-    // Using a row found by the search keeps its disclosure open after the search is cleared.
     body.addEventListener('focusin', () => {
       if (!searching || openState.has(key)) return;
       openState.add(key);
@@ -1646,7 +1471,6 @@ export function startSettingsPage(root: HTMLElement): void {
     disclosures.push(d);
     return d;
   };
-  /** A group: its sub-heading over one card, appended to `into`. The same shape in every part of the page. */
   const makeGroup = (into: HTMLElement, key: string, title: string, section?: SettingsSection): Group => {
     const root = el('div', 'sp-group');
     root.dataset.group = key;
@@ -1663,7 +1487,6 @@ export function startSettingsPage(root: HTMLElement): void {
     into.append(root);
     return { root, heading: h, card: node };
   };
-  /** The group `key` inside a disclosure, made on first use (in the order rows arrive, which is page order). */
   const disclosureGroup = (d: Disclosure, key: string, title: string, section?: SettingsSection): Group => {
     const found = d.groups.get(key);
     if (found) return found;
@@ -1672,7 +1495,6 @@ export function startSettingsPage(root: HTMLElement): void {
     return made;
   };
 
-  // Sub-pages: the big editors, each on a page of its own with a way back.
   const closePage = (refocus: boolean): void => {
     const shown = openPage;
     if (!shown) return;
@@ -1747,7 +1569,6 @@ export function startSettingsPage(root: HTMLElement): void {
       lead.textContent = node.spec.description;
       sub.append(lead);
     }
-    // The editor's own title and lead would repeat the page's: they stay for the search marks, unseen.
     if (node.root.classList.contains('sp-row')) {
       node.root.classList.add('is-page');
       const box = el('div', 'sp-card');
@@ -1766,7 +1587,6 @@ export function startSettingsPage(root: HTMLElement): void {
     return made;
   };
 
-  // "Not active yet": the rows Bowser saves but does not act on, at the very end, collapsed.
   const laterNode = el('section', 'sp-sec sp-later');
   laterNode.dataset.area = 'later';
   {
@@ -1780,11 +1600,8 @@ export function startSettingsPage(root: HTMLElement): void {
   const laterDisclosure = disclosure('later', LATER_LABEL, `${LATER_LABEL} ${LATER_TITLE.toLowerCase()} settings`);
   laterNode.append(laterDisclosure.root);
 
-  /** The groups drawn in each area (shown rows), by group key; empty ones are dropped after arranging. */
   const shownGroups = new Map<string, Group>();
-  /** Each area's More disclosure. */
   const moreOf = new Map<SettingsSection, Disclosure>();
-  /** Content that travels with a row (the media report under the Media check). */
   const companions = new Map<string, readonly HTMLElement[]>([['media', [mediaResults]]]);
 
   const arrange = (): void => {
@@ -1795,8 +1612,6 @@ export function startSettingsPage(root: HTMLElement): void {
       moreOf.set(area.key, d);
       node.append(d.root);
     }
-    // Page order: the area, then the group, then the row's place in its group's list. A row no group
-    // lists (a new one) follows the listed rows of its group, in the order it was built.
     const rank = (node: RowNode, built: number): readonly number[] => {
       const { area, group } = placementOf(node.spec.id, node.spec.section);
       const at = group.rows.indexOf(node.spec.id);
@@ -1808,7 +1623,6 @@ export function startSettingsPage(root: HTMLElement): void {
       .map(({ node }) => node);
     const put = (node: RowNode, into: Group): void => {
       if (node.root.classList.contains('sp-row')) { into.card.append(node.root, ...(companions.get(node.spec.id) ?? [])); return; }
-      // A block (the extensions list) is its own surface: it takes the card's place under the heading.
       into.card.replaceWith(node.root);
       into.card = node.root;
     };
@@ -1820,7 +1634,6 @@ export function startSettingsPage(root: HTMLElement): void {
         put(node, shownGroups.get(group.key)!);
         places.set(spec.id, { area: area.key, group: group.key, disclosure: null, page: false });
       } else if (tier === 'page') {
-        // The opening row sits in the group; the editor itself moves to its sub-page.
         shownGroups.get(group.key)!.card.append(openerRow(spec.id, spec).root);
         subPage(node, area);
         places.set(spec.id, { area: area.key, group: group.key, disclosure: null, page: true });
@@ -1832,7 +1645,6 @@ export function startSettingsPage(root: HTMLElement): void {
         places.set(spec.id, { area: later ? 'later' : area.key, group: group.key, disclosure: d, page: false });
       }
     }
-    // A group with nothing shown lives only in More; an area with nothing folded has no More.
     for (const [key, made] of shownGroups) {
       if (made.card.childElementCount > 0 || made.card.dataset.row !== undefined) continue;
       made.root.remove();
@@ -1841,7 +1653,6 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const d of disclosures) {
       if (d.count === 0) d.root.remove();
     }
-    // The staging parts are spent: from here on the page knows only its drawn groups.
     groups.length = 0;
     groups.push(...shownGroups.values(), ...disclosures.flatMap((d) => [...d.groups.values()]));
     if (laterDisclosure.count === 0) laterNode.hidden = true;
@@ -1852,9 +1663,6 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   arrange();
 
-  // ---- Simple settings: the rows people change, lifted out of All settings into four short groups ----
-  // The nodes move (a marker keeps each one's place in All settings), so every control and what it
-  // does lives in one place. SIMPLE_GROUPS in settings-page-logic.ts says which rows and in what order.
   const simpleNode = el('section', 'sp-sec sp-simple');
   const simpleHeading = el('h2', 'sp-h');
   simpleHeading.id = 'sp-h-simple';
@@ -1873,7 +1681,6 @@ export function startSettingsPage(root: HTMLElement): void {
   simpleNode.append(showAll);
   column.append(simpleNode);
   const parks = new Map<string, HTMLElement>();
-  /** The node Simple shows for a row: the row itself, or the row that opens its sub-page. */
   const movedNode = (id: string): HTMLElement | null => openers.get(id)?.root ?? rows.get(id)?.root ?? null;
   const park = (id: string, node: HTMLElement): void => {
     if (parks.has(id)) return;
@@ -1898,7 +1705,6 @@ export function startSettingsPage(root: HTMLElement): void {
     const on = simpleOn();
     page.classList.toggle('is-simple', on);
     simpleNode.hidden = !on;
-    // The switch matches the page on screen: search results and a deep link show All until Simple is chosen again.
     viewCtl.set(on ? 'simple' : 'all');
     if (on) {
       for (const { spec, group } of simpleGroups) {
@@ -1922,7 +1728,6 @@ export function startSettingsPage(root: HTMLElement): void {
     }
   };
 
-  /** Rows Bowser does not act on yet keep their saved value but never look like a control that works. */
   const lockLater = (): void => {
     for (const [id, place] of places) {
       if (place.area !== 'later') continue;
@@ -1936,10 +1741,6 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   lockLater();
 
-  // ---- rows that cannot act now ----
-  // As on the start page: a row whose switch cannot change anything in this state is disabled and leaves
-  // the page (`is-na`; a search still finds it, dimmed), instead of looking live. `restingPageRows` says
-  // which; the Keyboard's own snapshot says whether shortcuts are on at all.
   let shortcutsOn = true;
   const restingControls: ReadonlyArray<readonly [string, { disable(off: boolean): void }]> = [
     ['spoilerMode', spoilerMode], ['spoilerReducedEffects', spoilerEffects], ['spoilerOcr', spoilerOcr], ['translateAuto', translateAuto],
@@ -1957,12 +1758,10 @@ export function startSettingsPage(root: HTMLElement): void {
     }
   };
 
-  // ---- applying a snapshot ----
   const apply = (s: SettingsSnapshot): void => {
     const settle = pending === 0;
     if (settle || !draft) draft = draftOf(s);
     const d = draft;
-    // --- layout (thread T6) ---
     presets.set(selectedTile(d));
     paintSavedTile(d.layout.saved, s.readable);
     layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
@@ -1974,8 +1773,6 @@ export function startSettingsPage(root: HTMLElement): void {
     paintUiZoom(d.layout.uiZoom);
     uiZoomRange.disabled = !s.readable;
     uiZoomValue.disabled = !s.readable;
-    // --- end layout ---
-    // --- window and panels (thread T9) ---
     winAnimations.set(d.window.animations);
     winRangeButtons.set(d.window.rangeButtons);
     winFade.set(d.window.fadeBackground);
@@ -1987,11 +1784,9 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const wrapNode of [widthWrap, uiZoomWrap]) wrapNode.classList.toggle('is-steps', d.window.rangeButtons);
     winReset.disabled = !s.readable || windowGroupIsDefault(d.window, WINDOW_APPEARANCE_KEYS);
     panelReset.disabled = !s.readable || windowGroupIsDefault(d.window, WINDOW_PANEL_KEYS);
-    // --- end window and panels ---
     width.value = String(d.sidebarWidth);
     paintWidth();
     pinStrip.set(d.sidebarPinned);
-    // The sidebar's width and pin act only while the tabs are a sidebar on screen: otherwise the rows leave.
     const sidebar = sidebarShown(d.tabLayout, d.layout.tabBarVisible);
     pinStrip.disable(!s.readable || !sidebar);
     width.disabled = !s.readable || !sidebar;
@@ -2002,11 +1797,10 @@ export function startSettingsPage(root: HTMLElement): void {
     mru.set(d.ctrlTabMru);
     pinGroups.set(d.pinNewTabGroups);
     edgeDrop.set(d.splitEdgeDrop);
-    paintRules(s.workspaceRules); // --- tab stacks (T10) ---
+    paintRules(s.workspaceRules);
     vTabs.set(d.ctrlSVerticalTabs);
     theme.set(d.themeAccent === '' ? d.theme : null);
     paintAccent(d.themeAccent);
-    // --- toolbars and feeds (thread T13) ---
     toolbarOpen.disabled = !s.readable;
     toolbarReset.disabled = !s.readable || (d.toolbarButtons === itemsText(DEFAULTS.address) && s.bars.tabs === itemsText(DEFAULTS.tabs));
     feedsDetect.set(s.bars.feedsDetect);
@@ -2014,16 +1808,13 @@ export function startSettingsPage(root: HTMLElement): void {
     feedsRefreshSelect.set(String(s.bars.feedsRefresh));
     feedsRefreshSelect.button.toggleAttribute('disabled', !s.readable || s.guest);
     feedsOpen.disabled = !s.readable;
-    // --- end toolbars and feeds ---
     centred.set(d.centredAddressBar);
     minimal.set(d.minimalUrl);
     loadProgress.set(d.showLoadProgress);
     frameless.set(d.frameless);
-    // --- auto-hide (T11) --- the bar list only matters while the master switch is on.
     for (const [bar, sw] of autoHideBarSwitches) { sw.set(autoHideBarsList(d.autoHideBars).includes(bar)); sw.disable(!s.readable || !d.frameless); }
     away('autoHideBars', s.readable && !d.frameless);
     autoHideFullscreen.set(d.autoHideFullscreen);
-    // --- end auto-hide ---
     rounded.set(d.roundedContentFrame);
     bookmarksBarCtl.set(d.bookmarksBar);
     bookmarksGroups.set(d.bookmarksBarTabGroups);
@@ -2040,7 +1831,6 @@ export function startSettingsPage(root: HTMLElement): void {
     spoilerEffects.set(d.spoilerReducedEffects);
     spoilerOcr.set(d.spoilerOcr);
     spoilerFeed.set(d.spoilerFeed);
-    // Rows are one line, so the update status is the row's tooltip.
     if (s.spoilerFeedStatus) spoilerFeedRow.root.setAttribute('data-tip', s.spoilerFeedStatus);
     else spoilerFeedRow.root.removeAttribute('data-tip');
     if (engineValue.dataset.source !== 'address') engineValue.textContent = searchEngineLabel(s.searchEngine);
@@ -2056,7 +1846,6 @@ export function startSettingsPage(root: HTMLElement): void {
     efficiency.set(d.efficiencyMode);
     sleep.set(d.sleepEnabled);
     paintSleepSelect(d.sleepAfterSecs);
-    // "Sleep after" only acts while Sleep tabs is on: otherwise it rests and leaves the page (search still finds it).
     sleepSelect?.button.toggleAttribute('disabled', !s.readable || !d.sleepEnabled);
     restRow(sleepAfterRow.root, s.readable && !d.sleepEnabled);
     downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Downloads';
@@ -2064,8 +1853,6 @@ export function startSettingsPage(root: HTMLElement): void {
     translateOffer.set(s.translateOffer);
     translateAuto.set(s.translateAuto);
     paintTranslateSelect(s.translateTarget, s.translateTargets);
-    // A tab option that cannot act now (tabs on the side, the switch it tunes off, a new tab with no page)
-    // rests: disabled, dimmed and out of the page until it can (`is-na`; a search still finds it).
     const tabContext: TabRowContext = { tabsOnSide: simpleTabChoice(tabBarEdge(d.tabLayout)) === 'side', homepage: d.start.homepage, tabListHidden: !d.layout.tabBarVisible };
     for (const [key, control] of tabControls) {
       const rests = tabRowRests(key, s.tabOptions, tabContext);
@@ -2074,12 +1861,10 @@ export function startSettingsPage(root: HTMLElement): void {
       const node = rows.get(key)?.root;
       if (node) { setClass(node, 'is-off', s.readable && rests); setClass(node, 'is-na', s.readable && rests); }
     }
-    // "New tab page: Homepage" with no homepage set opens the start page; its choice says so on hover.
     const homeChoice = Array.from(rows.get('tabs_new_tab_page')?.root.querySelectorAll<HTMLElement>('[role="radio"]') ?? []).find((radio) => radio.textContent === 'Homepage');
     const homeTip = homepageChoiceTip(d.start.homepage);
     if (homeTip !== '') homeChoice?.setAttribute('data-tip', homeTip);
     else homeChoice?.removeAttribute('data-tip');
-    // The workspace rules wait while Workspaces is off: their opener and their form rest too.
     const rulesRest = tabRowRests('workspaceRules', s.tabOptions, tabContext);
     for (const control of [ruleSite, ruleAdd]) control.disabled = rulesRest;
     ruleSelect?.button.toggleAttribute('disabled', rulesRest);
@@ -2091,9 +1876,8 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     const rulesNode = rows.get('workspaceRules')?.root;
     if (rulesNode) setClass(rulesNode, 'is-off', rulesRest);
-    themeRows.apply(s.themeOptions, s.readable, d.window.rangeButtons); // --- theme options ---
+    themeRows.apply(s.themeOptions, s.readable, d.window.rangeButtons);
     autoUpdate.set(s.autoUpdate);
-    // A build that cannot update itself (a developer build) has nothing for the switch to turn on.
     autoUpdate.disable(s.update === 'unavailable');
     restRow(autoUpdateRow.root, s.update === 'unavailable');
     const view = updateView(s);
@@ -2118,12 +1902,11 @@ export function startSettingsPage(root: HTMLElement): void {
       layout, grouping, tracking, efficiency, sleep,
       previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, centred, minimal, loadProgress, frameless, autoHideFullscreen,
       rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube, spoilerSwitch,
-      presets, tabBarVisible, addressBarVisible, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
-      winAnimations, winRangeButtons, winFade, winScrollbars, winMonoIcons, panelClose, panelCounts, panelAutoClose, // --- window and panels (thread T9) ---
+      presets, tabBarVisible, addressBarVisible, statusBarCtl, densityCtl, compactMenus,
+      winAnimations, winRangeButtons, winFade, winScrollbars, winMonoIcons, panelClose, panelCounts, panelAutoClose,
     ]) control.disable(!s.readable);
-    paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
-    paintDependents(); // after the group-wide disable too: these rows also follow other rows
-    // The mode, the covers and the image scan only matter while protection is on: `paintResting` below.
+    paintSavedTile(d.layout.saved, s.readable);
+    paintDependents();
     spoilerFeed.disable(!s.readable);
     spoilerOff.disabled = !s.readable;
     downloadAsk.disable(!s.readable);
@@ -2136,18 +1919,16 @@ export function startSettingsPage(root: HTMLElement): void {
     accentReset.disabled = !s.readable;
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
-    startSection.apply(d.start, s.readable, startPageShown(s.tabOptions)); // --- start page --- (a Blank new tab page has none)
+    startSection.apply(d.start, s.readable, startPageShown(s.tabOptions));
     themeMode.set(simpleThemeChoice(String(s.themeOptions.theme_schedule), String(s.themeOptions.theme_look)));
     themeMode.disable(!s.readable);
     tabPosition.set(simpleTabChoice(tabBarEdge(d.tabLayout)));
     tabPosition.disable(!s.readable);
     paintResting(s.readable, s.translateOffer);
-    lockLater(); // --- settings slim ---
-    // A snapshot during a search (a change just saved) keeps the results where the reader is.
+    lockLater();
     if (query !== '') filter(false);
   };
 
-  // ---- navigation: scroll position, active area, indicator ----
   const paintNav = (): void => {
     let index = 0;
     AREAS.forEach((spec, i) => {
@@ -2159,14 +1940,9 @@ export function startSettingsPage(root: HTMLElement): void {
     if (button) indicator.style.setProperty('--sp-ind-y', `${button.offsetTop}px`);
     indicator.style.setProperty('--sp-ind-h', `${button?.offsetHeight ?? 32}px`);
     indicator.dataset.index = String(index);
-    // Narrow layout: keep the current chip in view.
     if (page.classList.contains('is-narrow')) button?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
-  /**
-   * Where a deep link to `key` lands: the area for its own key, else the first group of that section.
-   * A group that lives only behind More opens it, so the link still lands on what it names.
-   */
   const anchorNode = (key: SettingsSection): HTMLElement | undefined => {
     const area = areaOf(key);
     const spec = key === area.key ? null : anchorGroup(key);
@@ -2178,13 +1954,10 @@ export function startSettingsPage(root: HTMLElement): void {
     if (d && folded) { paintDisclosure(d, true); return folded.root; }
     return areaNodes.get(area.key);
   };
-  /** The destination is relative to main, including the browser's end-of-page clamp. */
   const sectionTop = (key: SettingsSection | ''): number => {
     const target = key === '' ? null : anchorNode(key);
     return Math.max(0, Math.min(target ? target.offsetTop - 8 : 0, Math.max(0, main.scrollHeight - main.clientHeight)));
   };
-  // Keep the chosen section at its destination when late snapshots, media results or the host's
-  // first visible size change the layout. Pinning is navigation state, not a permanent scroll lock.
   let pinned: { key: SettingsSection | ''; top: number } | null = null;
   let pinFrame = 0;
   const unpinSection = (): void => { pinned = null; };
@@ -2192,10 +1965,8 @@ export function startSettingsPage(root: HTMLElement): void {
     if (pinFrame || !pinned) return;
     pinFrame = requestAnimationFrame(() => {
       pinFrame = 0;
-      // Read the latest navigation here: a queued old layout must not undo a newer pick or input.
       if (!pinned || page.hidden || openPage || query !== '' || !store.root.hidden) return;
       const top = sectionTop(pinned.key);
-      // Do not interrupt an unchanged smooth navigation, or loop at the bottom of the document.
       if (Math.abs(top - pinned.top) < 0.5) return;
       pinned.top = top;
       main.scrollTo({ top, behavior: 'auto' });
@@ -2205,25 +1976,17 @@ export function startSettingsPage(root: HTMLElement): void {
     const layout = new ResizeObserver(alignPinnedSection);
     layout.observe(main);
     layout.observe(column);
-    // Opposing size changes can leave a column or an area unchanged but move a group inside it.
     for (const node of new Set([...areaNodes.values(), ...[...shownGroups.values()].map((made) => made.root)])) layout.observe(node);
   }
 
-  /** Shows `key`; `tell` reports it to Bowser (the tab's address follows), `smooth` animates. */
   const go = (key: SettingsSection | '', smooth: boolean, tell: boolean): void => {
-    // Scrolling from where the reader is only makes sense while the same page stays on screen. Leaving
-    // search results, a sub-page or Simple swaps the page under the scroll position, so that jump is instant.
     const samePage = query === '' && openPage === null && !simpleOn();
     sectionHold = key !== '' && prefer === 'simple';
     closePage(false);
     if (query !== '') { input.value = ''; query = ''; }
-    // Reconcile Simple/All and reveal the destination before measuring its position. The scroll
-    // position is kept: a nav click scrolls from here straight to the section, never via the top.
     filter(false);
     const area = key === '' ? AREAS[0]! : areaOf(key);
     current = area.key;
-    // The chosen area stays current even when the page cannot scroll it to the top (the last
-    // ones), until the user scrolls by hand.
     const top = sectionTop(key);
     pinned = { key, top };
     paintNav();
@@ -2234,7 +1997,6 @@ export function startSettingsPage(root: HTMLElement): void {
     if (tell && key !== '') areaNodes.get(area.key)?.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
   };
 
-  // The area whose heading last passed a line a third of the way down is the current one.
   let scrollFrame = 0;
   for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart'] as const) main.addEventListener(type, unpinSection, { passive: true });
   main.addEventListener('scroll', () => {
@@ -2258,11 +2020,9 @@ export function startSettingsPage(root: HTMLElement): void {
   }, { passive: true });
   for (const node of areaNodes.values()) node.querySelector<HTMLElement>('h2')!.tabIndex = -1;
 
-  // ---- search: every row is found, wherever it is drawn; a disclosure with a hit opens ----
   const marked = (target: HTMLElement, text: string): void => {
     const ranges = query === '' ? [] : highlightRanges(text, query);
     if (ranges.length === 0) { if (target.textContent !== text || target.childElementCount > 0) target.textContent = text; return; }
-    // Compare the current DOM so snapshot label changes need no cache invalidation.
     let childIndex = 0;
     const samePart = (part: string, mark: boolean): boolean => {
       const child = target.childNodes[childIndex++];
@@ -2289,7 +2049,6 @@ export function startSettingsPage(root: HTMLElement): void {
     if (at < text.length) parts.push(document.createTextNode(text.slice(at)));
     target.replaceChildren(...parts);
   };
-  /** A card shows while any row in it shows (an emptied card, its rows moved elsewhere, never). */
   const parentOf = (node: HTMLElement): HTMLElement | null => node.parentElement ?? (node as HTMLElement & { parent?: HTMLElement | null }).parent ?? null;
   const ancestor = (node: HTMLElement, className: string): HTMLElement | null => {
     let current = parentOf(node);
@@ -2299,10 +2058,8 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     return null;
   };
-  /** A group shows while any row in it shows; its heading shows unless it only repeats the section title. */
   const paintGroups = (): void => {
     for (const group of groups) {
-      // A block drawn in place of the card (the extensions list) is one row of its own.
       const visible = group.card.dataset.row !== undefined
         ? !group.card.hidden
         : Array.from(group.card.children).some((node) => node instanceof HTMLElement && node.classList.contains('sp-row') && !node.hidden);
@@ -2311,14 +2068,12 @@ export function startSettingsPage(root: HTMLElement): void {
       if (!heading) continue;
       const section = ancestor(heading, 'sp-sec');
       const areaTitle = Array.from(section?.children ?? []).find((child) => child.classList.contains('sp-h'))?.textContent ?? '';
-      // Every group keeps its heading, over one row or ten, so a row always says what it belongs to.
       const redundant = areaTitle !== '' && heading.textContent === areaTitle;
       setHidden(heading, redundant);
       if (redundant) { if (group.card.hasAttribute('aria-labelledby')) group.card.removeAttribute('aria-labelledby'); }
       else if (heading.id && group.card.getAttribute('aria-labelledby') !== heading.id) group.card.setAttribute('aria-labelledby', heading.id);
     }
   };
-  /** Shows the rows the search finds. `fromTop` starts the results at the top (a new query or view). */
   function filter(fromTop = true): void {
     unpinSection();
     if (query !== '') closePage(false);
@@ -2342,7 +2097,6 @@ export function startSettingsPage(root: HTMLElement): void {
       marked(node.label, labelText);
       if (node.desc) marked(node.desc, node.desc.textContent ?? '');
     }
-    // A row on a sub-page is found through the row that opens it.
     for (const opener of openers.values()) {
       setHidden(opener.root, !shows(opener.id));
       marked(opener.label, opener.label.textContent ?? '');
@@ -2394,7 +2148,6 @@ export function startSettingsPage(root: HTMLElement): void {
     if (event.key === 'Escape' && input.value !== '') { event.preventDefault(); input.value = ''; query = ''; filter(); return; }
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    // The first hit in page order: a row, or the row that opens the sub-page a hit is on.
     const first = Array.from(column.querySelectorAll<HTMLElement>('[data-row], [data-opens]')).find((node) => {
       if (node.hidden) return false;
       const id = node.dataset.row;
@@ -2414,8 +2167,6 @@ export function startSettingsPage(root: HTMLElement): void {
     if (spec) cmd({ a: 'section', text: spec.section });
   });
   clear.addEventListener('click', () => { input.value = ''; query = ''; filter(); input.focus(); });
-  // Ctrl+F and / jump to the search field, as on Chrome's settings page. A `/` typed into any text
-  // field (the startup pages list is a textarea of addresses) stays in that field.
   document.addEventListener('keydown', (event) => {
     if (!store.root.hidden || welcome.shown || event.isComposing) return;
     if ((event.key === 'f' && event.ctrlKey && !event.shiftKey && !event.altKey) || (event.key === '/' && !isTyping(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey)) {
@@ -2425,7 +2176,6 @@ export function startSettingsPage(root: HTMLElement): void {
     }
   });
 
-  // ---- responsive: one column below 880px ----
   const fit = (): void => {
     const narrow = window.innerWidth < 880;
     if (page.classList.contains('is-narrow') !== narrow) page.classList.toggle('is-narrow', narrow);
@@ -2434,22 +2184,18 @@ export function startSettingsPage(root: HTMLElement): void {
   window.addEventListener('resize', fit);
   fit();
 
-  // A fresh snapshot when the page comes back to the front (another window may have changed things).
   let lastRefresh = 0;
   window.addEventListener('focus', () => {
     const now = Date.now();
     if (snapshot && now - lastRefresh > 2000) { lastRefresh = now; cmd({ a: 'refresh' }); }
   });
 
-  // ---- the first-run welcome (docs/design/welcome.md) ---- shown instead of the sections while the
-  // tab is on `bowser://settings/welcome`. Its choices are the same commands Simple's rows send.
   const welcome = mountWelcome({
     setLook: (choice) => {
       if (choice === 'system') sendThemeOption('theme_schedule', 'system');
       else { sendThemeOption('theme_schedule', 'none'); sendThemeOption('theme_look', choice); }
     },
     setAccent: (hex) => change((d) => { d.themeAccent = hex; }),
-    // The blocking level is the protection panel's own command (Settings > Privacy uses the same one).
     setBlocking: (on) => {
       if (sendPanel('priv', { a: 'blocklevel', text: on ? 'ads' : 'none' }) && draft) draft.blockerEnabled = on;
     },
@@ -2462,14 +2208,11 @@ export function startSettingsPage(root: HTMLElement): void {
   });
   root.append(welcome.root);
   const showWelcome = (on: boolean): void => {
-    // Whatever else the page holds (the Privacy dashboard, the store, the toast) is out of reach and out
-    // of the accessibility tree while the welcome covers it.
     for (const child of Array.from(root.children)) if (child !== welcome.root) child.toggleAttribute('inert', on);
     if (on) { page.hidden = true; welcome.show(); }
     else if (welcome.shown) { welcome.hide(); page.hidden = false; }
   };
 
-  // ---- Bowser's messages ----
   let wanted: SettingsSection | '' | null = null;
   const receive = (message: Inbound): void => {
     if (message.t === 'state') {
@@ -2482,7 +2225,6 @@ export function startSettingsPage(root: HTMLElement): void {
       if (message.s === 'welcome') { wanted = null; showWelcome(true); return; }
       showWelcome(false);
       page.hidden = false;
-      // Bowser moved the tab (a typed address, a menu pick): jump, as a navigation would.
       if (!snapshot) { wanted = message.s; return; }
       go(message.s, false, false);
       return;
@@ -2495,7 +2237,7 @@ export function startSettingsPage(root: HTMLElement): void {
       return;
     }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); store.receive(message); return; }
-    if (message.t === 'snap' && message.p === 'pagetools') { pageToolsSection.receive(message); return; } // --- page tools (T7) ---
+    if (message.t === 'snap' && message.p === 'pagetools') { pageToolsSection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'passwords') { passwordsSection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'commands') {
       commandSections.receive(message);
@@ -2507,7 +2249,7 @@ export function startSettingsPage(root: HTMLElement): void {
       }
       return;
     }
-    if (message.t === 'snap' && message.p === 'address') { // --- address bar, search and bookmarks ---
+    if (message.t === 'snap' && message.p === 'address') {
       addressSections.receive(message);
       const address = parseAddressSnapshot(message.d);
       if (address) welcome.engines(address.def, address.engines.map((engine) => engine.id));
@@ -2517,13 +2259,10 @@ export function startSettingsPage(root: HTMLElement): void {
     const parsed = parseSettingsSnapshot(message.d);
     if (!parsed) { banner.hidden = false; banner.textContent = 'Settings could not be loaded.'; return; }
     if (parsed.ack !== 'none') {
-      // Bowser runs queued commands together and answers once: this snapshot is the saved state.
       pending = 0;
       const ok = parsed.ack === 'saved' || parsed.ack === 'note';
       const text = parsed.ack === 'saved' ? savedNote ?? 'Saved' : parsed.error !== '' ? parsed.error : ok ? 'Done' : 'Settings could not be saved.';
       savedNote = null;
-      // Over the welcome the toast is hidden with the page: an import's outcome or a failure is said
-      // on the welcome instead.
       if (welcome.shown) { if (parsed.ack !== 'saved') welcome.say(text, ok); }
       else showToast(text, ok);
     }

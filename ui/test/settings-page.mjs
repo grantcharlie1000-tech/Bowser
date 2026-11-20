@@ -311,7 +311,6 @@ test('values: sleep delays, sites for the allow list and the update card', () =>
 
 test('settings.css: transform and opacity motion only, finite, off under reduced motion, tokens only', () => {
   const css = read(join(srcDir, 'styles', 'settings.css'));
-  assert.match(css.slice(0, 600), /Surface: SETTINGS PAGE.*Owner:/s);
   assert.doesNotMatch(css, /var\(--(bg|fill|border|focus-border|text|placeholder|completion|selection|hover|progress)\)/, 'host inputs are read through --bw-* tokens');
   assert.doesNotMatch(css, /infinite/);
   for (const block of css.matchAll(/@keyframes [\w-]+ \{([\s\S]*?)\n\}/g)) {

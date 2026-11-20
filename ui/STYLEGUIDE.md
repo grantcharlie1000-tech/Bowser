@@ -48,7 +48,9 @@ npm test           # includes test/styles.mjs (CSS contract) and test/icons.mjs 
 | `src/styles/start.css` | start page | the start page over a blank new tab (`?view=split`, `start-page.ts` and `start-page-logic.ts`, its own bundle `dist/start-page.js`) and the Start page settings section (`settings-start.ts`); docs/design/start-page.md |
 | `src/icons.ts`, `scripts/gen-icons.mjs`, `icons/` | foundation | Icon family |
 
-Each surface file starts with a `Surface: NAME ... Owner:` header (enforced by `test/styles.mjs`).
+Surface owners are listed above. The [Settings stylesheet ADR](../docs/adr/0004-settings-styles.md)
+records the Settings surface decisions. Other surface files use `Surface: NAME ... Owner:` headers,
+which `test/styles.mjs` checks for the files it covers.
 Edit only your own surface file; propose token or component changes to the foundation owner.
 
 ### Cascade layers
@@ -285,7 +287,8 @@ draw identical shapes.
 
 ## Adding a surface
 
-1. Add `src/styles/<surface>.css` with the header comment (`Surface: NAME (?view=...). Owner: ...`).
+1. Add `src/styles/<surface>.css` and list its owner above. Follow the surface's lint policy for
+   ownership headers (`Surface: NAME (?view=...). Owner: ...`).
 2. Import it at the end of the surface list in `src/styles/app.css` with `layer(surfaces)`.
 3. Scope every selector under the view root (`#app.<surface>` or a surface-specific class) so it
    cannot leak into other views; `#app` alone is the toolbar's default.

@@ -1,8 +1,3 @@
-// --- profiles --- The profile manager on bowser://settings/profile: every profile with its avatar and
-// name, Open, Rename (in place), a desktop shortcut and Delete (asked in the page), the current
-// profile's avatar and colour, and a form that adds a named profile. Each change is one `profile`
-// command (src/chrome_host/settings.rs `parse_profile_command`); Rust answers with a snapshot.
-
 import { el } from './dom';
 import { onFill } from './menu-logic';
 import { iconButton, radioGroup, textButton } from './panels/kit';
@@ -12,17 +7,14 @@ import {
 } from './settings-page-logic';
 
 export interface ProfilesView {
-  /** The list, the current profile's look, and the add form, in page order. */
   readonly parts: readonly HTMLElement[];
   paint(profiles: ProfileList, guest: boolean): void;
 }
 
 export interface ProfilesHost {
-  /** Sends one `profile` command; `answered` is true when Rust replies with Saved or an error. */
   send(text: string, answered: boolean): boolean;
 }
 
-/** Fills an avatar disc: `colour` behind, black or white ink on it ('' clears both). */
 export function paintDisc(node: HTMLElement, colour: string, glyph?: string): void {
   node.style.setProperty('--sp-profile-fill', colour);
   node.style.setProperty('--sp-profile-ink', colour === '' ? '' : onFill(colour));
@@ -40,14 +32,12 @@ export function mountProfiles(host: ProfilesHost): ProfilesView {
   let profiles: ProfileList = { list: [], avatars: [], accents: [] };
   let guest = false;
   let painted = '';
-  /** The row being renamed or asked about, kept across snapshots. */
   let editing: { id: string; mode: 'rename' | 'delete' } | null = null;
 
   const list = el('ul', 'sp-profiles');
   list.setAttribute('aria-label', 'Profiles');
   const me = (): ProfileEntry | undefined => profiles.list.find((p) => p.current);
 
-  // The current profile's look: one radio group per choice, built once and repainted in place.
   const look = el('div', 'sp-profile-look');
   const lookGroup = <T extends string>(label: string, keys: readonly T[], names: Readonly<Record<T, string>>, pick: (entry: ProfileEntry, value: T) => string) => {
     const swatches: HTMLElement[] = [];
@@ -80,7 +70,6 @@ export function mountProfiles(host: ProfilesHost): ProfilesView {
     accents.group.set(entry.accent);
   };
 
-  // Add a profile: a name, then Add. Guest window sits beside it.
   const form = el('div', 'sp-allow-add sp-profile-add');
   const nameInput = el('input', 'bw-input sp-allow-input');
   nameInput.type = 'text';
@@ -103,7 +92,6 @@ export function mountProfiles(host: ProfilesHost): ProfilesView {
   form.append(nameInput, textButton('Add profile', add, { icon: 'plus' }), guestButton);
 
   const rowOf = (id: string): HTMLElement | undefined => Array.from(list.querySelectorAll<HTMLElement>('.sp-profile')).find((item) => item.dataset.profile === id);
-  /** Leaves rename or delete and puts the keyboard back on the row's first action. */
   const close = (id: string): void => {
     editing = null;
     repaint();
@@ -152,7 +140,6 @@ export function mountProfiles(host: ProfilesHost): ProfilesView {
     actions.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); keep.click(); } });
     item.append(disc('sp-profile-avatar', entry.colour, entry.glyph), text, actions);
     item.classList.add('is-asking');
-    // The safe answer takes focus, so Enter right after the bin keeps the profile.
     queueMicrotask(() => keep.focus());
   };
 
@@ -181,7 +168,6 @@ export function mountProfiles(host: ProfilesHost): ProfilesView {
 
   const repaint = (): void => {
     if (editing && !profiles.list.some((p) => p.id === editing?.id)) editing = null;
-    // A snapshot redraws the rows; the keyboard stays on the same action when it was on one.
     const focused = document.activeElement;
     const focusLabel = focused instanceof HTMLElement && list.contains(focused) ? focused.getAttribute('aria-label') : null;
     list.replaceChildren(...profiles.list.map((entry) => {

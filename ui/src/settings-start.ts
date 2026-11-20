@@ -1,12 +1,3 @@
-// The settings page's "Start page" section (docs/design/start-page.md): speed dials, the homepage and
-// startup, and the dashboard widgets. settings-page.ts hands this module its own card, row and change
-// helpers (so the rows look and behave like every other row) and calls `apply` with each snapshot.
-//
-// Every row that tunes the speed dials only does something while Speed dials is on, and every widget
-// row only while Widgets is on: `apply` hides them otherwise (`is-na`), so the section is just its two
-// switches until one is turned on, and no control is ever on screen while it cannot change what a new
-// tab shows. A search still finds them, disabled and dimmed. With the new tab page set to Blank
-// (Tabs > New tabs) there is no start page at all, so the whole section rests and its two switches say why.
 import { el, icon } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
@@ -17,11 +8,9 @@ import type { TabOptionValues } from './tab-options-logic';
 
 interface Ctl<T> { readonly root: HTMLElement; set(value: T): void; disable(off: boolean): void }
 
-/** What settings-page.ts lends this module. */
 export interface StartSectionHost {
   card(section: 'startpage', heading?: string): HTMLElement;
   row(into: HTMLElement, id: string, control?: HTMLElement, options?: { stack?: boolean }): { readonly root: HTMLElement };
-  /** Edits the draft's start settings and saves. */
   change(edit: (start: StartSettings) => void): void;
   switchControl(onChange: (on: boolean) => void): Ctl<boolean>;
   segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void): Ctl<T | null>;
@@ -30,16 +19,13 @@ export interface StartSectionHost {
 
 export const GROUP_REOPEN_LABELS: Readonly<Record<GroupReopen, string>> = { last: 'Last used', first: 'First group' };
 export const GROUP_REOPEN_ARIA: Readonly<Record<GroupReopen, string>> = { last: 'The group you used last', first: 'The first group' };
-// "Auto" read as if it did nothing: it only differs from Always for a tile with a chosen image.
 export const TITLE_LABELS: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'If no image', never: 'Never' };
 export const TITLE_ARIA: Readonly<Record<TitleMode, string>> = {
   always: 'Always',
   auto: 'Under tiles without a chosen image, on hover for the rest',
   never: 'Never',
 };
-/** Under the two switches while the new tab page is Blank: why the section does nothing. */
 export const START_OFF_NOTE = 'Not shown: New tab page is Blank';
-// Tabs come back on every start, so each choice names what opens in front of them (src/start_page.rs).
 export const STARTUP_LABELS: Readonly<Record<StartupChoice, string>> = {
   last_session: 'Your tabs',
   homepage: 'Tabs + homepage',
@@ -50,15 +36,10 @@ export const HEIGHT_LABELS: Readonly<Record<WidgetHeight, string>> = { regular: 
 export const BG_LABELS: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Tinted', transparent: 'Clear', custom: 'Custom' };
 export const BG_ARIA: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Semi-transparent', transparent: 'Transparent', custom: 'Custom' };
 
-/**
- * Whether a blank new tab shows the start page, from the Tabs options: only a Blank new tab page turns
- * it off (mirrors `tab_options::start_page_shown` in Rust, which `start_ui::enabled` asks).
- */
 export function startPageShown(tabOptions: TabOptionValues): boolean {
   return tabOptions.tabs_new_tab_page !== 'blank';
 }
 
-/** The lines of a "specific pages" box as addresses, or `null` when one is not a web address or there are too many. */
 export function parsePageLines(text: string): string[] | null {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
   if (lines.length > MAX_STARTUP_PAGES) return null;
@@ -71,7 +52,6 @@ export function parsePageLines(text: string): string[] | null {
   return out;
 }
 
-/** A quiet note under a row's label (the settings page's `.sp-flag`), hidden until `apply` shows it. */
 function rowNote(row: HTMLElement, id: string, text: string): HTMLElement {
   const note = el('span', 'sp-flag sp-start-note');
   note.id = `sp-f-${id}`;
@@ -83,20 +63,16 @@ function rowNote(row: HTMLElement, id: string, text: string): HTMLElement {
   return note;
 }
 
-/** A row whose control cannot act now: dimmed as a whole, so it reads as resting rather than broken. */
 function rest(row: HTMLElement, off: boolean): void {
   row.classList.toggle('is-off', off);
 }
 
-/** A row that tunes something switched off: out of the page (a search still shows it, dimmed). */
 function away(row: HTMLElement, gone: boolean): void {
   row.classList.toggle('is-na', gone);
 }
 
 export function mountStartSection(host: StartSectionHost): { apply(start: StartSettings, readable: boolean, shown?: boolean): void } {
-  // Speed dials
   const dials = host.card('startpage', 'Dials');
-  // Off by default: a new tab is blank until speed dials are turned on here.
   const dialsOn = host.switchControl((on) => host.change((s) => { s.dials = on; }));
   const dialsRow = host.row(dials, 'startDials', dialsOn.root).root;
   const dialsNote = rowNote(dialsRow, 'startDials', START_OFF_NOTE);
@@ -129,7 +105,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   const drag = host.switchControl((on) => host.change((s) => { s.dragReorder = on; }));
   const dragRow = host.row(dials, 'startDragReorder', drag.root).root;
 
-  // Homepage and startup
   const home = host.card('startpage', 'Startup');
   const homepage = el('input', 'bw-input sp-text-input');
   homepage.type = 'text';
@@ -147,7 +122,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
     }
     const url = normaliseAddress(text);
     if (url === null) {
-      // Keep the typing to correct, but never let it look accepted: nothing was saved.
       homepage.setAttribute('aria-invalid', 'true');
       host.toast('Enter an http or https address.', false);
       return;
@@ -182,7 +156,7 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   pages.rows = 4;
   pages.placeholder = '';
   pages.spellcheck = false;
-  pages.maxLength = MAX_STARTUP_PAGES * (MAX_URL + 2); // eight of the longest addresses, one per line
+  pages.maxLength = MAX_STARTUP_PAGES * (MAX_URL + 2);
   pages.setAttribute('aria-labelledby', 'sp-l-startupPages');
   pages.addEventListener('change', () => {
     const list = parsePageLines(pages.value);
@@ -197,7 +171,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   });
   const pagesRow = host.row(home, 'startupPages', pages, { stack: true }).root;
 
-  // Widgets
   const widgets = host.card('startpage', 'Widgets');
   const widgetsOn = host.switchControl((on) => host.change((s) => { s.widgets = on; }));
   const widgetsRow = host.row(widgets, 'startWidgets', widgetsOn.root).root;
@@ -216,8 +189,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   const wdrag = host.switchControl((on) => host.change((s) => { s.widgetDrag = on; }));
   const wdragRow = host.row(widgets, 'startWidgetDrag', wdrag.root).root;
 
-  /** Shows or hides a switch's note, and adds it to (or drops it from) the switch's accessible description:
-   *  a hidden element named by aria-describedby would still be read out. */
   const paintNote = (control: HTMLElement, note: HTMLElement, show: boolean): void => {
     if (note.hidden === show) note.hidden = !show;
     const now = control.getAttribute('aria-describedby') ?? '';
@@ -247,14 +218,11 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       wbg.set(start.widgetBg);
       wcolor.value = start.widgetColor;
       wdrag.set(start.widgetDrag);
-      // No start page while the new tab page is Blank; the homepage and startup rows do not depend on it.
       const live = readable && shown;
       paintNote(dialsOn.root, dialsNote, readable && !shown);
       paintNote(widgetsOn.root, widgetsNote, readable && !shown);
       for (const control of [dialsOn, widgetsOn]) control.disable(!live);
       for (const row of [dialsRow, widgetsRow]) rest(row, readable && !shown);
-      // The rows below only matter while what they tune is on. (An unreadable file greys every control
-      // and says so in the banner; the rows are not dimmed for that.)
       const dialsLive = live && start.dials;
       for (const control of [reopen, titles, addButton, size, drag]) control.disable(!dialsLive);
       columnsSelect?.button.toggleAttribute('disabled', !dialsLive);
@@ -273,7 +241,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       away(wcolorRow, readable && wcolor.disabled);
       homepage.disabled = !readable;
       startupSelect?.button.toggleAttribute('disabled', !readable);
-      // The page list only opens with "Tabs + pages": otherwise the row leaves the page like the others.
       pages.disabled = !readable || start.startup !== 'specific_pages';
       rest(pagesRow, readable && pages.disabled);
       away(pagesRow, readable && pages.disabled);

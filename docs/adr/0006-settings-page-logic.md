@@ -1,0 +1,29 @@
+# Settings bridge contracts and row identity
+
+## Context
+
+Settings receives native snapshots, renders controls and sends changes through the chrome bridge. The visible menu groups can change as the Settings design evolves. Native commands, profile files and saved section addresses also have to keep working. [Settings page design](../design/settings-page.md) · [Settings structure](../design/settings-structure.md)
+
+## Decision
+
+### Keep the draft narrower than the snapshot
+
+The page validates the complete snapshot before making it available to the UI. A draft captures the profile settings the page edits together. For `save`, it serializes exact keys and values in a deterministic order. The native handler accepts only known keys and valid values, requires the original settings fields and tolerates omission of newer fields for compatibility with older payloads. An unchosen search engine is omitted. About, profile, update and other status fields in the snapshot are display state. Install-wide auto-update and settings owned by independent surfaces use dedicated commands. Profile mutations use `profile`, workspace rules use `wsrule`, tab and theme options use `tabopt` and `themeopt`, and the tab and panel toolbar lists and feed options use `baropt`. The address toolbar list travels with the draft. Download settings use dedicated commands and the native picker owns the folder path. The default browser status reports the Windows HTTP association. Translation controls use their own commands and an empty target uses the Windows display language. The native `note` acknowledgement carries a successful operation's message in the existing `error` field, for example after importing. [Native Settings bridge](../../src/chrome_host/settings.rs) · [Settings model](../../ui/src/settings-page-logic.ts)
+
+Preserve the persisted `frameless` key for the auto-hide toggle. The enabled bars are a comma-separated list in native catalog order with no duplicates, and an empty list requests no bars. Keep `show_title_bar` in the file and save payload for older profiles. The regular Settings view omits the toggle because the standard layouts already place the window controls automatically. Keep `new_tab_beside_active` when presenting the behavior as New tab position. [Auto-hide catalog](../../src/auto_hide.rs) · [Native chrome layout](../../src/chrome/layout.rs) · [Profile settings](../../src/settings.rs)
+
+Use the native path cap for download display text. Use the native blocker's 20 KiB allowance for the UTF-8 site list, including the joining commas, so the request and settings file fit their size limits. Keep the front-end bounds and validation aligned with the native profile list and profile-name limits. Avatar and accent previews describe the current window's profile, so a snapshot contains them only when there is a current profile, with one preview per catalog entry. Guest windows have no current profile or previews. Count backup password lengths as Unicode code points, matching the native export password bounds. [Profile settings](../../src/settings.rs) · [Native Settings bridge](../../src/chrome_host/settings.rs) · [Profile validation](../../src/profile.rs) · [Backup format and password handling](../../src/backup/mod.rs)
+
+The front end keeps the native spoiler mode summaries and the native translation display names aligned with their Rust sources. A target code without an English name in the UI is shown as the code itself. Turning off spoiler feed downloads leaves the terms already installed active. [Spoiler modes](../../src/spoiler.rs) · [Spoiler feed](../../src/spoiler_feed.rs) · [Translation targets](../../src/translate/mod.rs)
+
+### Keep row identity independent of presentation
+
+Keep each row's ID stable across Simple, All and search. Move the same controls between Simple and All so validation and save logic have a single implementation. The view preference lives with the viewer in local storage. Everyday rows are visible by default and detailed tuning lives behind More. A lightweight control shows no selection when a more advanced configuration has no equivalent, such as a timed theme or bottom tabs. The start page settings follow the control that selects it as the new tab page. Keep speed dial and widget controls under their own group headings to make their dependencies clear inside More. [Settings structure](../design/settings-structure.md)
+
+Groups preserve native section keys for deep links despite reorganizing visible navigation. A deep link scrolls to the first group for its section. A newly defined row without explicit placement goes into the first group of its original section, so adding a row does not require adding another mapping for it to be visible or searchable. Search indexes the section of the final group so the corresponding jump and later reload return to the correct section. Keep old terms in the search keywords so a renamed option can still be found. [Settings structure](../design/settings-structure.md) · [Settings model](../../ui/src/settings-page-logic.ts)
+
+Give rows whose setting only applies after a page reload a tooltip and an accessible description. Reserve an inline status line for settings that require browser restart or are inactive. Settings that rely on another option stay out of the main view when they cannot act but remain discoverable in search. Keep valid saved sleep delays selectable even if the presets change. [Settings page design](../design/settings-page.md) · [Settings model](../../ui/src/settings-page-logic.ts)
+
+## Consequences
+
+Changes to a native snapshot field, command, persisted key or bound need matching updates to the TypeScript model and the native contract tests. Changing a row's visual placement requires preserving its role in search and its links from the native Settings section. [UI Settings tests](../../ui/test/settings-page.mjs) · [Native Settings bridge tests](../../src/chrome_host/settings.rs)

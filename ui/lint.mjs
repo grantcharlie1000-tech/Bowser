@@ -3,6 +3,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkSettingsComments } from './comment-ratchet.mjs';
 import { findViolations } from './lint-rules.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,7 @@ function walk(dir) {
   return files;
 }
 
-let violations = 0;
+let violations = checkSettingsComments();
 const report = (file, found) => {
   for (const { line, rule } of found) {
     violations += 1;

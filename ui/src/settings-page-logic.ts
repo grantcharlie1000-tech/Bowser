@@ -1,23 +1,12 @@
-// Pure logic for the settings page (?view=settings, docs/design/settings-page.md): the snapshot
-// contract, the exact-match save payload, the section and row index the nav and the search use,
-// and the words that depend on state. No DOM here; test/settings-page.mjs covers all of it.
 import { MAX_SETTINGS_SAVE, SETTINGS_SECTIONS, utf8Bytes, type SettingsSection } from './protocol';
-import { localNameError } from './composer-logic'; // --- profiles ---
-// --- start page ---
+import { localNameError } from './composer-logic';
 import { parseStartSettings, startSaveLines, type StartSettings } from './start-page-logic';
-// --- end start page ---
-// --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
 import { ADDRESS_ROWS } from './address-settings-logic';
-import { PAGE_TOOLS_CORE, PAGE_TOOLS_ROWS } from './page-tools-logic'; // --- page tools (T7) ---
-// --- end address bar, search and bookmarks ---
+import { PAGE_TOOLS_CORE, PAGE_TOOLS_ROWS } from './page-tools-logic';
 import { cardSpecs, parseTabOptions, tabOptionRows, type TabOptionValues } from './tab-options-logic';
-// --- theme options ---
 import { THEME_ROWS, parseThemeOptions, type ThemeOptionValues } from './theme-options-logic';
-// --- end theme options ---
-// --- toolbars and feeds (thread T13) --- the buttons of the three bars (bars-logic.ts) and the feed options
 import { ADDRESS_ITEMS, DEFAULT_ADDRESS, itemsOf, validItems } from './bars-logic';
 import { FEED_ROWS, REFRESH_CHOICES } from './feeds-settings-logic';
-// --- end toolbars and feeds ---
 
 export { SETTINGS_SECTIONS, type SettingsSection };
 
@@ -26,41 +15,30 @@ export type SearchEngine = typeof SEARCH_ENGINES[number];
 export const EFFICIENCY_MODES = ['auto', 'on', 'off'] as const;
 export type EfficiencyMode = typeof EFFICIENCY_MODES[number];
 export const EFFICIENCY_LABELS: Readonly<Record<EfficiencyMode, string>> = { auto: 'Auto', on: 'On', off: 'Off' };
-/** What each choice means (src/efficiency.rs): Auto is in force on battery or with Battery saver on. */
 export const EFFICIENCY_ARIA: Readonly<Record<EfficiencyMode, string>> = { auto: 'On battery or with Battery saver on', on: 'Always', off: 'Never' };
 export type TrackingPrevention = 'balanced' | 'strict';
-// --- layout (thread T6) --- the layouts (six now), the Layout block's `layout` object and its presets live in layout-logic.ts.
 import {
   LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, layoutSaveLines, parseLayoutSettings,
   type LayoutSettings, type SidePanelPosition, type TabLayout,
 } from './layout-logic';
 export { LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, type LayoutSettings, type SidePanelPosition, type TabLayout };
-// --- end layout ---
-// --- window and panels (thread T9) ---
 import { parseWindowSettings, windowSaveLines, type WindowSettings } from './window-logic';
 export type { WindowSettings };
-// --- end window and panels ---
 export const MIN_SIDEBAR = 180;
 export const MAX_SIDEBAR = 360;
 export const MIN_SLEEP = 30;
 export const MAX_SLEEP = 604800;
 export const MAX_ALLOW = 500;
-/** The allow list's joined length in UTF-8 bytes, commas included (settings::MAX_BLOCKER_ALLOW_BYTES): 500 sites of up to 40 characters. */
 export const MAX_ALLOW_BYTES = 20 * 1024;
-/** Whether the joined allow list fits `MAX_ALLOW_BYTES`. */
 export function allowFits(list: readonly string[]): boolean {
   return utf8Bytes(list.join(',')) <= MAX_ALLOW_BYTES;
 }
 
 export const THEME_MODES = ['helium', 'system'] as const;
 export type ThemeMode = typeof THEME_MODES[number];
-/** The address bar's own buttons, in the order the editor offers them (bars-logic.ts); command buttons come on top. */
 export const TOOLBAR_BUTTONS = ADDRESS_ITEMS;
 export type ToolbarButton = typeof TOOLBAR_BUTTONS[number];
-/** What the address bar shows until it is changed: today's look (bars-logic.ts, thread T13). */
 export const DEFAULT_TOOLBAR_BUTTONS = DEFAULT_ADDRESS.join(',');
-// --- auto-hide (T11) --- the bars "Auto-hide toolbars and tabs" can take out of the layout, in page order
-// (src/auto_hide.rs BAR_TABLE). The status bar joins when the layout work adds one.
 export const AUTO_HIDE_BARS = ['tabs', 'address', 'bookmarks', 'panel'] as const;
 export type AutoHideBar = typeof AUTO_HIDE_BARS[number];
 export const AUTO_HIDE_BAR_LABELS: Readonly<Record<AutoHideBar, string>> = {
@@ -69,41 +47,32 @@ export const AUTO_HIDE_BAR_LABELS: Readonly<Record<AutoHideBar, string>> = {
   bookmarks: 'Bookmarks bar',
   panel: 'Panel',
 };
-/** What hides when nobody has chosen: the three bars above and beside the page. */
 export const DEFAULT_AUTO_HIDE_BARS = 'tabs,address,bookmarks';
-/** The bars of a saved list, `''` meaning none. */
 export function autoHideBarsList(text: string): AutoHideBar[] {
   return text === '' ? [] : (text.split(',') as AutoHideBar[]);
 }
-/** The saved spelling of a set of bars: catalog order, each once. */
 export function autoHideBarsText(bars: Iterable<AutoHideBar>): string {
   const set = new Set(bars);
   return AUTO_HIDE_BARS.filter((bar) => set.has(bar)).join(',');
 }
-/** Exactly the spelling Rust saves: every bar known, none twice, catalog order. */
 function isAutoHideBarsText(value: unknown): value is string {
   return typeof value === 'string' && autoHideBarsText(autoHideBarsList(value)) === value && autoHideBarsList(value).every((bar) => (AUTO_HIDE_BARS as readonly string[]).includes(bar));
 }
-// --- end auto-hide ---
 export const BOOKMARKS_BAR_MODES = ['always', 'never', 'newtab'] as const;
 export type BookmarksBarMode = typeof BOOKMARKS_BAR_MODES[number];
 export const FONT_SIZES = ['small', 'medium', 'large'] as const;
 export type FontSize = typeof FONT_SIZES[number];
 export const DEFAULT_BROWSER_STATES = ['yes', 'no', 'unknown'] as const;
 export type DefaultBrowserState = typeof DEFAULT_BROWSER_STATES[number];
-/** Spoiler Firewall for GTA VI modes (`spoiler_mode`), loosest last. Strict is the default. */
 export const SPOILER_MODES = ['lockdown', 'strict', 'balanced'] as const;
 export type SpoilerMode = typeof SPOILER_MODES[number];
 export const SPOILER_MODE_LABELS: Readonly<Record<SpoilerMode, string>> = { lockdown: 'Lockdown', strict: 'Strict', balanced: 'Balanced' };
-/** One honest line per mode (mirrors `Mode::summary` in src/spoiler.rs). */
 export const SPOILER_MODE_HINTS: Readonly<Record<SpoilerMode, string>> = {
   lockdown: 'Hides anything that mentions GTA VI and keeps its images and video hidden until you reveal them. Hides the most, including some harmless posts.',
   strict: 'Hides anything that reads like a GTA VI spoiler, and media on sites where spoilers are common. Recommended.',
   balanced: 'Hides clear spoilers only. A plain mention of the game, or a spoiler written in code words, can get through.',
 };
-/** The honest limits of the protection, kept as the limits row's tooltip (at most MAX_TIP characters) and accessible text; rows are one line. */
 export const SPOILER_LIMITS_NOTE = 'Applies to pages you open or reload from now on. It reads text, so a screenshot with no readable text or a spoiler in code words can get through. Not notifications or other apps. Unofficial; not affiliated with Rockstar Games or Take-Two.';
-/** What turning protection off costs, said before it happens. */
 export const SPOILER_OFF_WARNING = 'GTA VI spoilers will no longer be hidden on any page, including private tabs and guest windows. Pages already open are not changed.';
 export const MIN_ZOOM = 25;
 export const MAX_ZOOM = 500;
@@ -111,12 +80,10 @@ export const MAX_UI_FONT = 64;
 const ACCENT_RE = /^#[0-9a-f]{6}$/;
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/;
 
-/** The ids of `text` (a `toolbar_buttons`-style comma list), `''` meaning none. */
 export function toolbarButtonsList(text: string): string[] {
   return text === '' ? [] : text.split(',');
 }
 
-/** No duplicates, every id one of the address bar's buttons or a command button, within the bar's limits; any order. */
 function isToolbarButtonsText(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   if (value === '') return true;
@@ -135,7 +102,6 @@ function isUiFont(value: unknown): value is string {
 const UPDATE_STATES = ['unavailable', 'checking', 'ready', 'idle'] as const;
 const LAST_CHECKS = ['none', 'uptodate', 'failed', 'other'] as const;
 const CHECK_RESULTS = ['none', 'staged', 'uptodate', 'unverified', 'busy', 'unavailable', 'failed'] as const;
-/** `note`: done, and `error` holds a sentence to say about it (an import's outcome). */
 const ACKS = ['none', 'saved', 'failed', 'note'] as const;
 export type UpdateState = typeof UPDATE_STATES[number];
 export type LastCheck = typeof LAST_CHECKS[number];
@@ -145,7 +111,6 @@ export type Ack = typeof ACKS[number];
 export interface SettingsSnapshot {
   tabLayout: TabLayout;
   sidebarWidth: number;
-  /** Vertical tabs stay open and push the page. Off, they are a hover rail over the page. */
   sidebarPinned: boolean;
   sleepEnabled: boolean;
   sleepAfterSecs: number;
@@ -157,18 +122,13 @@ export interface SettingsSnapshot {
   efficiencyMode: EfficiencyMode;
   trackingPrevention: TrackingPrevention;
   theme: ThemeMode;
-  /** `''` (no override) or `#` plus six lower-case hex digits. */
   themeAccent: string;
-  /** Comma list of the address bar's buttons (`bars-logic.ts`), each at most once; `''` for none. */
   toolbarButtons: string;
   centredAddressBar: boolean;
   minimalUrl: boolean;
   showLoadProgress: boolean;
-  /** The master "Auto-hide toolbars and tabs" switch (the key keeps its old name). */
   frameless: boolean;
-  /** Comma list of `AUTO_HIDE_BARS`, each at most once in that order; `''` for none. */
   autoHideBars: string;
-  /** "Always auto-hide in full screen". */
   autoHideFullscreen: boolean;
   roundedContentFrame: boolean;
   showHomeButton: boolean;
@@ -178,7 +138,6 @@ export interface SettingsSnapshot {
   tabPreviewImages: boolean;
   tabPreviewMemory: boolean;
   fontSize: FontSize;
-  /** `''` for the system font. */
   uiFont: string;
   defaultZoom: number;
   showZoomIndicator: boolean;
@@ -190,19 +149,13 @@ export interface SettingsSnapshot {
   pinNewTabGroups: boolean;
   splitEdgeDrop: boolean;
   blockYoutubeVideoAds: boolean;
-  /** Spoiler Firewall for GTA VI (built in, on and Strict by default). */
   spoilerProtection: boolean;
   spoilerMode: SpoilerMode;
   spoilerReducedEffects: boolean;
-  /** `spoiler_ocr`: on-device text scan of images on high-risk sites (src/spoiler_ocr.rs). */
   spoilerOcr: boolean;
-  /** `spoiler_feed`: download signed spoiler term updates (src/spoiler_feed.rs). An update already held stays in force when off. */
   spoilerFeed: boolean;
-  /** Read-only: "Term list: built-in 2026.11.17-1 + update #3 (2026-11-18). ..." (never sent back in `save`). */
   spoilerFeedStatus: string;
-  /** Read-only from here on: state the page shows but never sends back in `save`. */
   efficiencyActive: boolean;
-  /** Install-wide and applied at once, so never part of `save`. */
   autoUpdate: boolean;
   historyEnabled: boolean;
   guest: boolean;
@@ -216,55 +169,27 @@ export interface SettingsSnapshot {
   ack: Ack;
   error: string;
   readable: boolean;
-  /** Whether Bowser is currently the HKCU default http handler. Read-only, never part of `save`. */
   defaultBrowser: DefaultBrowserState;
-  /** Where downloads are saved (a display path). Changed only through the native folder picker. */
   downloadDir: string;
-  /** "Ask where to save each file before downloading"; its own command, never part of `save`. */
   downloadAsk: boolean;
-  /** "Offer to translate pages in other languages"; its own command, never part of `save`. */
   translateOffer: boolean;
-  /** "Translate automatically on sites set to always translate"; its own command. */
   translateAuto: boolean;
-  /** The Tabs section's options (`tab-options-logic.ts`); each change is its own `tabopt` command. */
   tabOptions: TabOptionValues;
-  /** The Appearance area's theme options (`theme-options-logic.ts`); each change is its own `themeopt` command. */
   themeOptions: ThemeOptionValues;
-  /** `''` means the Windows display language, else a 2-3 letter lower-case code. Its own command. */
   translateTarget: string;
-  /** The codes `translateTarget` may be set to, in the order the page lists them. */
   translateTargets: string[];
-  // --- start page ---
-  /** The start page, speed dial, widget, homepage and startup settings (`start_*` keys of settings.txt). */
   start: StartSettings;
-  // --- end start page ---
-  // --- tab stacks, tiling and workspaces (T10) ---
-  /** Sites that open in a named workspace, and the workspaces a rule can name. Each change is its own `wsrule` command. */
   workspaceRules: WorkspaceRules;
-  /** Every profile, `default` first, for the profile manager. Each change is its own `profile` command. */
   profiles: ProfileList;
-  // --- end tab stacks ---
-  // --- layout (thread T6) ---
-  /** The Layout block's own options (`layout_prefs.rs`); the tab layout and panel side are the older keys above. */
   layout: LayoutSettings;
-  // --- end layout ---
-  // --- window and panels (thread T9) ---
-  /** Window appearance and panel options (`window_prefs.rs`). */
   window: WindowSettings;
-  // --- end window and panels ---
-  // --- toolbars and feeds (thread T13) --- the tab bar's and panel bar's buttons and the feed options (each its own `baropt` command).
   bars: BarsSettings;
-  // --- end toolbars and feeds ---
 }
 
-/** The tab bar and panel bar lists and the feed options. The address bar's list is `toolbarButtons`. */
 export interface BarsSettings {
-  /** Comma list of the tab bar's buttons. */
   tabs: string;
-  /** Comma list of the panel bar's extra buttons. */
   panel: string;
   feedsDetect: boolean;
-  /** Minutes: one of `REFRESH_CHOICES`. */
   feedsRefresh: number;
 }
 
@@ -277,16 +202,13 @@ function parseBarsSettings(value: unknown): BarsSettings | null {
   return { tabs, panel, feedsDetect, feedsRefresh };
 }
 
-// --- profiles ---
 export const PROFILE_AVATARS = ['initial', 'leaf', 'star', 'wave', 'moon'] as const;
 export type ProfileAvatar = typeof PROFILE_AVATARS[number];
 export const PROFILE_ACCENTS = ['blue', 'violet', 'teal', 'amber', 'rose'] as const;
 export type ProfileAccent = typeof PROFILE_ACCENTS[number];
 export const PROFILE_AVATAR_LABELS: Readonly<Record<ProfileAvatar, string>> = { initial: 'Initial', leaf: 'Leaf', star: 'Star', wave: 'Wave', moon: 'Moon' };
 export const PROFILE_ACCENT_LABELS: Readonly<Record<ProfileAccent, string>> = { blue: 'Blue', violet: 'Violet', teal: 'Teal', amber: 'Amber', rose: 'Rose' };
-/** Most profiles Rust lists (`profile::MAX_LISTED`). */
 export const MAX_PROFILES = 300;
-/** Longest display name, in characters (`profile::MAX_DISPLAY_NAME_CHARS`). */
 export const MAX_PROFILE_NAME = 32;
 export interface ProfileEntry {
   readonly id: string;
@@ -295,20 +217,12 @@ export interface ProfileEntry {
   readonly colour: string;
   readonly avatar: ProfileAvatar;
   readonly accent: ProfileAccent;
-  /** The profile this window runs (none in a guest window). */
   readonly current: boolean;
 }
-/**
- * The profiles, and how this window's profile looks with each avatar and each colour: one glyph per
- * `PROFILE_AVATARS` entry and one `#rrggbb` per `PROFILE_ACCENTS` entry, drawn by Rust (both empty
- * in a guest window).
- */
 export interface ProfileList { readonly list: readonly ProfileEntry[]; readonly avatars: readonly string[]; readonly accents: readonly string[] }
 const PROFILE_ID_RE = /^(?:default|[A-Za-z0-9_-]{1,32})$/;
 const COLOUR_RE = /^#[0-9a-f]{6}$/;
-/** Direction overrides and zero-width characters (`downloads::is_hidden_format_char`). */
 const HIDDEN_RE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
-/** Why a typed name cannot be used ('' when it can). `exceptId` is the profile being renamed. */
 export function profileNameError(name: string, profiles: readonly ProfileEntry[], exceptId?: string): string {
   const local = localNameError(name, MAX_PROFILE_NAME);
   if (local !== '') return local;
@@ -316,7 +230,6 @@ export function profileNameError(name: string, profiles: readonly ProfileEntry[]
   const wanted = name.trim().toLowerCase();
   return profiles.some((p) => p.id !== exceptId && p.name.toLowerCase() === wanted) ? 'Another profile already uses that name.' : '';
 }
-/** Strict check of the snapshot's `profiles`. */
 export function parseProfiles(value: unknown): ProfileList | null {
   if (!isRecord(value) || Object.keys(value).length !== 3 || !Array.isArray(value.list) || value.list.length > MAX_PROFILES) return null;
   const { avatars, accents } = value;
@@ -337,11 +250,9 @@ export function parseProfiles(value: unknown): ProfileList | null {
     list.push({ id: p.id, name: p.name, glyph: p.glyph, colour: p.colour, avatar: p.avatar, accent: p.accent, current: p.current });
   }
   const current = list.filter((p) => p.current).length;
-  // The previews describe this window's profile, so they come exactly when one row is it.
   if (current > 1 || (current === 1) !== (avatars.length > 0) || avatars.length > 0 !== accents.length > 0) return null;
   return { list, avatars: [...avatars], accents: [...accents] };
 }
-/** The `profile` command texts (src/chrome_host/settings.rs `parse_profile_command`). */
 export const profileText = {
   open: (id: string): string => `open\t${id}`,
   create: (name: string): string => `new\t${name.trim()}`,
@@ -351,16 +262,12 @@ export const profileText = {
   remove: (id: string): string => `delete\t${id}`,
   guest: (): string => 'guest',
 };
-// --- end profiles ---
 
-// --- tab stacks, tiling and workspaces (T10) ---
 export interface WorkspaceRule { readonly site: string; readonly workspace: string }
 export interface WorkspaceRules { readonly rules: readonly WorkspaceRule[]; readonly workspaces: readonly string[] }
-/** Most rules (Rust's `workspace_rules::MAX_RULES`). */
 export const MAX_WORKSPACE_RULES = 64;
 const MAX_WORKSPACE_NAME = 128;
 const isWorkspaceName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_WORKSPACE_NAME && !/[\u0000-\u001f\u007f]/.test(value);
-/** Strict check of the snapshot's `workspaceRules`. */
 export function parseWorkspaceRules(value: unknown): WorkspaceRules | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -376,26 +283,21 @@ export function parseWorkspaceRules(value: unknown): WorkspaceRules | null {
   if (!(record.workspaces as unknown[]).every(isWorkspaceName)) return null;
   return { rules, workspaces: [...(record.workspaces as string[])] };
 }
-/** The `wsrule` text that adds a rule (`null` for a site or workspace Bowser would refuse). */
 export function addRuleText(site: string, workspace: string): string | null {
   const plain = ruleSite(site);
   return plain === null || !isWorkspaceName(workspace.trim()) ? null : `add\t${plain}\t${workspace.trim()}`;
 }
-/** A typed site a rule can hold: a plain host with a dot (Rust's `workspace_rules::normalise_site`), or `null`. */
 export function ruleSite(site: string): string | null {
   const plain = normaliseSite(site);
   return plain !== null && plain.includes('.') ? plain : null;
 }
-/** The `wsrule` text that removes the rule for `site`. */
 export function removeRuleText(site: string): string {
   return `del\t${site}`;
 }
-/** Whether a typed site already has a rule. */
 export function ruleExists(rules: readonly WorkspaceRule[], site: string): boolean {
   const plain = ruleSite(site);
   return plain !== null && rules.some((rule) => rule.site === plain);
 }
-// --- end tab stacks ---
 
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -410,14 +312,11 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sidebarPinned', 'sleepEnabled', 'sle
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'spoilerProtection', 'spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'spoilerFeed', 'spoilerFeedStatus',
   'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'workspaceRules' /* --- tab stacks (T10) --- */,
-  'layout' /* --- layout (thread T6) --- */, 'themeOptions', 'window' /* --- window and panels (thread T9) --- */,
-  'bars' /* --- toolbars and feeds (thread T13) --- */, 'profiles' /* --- profiles --- */];
-/** A language code the translation settings carry: two or three lower-case letters. */
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'workspaceRules',
+  'layout', 'themeOptions', 'window',
+  'bars', 'profiles'];
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
-/** The most target languages Rust may list. */
 export const MAX_TRANSLATE_TARGETS = 64;
-/** English names of the languages Bowser can translate into (the table in src/translate/mod.rs); a code not listed here shows as itself. */
 const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
   en: 'English', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', pt: 'Portuguese', nl: 'Dutch', pl: 'Polish', ru: 'Russian', uk: 'Ukrainian',
   tr: 'Turkish', ar: 'Arabic', he: 'Hebrew', fa: 'Persian', hi: 'Hindi', bn: 'Bengali', ur: 'Urdu', ta: 'Tamil', te: 'Telugu', mr: 'Marathi',
@@ -431,16 +330,12 @@ export const TRANSLATE_TARGET_SYSTEM_LABEL = 'My Windows language';
 export function languageName(code: string): string {
   return Object.hasOwn(LANGUAGE_NAMES, code) ? LANGUAGE_NAMES[code]! : code;
 }
-/** The "Translate into" options: the Windows language (value `''`) first, then one per code. */
 export function translateTargetOptions(codes: readonly string[]): Array<{ value: string; label: string }> {
   return [{ value: '', label: TRANSLATE_TARGET_SYSTEM_LABEL }, ...codes.map((code) => ({ value: code, label: languageName(code) }))];
 }
-/** The longest download folder Rust sends (`MAX_PATH`). */
 export const MAX_DOWNLOAD_DIR = 260;
-/** A site the blocker skips: no whitespace, no controls, no comma (the file separator). */
 const SITE_RE = /^[^\s\u0000-\u001f\u007f,]{1,253}$/u;
 
-/** Rejects partial or extended snapshots before anything is drawn. */
 export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (!isRecord(value) || Object.keys(value).length !== KEYS.length || Object.keys(value).some((key) => !KEYS.includes(key))) return null;
   const v = value;
@@ -461,7 +356,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   for (const key of ['centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'roundedContentFrame', 'showHomeButton'] as const) {
     if (typeof v[key] !== 'boolean') return null;
   }
-  if (!isAutoHideBarsText(v.autoHideBars) || typeof v.autoHideFullscreen !== 'boolean') return null; // --- auto-hide (T11) ---
+  if (!isAutoHideBarsText(v.autoHideBars) || typeof v.autoHideFullscreen !== 'boolean') return null;
   if (!oneOf(v.bookmarksBar, BOOKMARKS_BAR_MODES) || typeof v.bookmarksBarTabGroups !== 'boolean') return null;
   if (!oneOf(v.sidePanelPosition, SIDE_PANEL_POSITIONS)) return null;
   if (typeof v.tabPreviewImages !== 'boolean' || typeof v.tabPreviewMemory !== 'boolean') return null;
@@ -473,27 +368,26 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (typeof v.spoilerProtection !== 'boolean' || !oneOf(v.spoilerMode, SPOILER_MODES) || typeof v.spoilerReducedEffects !== 'boolean' || typeof v.spoilerOcr !== 'boolean') return null;
   if (typeof v.spoilerFeed !== 'boolean' || typeof v.spoilerFeedStatus !== 'string' || v.spoilerFeedStatus.length > 300) return null;
   if (!oneOf(v.defaultBrowser, DEFAULT_BROWSER_STATES)) return null;
-  // A display path: no control characters (it is drawn as text, never used as one).
   if (!isStrUpTo(v.downloadDir, MAX_DOWNLOAD_DIR * 2) || /[\u0000-\u001f\u007f]/.test(v.downloadDir) || typeof v.downloadAsk !== 'boolean') return null;
   if (typeof v.translateOffer !== 'boolean' || typeof v.translateAuto !== 'boolean') return null;
   if (typeof v.translateTarget !== 'string' || !(v.translateTarget === '' || LANGUAGE_RE.test(v.translateTarget))) return null;
   if (!Array.isArray(v.translateTargets) || v.translateTargets.length > MAX_TRANSLATE_TARGETS) return null;
   if (!v.translateTargets.every((code) => typeof code === 'string' && LANGUAGE_RE.test(code))) return null;
-  const start = parseStartSettings(v.start); // --- start page ---
+  const start = parseStartSettings(v.start);
   if (start === null) return null;
   const tabOptions = parseTabOptions(v.tabOptions);
   if (!tabOptions) return null;
-  const workspaceRules = parseWorkspaceRules(v.workspaceRules); // --- tab stacks (T10) ---
+  const workspaceRules = parseWorkspaceRules(v.workspaceRules);
   if (!workspaceRules) return null;
-  const profiles = parseProfiles(v.profiles); // --- profiles ---
+  const profiles = parseProfiles(v.profiles);
   if (!profiles) return null;
-  const layout = parseLayoutSettings(v.layout); // --- layout (thread T6) ---
+  const layout = parseLayoutSettings(v.layout);
   if (layout === null) return null;
-  const themeOptions = parseThemeOptions(v.themeOptions); // --- theme options ---
+  const themeOptions = parseThemeOptions(v.themeOptions);
   if (!themeOptions) return null;
-  const window = parseWindowSettings(v.window); // --- window and panels (thread T9) ---
+  const window = parseWindowSettings(v.window);
   if (window === null) return null;
-  const bars = parseBarsSettings(v.bars); // --- toolbars and feeds (thread T13) ---
+  const bars = parseBarsSettings(v.bars);
   if (bars === null) return null;
   return {
     tabLayout: v.tabLayout,
@@ -567,14 +461,13 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     tabOptions,
     workspaceRules,
     profiles,
-    layout, // --- layout (thread T6) ---
+    layout,
     themeOptions,
-    window, // --- window and panels (thread T9) ---
-    bars, // --- toolbars and feeds (thread T13) ---
+    window,
+    bars,
   };
 }
 
-/** The profile settings `save` carries (everything else in the snapshot is read-only). */
 export type Draft = Pick<SettingsSnapshot,
   | 'tabLayout' | 'sidebarWidth' | 'sidebarPinned' | 'sleepEnabled' | 'sleepAfterSecs' | 'blockerEnabled' | 'blockerAllow' | 'searchEngine' | 'automaticTabGrouping'
   | 'efficiencyMode' | 'trackingPrevention' | 'theme' | 'themeAccent' | 'toolbarButtons' | 'centredAddressBar' | 'minimalUrl' | 'showLoadProgress'
@@ -582,18 +475,10 @@ export type Draft = Pick<SettingsSnapshot,
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
   | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds' | 'start'
   | 'spoilerProtection' | 'spoilerMode' | 'spoilerReducedEffects' | 'spoilerOcr' | 'spoilerFeed'
-  | 'layout' // --- layout (thread T6) ---
-  | 'window' // --- window and panels (thread T9) ---
+  | 'layout'
+  | 'window'
 >;
 
-/**
- * The rows of the page's own controls that cannot change anything in this state, so the page rests (and
- * hides) them, as the start page does:
- * - the spoiler mode, covers and image scan only matter while spoiler protection is on;
- * - "Auto-translate" only acts on a page Bowser offers to translate (`translate::should_offer`);
- * - Ctrl+Tab order and the two chord switches are shortcuts, and with shortcuts off no chord runs;
- *   Ctrl+S only exists in the vertical layouts (`shortcuts::GatedChords`).
- */
 export function restingPageRows(
   draft: Pick<Draft, 'spoilerProtection' | 'tabLayout'>,
   translateOffer: boolean,
@@ -621,15 +506,11 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     roundedContentFrame, showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont,
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
     splitEdgeDrop, blockYoutubeVideoAds, spoilerProtection, spoilerMode, spoilerReducedEffects, spoilerOcr, spoilerFeed, start: { ...start, startupPages: [...start.startupPages] },
-    layout: { ...layout }, // --- layout (thread T6) ---
-    window: { ...window }, // --- window and panels (thread T9) ---
+    layout: { ...layout },
+    window: { ...window },
   };
 }
 
-/**
- * The exact-match `save` text: every profile setting once, in a fixed order, the search engine only
- * when one is chosen. `null` for any value Bowser would refuse.
- */
 export function saveText(draft: Draft): string | null {
   if (!oneOf(draft.tabLayout, TAB_LAYOUTS) || !isIntBetween(draft.sidebarWidth, MIN_SIDEBAR, MAX_SIDEBAR)) return null;
   if (!isIntBetween(draft.sleepAfterSecs, MIN_SLEEP, MAX_SLEEP) || draft.blockerAllow.length > MAX_ALLOW || !allowFits(draft.blockerAllow)) return null;
@@ -637,7 +518,7 @@ export function saveText(draft: Draft): string | null {
   if (!oneOf(draft.efficiencyMode, EFFICIENCY_MODES) || (draft.trackingPrevention !== 'balanced' && draft.trackingPrevention !== 'strict')) return null;
   if (draft.searchEngine !== null && !oneOf(draft.searchEngine, SEARCH_ENGINES)) return null;
   if (!oneOf(draft.theme, THEME_MODES) || !isThemeAccent(draft.themeAccent) || !isToolbarButtonsText(draft.toolbarButtons)) return null;
-  if (!isAutoHideBarsText(draft.autoHideBars)) return null; // --- auto-hide (T11) ---
+  if (!isAutoHideBarsText(draft.autoHideBars)) return null;
   if (!oneOf(draft.bookmarksBar, BOOKMARKS_BAR_MODES) || !oneOf(draft.sidePanelPosition, SIDE_PANEL_POSITIONS)) return null;
   if (!oneOf(draft.fontSize, FONT_SIZES) || !isUiFont(draft.uiFont) || !isIntBetween(draft.defaultZoom, MIN_ZOOM, MAX_ZOOM)) return null;
   if (!oneOf(draft.spoilerMode, SPOILER_MODES)) return null;
@@ -689,34 +570,27 @@ export function saveText(draft: Draft): string | null {
     `spoiler_ocr=${draft.spoilerOcr}`,
     `spoiler_feed=${draft.spoilerFeed}`,
   );
-  // --- start page --- the start page and startup settings ride in the same payload
   const startLines = startSaveLines(draft.start);
   if (startLines === null) return null;
   lines.push(...startLines);
-  // --- end start page ---
-  // --- layout (thread T6) --- the Layout block's options follow
   const layoutLines = layoutSaveLines(draft.layout);
   if (layoutLines === null) return null;
   lines.push(...layoutLines);
-  // --- end layout ---
-  lines.push(...windowSaveLines(draft.window)); // --- window and panels (thread T9) ---
+  lines.push(...windowSaveLines(draft.window));
   const text = lines.join('\n');
   return utf8Bytes(text) <= MAX_SETTINGS_SAVE ? text : null;
 }
-
-// ---- Sections and rows (the nav, the search index and the deep links) ----
 
 export interface SectionSpec { readonly key: SettingsSection; readonly title: string; readonly nav: string; readonly lead: string; readonly aliases?: string }
 export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'Profile', nav: 'Profile', lead: '' },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '' },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split' },
-  // --- T10 ---
   { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups grouping islands automatic stack stacks stacking' },
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: '' },
   { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: '', aliases: 'privacy and security' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: '' },
-  { key: 'pagetools', title: 'Page tools', nav: 'Page tools', lead: '' }, // --- page tools (T7) ---
+  { key: 'pagetools', title: 'Page tools', nav: 'Page tools', lead: '' },
   { key: 'address', title: 'Address', nav: 'Address', lead: '', aliases: 'address bar' },
   { key: 'search', title: 'Search', nav: 'Search', lead: '' },
   { key: 'bookmarks', title: 'Bookmarks', nav: 'Bookmarks', lead: '' },
@@ -738,42 +612,21 @@ export interface RowSpec {
   readonly id: string;
   readonly section: SettingsSection;
   readonly label: string;
-  /** A fuller accessible name when the visible label is terse. Never shown. */
   readonly aria?: string;
   readonly description: string;
-  /** Extra words the search matches (never shown). Old labels and descriptions live here. */
   readonly keywords: string;
-  /** The change waits for a restart. */
   readonly restart?: boolean;
-  /**
-   * The change reaches pages as they load: a page already open keeps what it loaded with until it is
-   * reloaded. Said in the row's tooltip and its control's accessible description, never as a sub-line.
-   */
   readonly reload?: boolean;
-  /** Saved, but Bowser does not act on it yet: the page says so instead of pretending. */
   readonly notYet?: boolean;
-  /** Where the row is drawn (`rowTier`); a row that sets none gets the table's choice. */
   readonly tier?: RowTier;
 }
 
-// --- settings structure (docs/design/settings-structure.md) --- the page is a list of areas (one nav
-// item and one title each), every area a list of groups (one sub-heading over one card). A row is
-// listed in exactly one group; its tier decides whether it shows or sits behind the area's More, where
-// it keeps the same group title. The big editors open as sub-pages from one row, and rows that do
-// nothing yet sit in "Inactive" at the end. Rust's section keys stay (deep links, `settingsgo`): each
-// group names the section a deep link to it uses.
-
-/** `core`: always shown. `more`: behind the area's More. `page`: its own sub-page, opened from a row. `later`: "Inactive". */
 export type RowTier = 'core' | 'more' | 'page' | 'later';
 
-/** One sub-heading over one card of rows. */
 export interface GroupSpec {
-  /** Stable id (the DOM's `data-group`). */
   readonly key: string;
   readonly title: string;
-  /** The Rust section of the group's rows: a deep link to it lands on the first such group. */
   readonly section: SettingsSection;
-  /** Row ids in page order; each shows or sits behind More by its tier. */
   readonly rows: readonly string[];
 }
 
@@ -783,7 +636,6 @@ export interface AreaSpec {
   readonly nav: string;
   readonly lead: string;
   readonly aliases?: string;
-  /** The Rust sections drawn in this area; the first is the area's own key. */
   readonly parts: readonly SettingsSection[];
   readonly groups: readonly GroupSpec[];
 }
@@ -791,11 +643,6 @@ export interface AreaSpec {
 const sectionSpec = (key: SettingsSection): SectionSpec => SECTIONS.find((spec) => spec.key === key)!;
 const group = (key: string, title: string, section: SettingsSection, rows: readonly string[]): GroupSpec => ({ key, title, section, rows });
 
-/**
- * The page's areas, in nav order: everyday choices first, then how Bowser looks, tabs, privacy,
- * browsing, shortcuts, extensions, the system and about. A deep link to any Rust section still lands
- * in the area that contains it. A row no group lists joins the first group of its own section.
- */
 export const AREAS: readonly AreaSpec[] = [
   { key: 'profile', title: 'General', nav: 'General', lead: '', aliases: 'you and bowser startup search engine downloads default browser', parts: ['profile', 'search', 'downloads'], groups: [
     group('profiles', 'Profiles', 'profile', ['profile', 'profiles', 'import']),
@@ -818,9 +665,6 @@ export const AREAS: readonly AreaSpec[] = [
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split groups start page speed dial', parts: ['tabs', 'stacks', 'startpage'], groups: [
     group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_active_min_width', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_unread_indicator', 'tabs_title_notifications', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
     group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_new_tab_in_group', 'tabs_focus_page']),
-    // The start page is what "New tab page: Start" shows, so its two groups follow New tabs. The speed
-    // dial rows and the widget rows are apart, each under its own switch, so a row behind More still
-    // says which switch it belongs to.
     group('startPage', 'Start page', 'startpage', ['startDials', 'startThumbSize', 'startTitles', 'startColumns', 'startAddButton', 'startGroupReopen', 'startDragReorder']),
     group('startWidgets', 'Start page widgets', 'startpage', ['startWidgets', 'startWidgetColumns', 'startWidgetBg', 'startWidgetColor', 'startWidgetHeight', 'startWidgetDrag']),
     group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'tabs_workspace_scroll', 'tabs_workspace_counts', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight']),
@@ -867,25 +711,18 @@ export const AREAS: readonly AreaSpec[] = [
   ] },
 ];
 
-/** The area a Rust section is drawn in. */
 export function areaOf(section: SettingsSection): AreaSpec {
   return AREAS.find((area) => area.parts.includes(section)) ?? AREAS[0]!;
 }
 
-/** The title of a Rust section (its old heading; search keywords and aria labels still use it). */
 export function partTitle(section: SettingsSection): string {
   return sectionSpec(section).title;
 }
 
-/** Where a row is drawn: its area and group. */
 export interface Placement { readonly area: AreaSpec; readonly group: GroupSpec }
 const LISTED = new Map<string, Placement>();
 for (const area of AREAS) for (const spec of area.groups) for (const id of spec.rows) LISTED.set(id, { area, group: spec });
 
-/**
- * The area and group of row `id` (born in Rust section `section`). A row no group lists joins the
- * first group of its own section, so a new row needs no entry here to be drawn and found.
- */
 export function placementOf(id: string, section: SettingsSection): Placement {
   const listed = LISTED.get(id);
   if (listed) return listed;
@@ -893,7 +730,6 @@ export function placementOf(id: string, section: SettingsSection): Placement {
   return { area, group: area.groups.find((spec) => spec.section === section) ?? area.groups[0]! };
 }
 
-/** The group a deep link to `section` scrolls to: the first group of that section. */
 export function anchorGroup(section: SettingsSection): GroupSpec | null {
   return areaOf(section).groups.find((spec) => spec.section === section) ?? null;
 }
@@ -903,16 +739,10 @@ export const LATER_TITLE = 'Inactive';
 export const LATER_LEAD = '';
 export const LATER_LABEL = 'Show';
 
-/** "12 more settings": the disclosure's description. */
 export function moreCountText(count: number): string {
   return count === 1 ? '1 more setting' : `${count} more settings`;
 }
 
-/**
- * Rows a person changes often enough to see without opening anything. Every other row is `more`.
- * Light, dark or system sits in the main Appearance view; the schedule and the rest of the theme
- * editor stay behind More. Fine tab rules, search field options and page tool tuning are behind More.
- */
 const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'profiles', 'import',
   'startupMode', 'startupPages', 'startHomepage',
@@ -920,15 +750,15 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'searchSuggestions',
   'downloadDir', 'downloadAsk', 'defaultBrowser',
   'themeMode', 'themeAccent', 'theme', 'websiteAppearance',
-  'layoutPreset' /* --- layout (thread T6): the presets decide where every bar sits; the rest of the block is `more` --- */,
-  'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'bookmarksBar', // --- toolbars and feeds (thread T13) ---
+  'layoutPreset',
+  'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'bookmarksBar',
   'fontSize', 'defaultZoom',
   'tabPosition', 'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position',
-  'grouping', 'tabs_workspaces', // --- T10 ---
-  'startDials', 'startThumbSize', 'startTitles', 'startColumns', 'startWidgets', // the rest of the start page is `more`, under its own group's switch
+  'grouping', 'tabs_workspaces',
+  'startDials', 'startThumbSize', 'startTitles', 'startColumns', 'startWidgets',
   'blocker', 'cookieNotices', 'blockYoutubeVideoAds', 'history', 'historyRetention', 'tracking', 'secHttps', 'spoilerProtection',
   'addrAutocomplete', 'bmNewTab', 'translateOffer', 'feedsOpen',
-  ...PAGE_TOOLS_CORE, // --- page tools (T7) ---
+  ...PAGE_TOOLS_CORE,
   'kbEnabled', 'ctrlTabMru', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'shiftRightClickContext',
   'extensions', 'passwords',
   'efficiency', 'sleep', 'sleepAfter', 'media',
@@ -936,13 +766,10 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
 ]);
 
 export interface PageSpec {
-  /** The opening row's button. */
   readonly button: string;
-  /** Accessible name when the button is a single word. */
   readonly aria: string;
 }
 
-/** The big editors and blocks that open as sub-pages, each from one row (where its group lists it). */
 export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
   engines: { button: 'Edit', aria: 'Edit search engines' },
   siteRules: { button: 'Edit', aria: 'Edit sites' },
@@ -951,28 +778,21 @@ export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
   dashboard: { button: 'Open', aria: 'Open dashboard' },
   kbEditor: { button: 'Edit', aria: 'Edit shortcuts' },
   chains: { button: 'Edit', aria: 'Edit chains' },
-  workspaceRules: { button: 'Edit', aria: 'Edit rules' }, // --- T10 ---
+  workspaceRules: { button: 'Edit', aria: 'Edit rules' },
 };
 
-/** Where a row is drawn. A row Bowser does not act on yet is always `later`, whatever else it says. */
 export function rowTier(row: RowSpec): RowTier {
   if (row.notYet) return 'later';
   if (row.tier) return row.tier;
   if (Object.hasOwn(PAGE_ROWS, row.id)) return 'page';
   return CORE_ROWS.has(row.id) ? 'core' : 'more';
 }
-// --- end settings structure ---
 
-/** The note under a row whose change waits for a restart. */
 export const RESTART_NOTE = 'Applies after restart';
-/** What a `reload` row says (tooltip and accessible description): open pages keep what they loaded. */
 export const RELOAD_NOTE = 'Applies to pages as they load. Reload an open page to apply it there.';
-/** The note under a row (or a whole group of rows) Bowser saves but does not act on yet. */
 export const NOT_YET_NOTE = 'Has no effect yet. Bowser keeps your choice for when it does.';
 export const NOT_YET_GROUP_NOTE = 'These have no effect yet. Bowser keeps your choices for when they do.';
 
-// --- wave-1 integration --- the Tabs section: T1's options card by card, with the older tab rows
-// (Ctrl+Tab order, tab previews) at the end of its Tab bar card, where settings-page.ts draws them.
 const OLDER_TAB_ROWS: readonly RowSpec[] = [
   { id: 'ctrlTabMru', section: 'tabs', label: 'Ctrl+Tab', aria: 'Cycle tabs most recently used first with Ctrl+Tab', description: '', keywords: 'ctrl tab cycle cycling most recently used mru switch order Cycle tabs most-recently-used first with Ctrl+Tab Ctrl+Tab steps through tabs in the order you last used them. Off, it follows the tab order.' },
   { id: 'tabPreviewImages', section: 'tabs', label: 'Preview images', aria: 'Show a thumbnail in tab previews', description: '', keywords: 'tab preview thumbnail hover image popup Show a thumbnail in tab previews Tab hover previews include a snapshot of the page.' },
@@ -984,14 +804,11 @@ const TABS_SECTION_ROWS: readonly RowSpec[] = (() => {
   const at = rows.findIndex((row) => row.id === lastBar) + 1;
   return [...rows.slice(0, at), ...OLDER_TAB_ROWS, ...rows.slice(at)];
 })();
-// --- end wave-1 integration ---
 
-/** The rows as each part of the page builds them (`section` is where the row was born). The view builds a control per id. */
 const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'profile', section: 'profile', label: 'Profile', aria: 'This profile', description: '', keywords: 'account person name avatar guest you and bowser profile This profile Settings on this page apply to this profile only.' },
   { id: 'profiles', section: 'profile', label: 'Profiles', aria: 'Profiles', description: '', keywords: 'switch new add create guest delete remove rename name avatar colour color shortcut desktop taskbar work personal sign-ins Manage profiles Switch, create, rename or delete profiles. Each profile keeps its own sign-ins, history, bookmarks and settings, and gets its own taskbar button.' },
   { id: 'import', section: 'profile', label: 'Import', aria: 'Import bookmarks or passwords from a file', description: '', keywords: 'chrome edge firefox migrate transfer bookmarks passwords csv html import Import bookmarks Bring bookmarks or passwords over from a file another browser exported.' },
-  // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
   { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: '', keywords: 'layout preset presets simple classic vertical left right bottom saved thumbnails arrangement tabs top side Presets A starting arrangement. Change any part of it and Bowser keeps yours as Saved.' },
   { id: 'layout', section: 'appearance', label: 'Top style', aria: 'Tab bar style at the top', description: '', keywords: 'tabs toolbar horizontal single row top browser layout Tab bar style at the top How the tabs and the address bar share the top of the window.' },
   { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: '', keywords: 'vertical tabs size wide narrow pixels Sidebar width Width of the tab sidebar in the vertical layouts.' },
@@ -1002,39 +819,21 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'uiDensity', section: 'appearance', label: 'Density', aria: 'User interface density', description: '', keywords: 'density regular compact rows spacing dense User interface density Compact shortens the rows of the tab sidebar, the panels and Bowser’s own pages.' },
   { id: 'compactMenus', section: 'appearance', label: 'Compact menus', aria: 'Compact menu layout', description: '', keywords: 'compact menus dense rows menu layout Compact menu layout Shorter rows in Bowser’s menus.' },
   { id: 'uiZoom', section: 'appearance', label: 'UI zoom', aria: 'User interface zoom', description: '', keywords: 'ui zoom scale interface size percent slider text User interface zoom Scales the text of Bowser’s bars, panels and pages, on top of the font size. Select the value to type one.' },
-  // No "Show the title bar" row: the window lays a title row out by itself (the vertical sidebar's
-  // column has its own, and a toolbar away from the top always gets one), so `show_title_bar` never
-  // changed anything (src/chrome/layout.rs, `a_title_row_asked_for_beside_a_zen_sidebar_is_its_own_title_row`).
-  // The key stays in settings.txt and the layout's save for older files.
-  // --- end layout ---
-  // Light, dark or follow Windows: the everyday choice. It writes the same `theme_schedule` and `theme_look` keys as
-  // the Schedule and Look rows behind More (those add the timed schedule).
   { id: 'themeMode', section: 'appearance', label: 'Mode', aria: 'Light, dark or system', description: '', keywords: 'theme mode light dark system night day appearance colour color scheme follow windows dark mode light mode Mode' },
   { id: 'theme', section: 'appearance', label: 'Palette', aria: 'Colour palette', description: '', keywords: 'dark light colour scheme helium system prefer system colour windows accent palette theme Colour palette Bowser’s own colours, or your Windows accent colour. Picking one puts a custom accent back to the palette’s.' },
   { id: 'themeAccent', section: 'appearance', label: 'Accent', aria: 'Accent colour', description: '', keywords: 'colour accent override custom theme reset Accent colour A colour for buttons and highlights, in place of the palette’s. Reset goes back to the palette’s accent.' },
   { id: 'websiteAppearance', section: 'appearance', label: 'Websites', description: '', keywords: 'dark light auto mode prefers color scheme websites page theme appearance Websites Ask sites for a light page, a dark page, or the same as Windows.' },
   { id: 'forceDark', section: 'appearance', label: 'Force dark', aria: 'Force dark theme on all websites', description: '', keywords: 'force dark mode night websites invert auto dark Force dark theme on all websites Darkens pages that have no dark theme of their own, in open tabs at once and in the pages you open next.' },
   { id: 'privateTheme', section: 'appearance', label: 'Private theme', aria: 'Private tab theme', description: '', keywords: 'private incognito inprivate theme dark light window colour Private tab theme How Bowser’s own windows look while a private tab is shown: the same as normal, light or dark.' },
-  // --- theme options --- the schedule, custom colours, colouring mode, page accent, contrast and the theme file.
   ...THEME_ROWS,
-  // --- end theme options ---
-  // --- toolbars and feeds (thread T13) --- the editor for the three bars (a sub-page); it replaces the old checklist.
   { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbar', aria: 'Customise your toolbar', description: '', keywords: 'toolbar toolbars buttons customize customise address bar tab bar back forward reload bookmark new tab split reader site information downloads extensions closed tabs command chain button add remove move reset preview Customise your toolbars Choose the buttons on the address bar and the tab bar, and put a command or a chain of commands on either.' },
   { id: 'centredAddressBar', section: 'appearance', label: 'Centre address', aria: 'Centre the address bar', description: '', keywords: 'address bar centre centered position Centre the address bar Keeps the address bar centred in the toolbar. Only where it has a row of its own above or below the tabs: not beside vertical tabs, in one row with the tabs, or under them.' },
   { id: 'minimalUrl', section: 'appearance', label: 'Short address', aria: 'Show a simplified address while unfocused', description: '', keywords: 'url simplified host domain minimal address bar focus Show a simplified address while unfocused Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address. Off while Full address is on.' },
   { id: 'showLoadProgress', section: 'appearance', label: 'Load progress', aria: 'Show a loading progress bar', description: '', keywords: 'progress loading bar indicator Show a loading progress bar A thin bar tracks page loads in the toolbar.' },
-  // The one group setting: groups have a single look, so there is nothing else to choose. Applies at once.
   { id: 'grouping', section: 'stacks', label: 'Auto group', aria: 'Group tabs automatically', description: '', keywords: 'automatic auto tab groups grouping islands stacks site domain sort Group tabs automatically Tabs from one site share a group. Drag a tab into a group to add it by hand.' },
-  // --- wave-1 integration --- "Open new tabs next to the active tab" is Tabs > New tab position (the
-  // same `new_tab_beside_active` key), and the Ctrl+Tab order and tab previews sit in Tabs > Tab bar
-  // (TABS_SECTION_ROWS below).
-  // --- T10 --- drag and drop tiling, beside the other tiling options.
   { id: 'splitEdgeDrop', section: 'tabs', label: 'Edge split', aria: 'Drop a dragged tab on the window edge to split', description: '', keywords: 'split view drag drop edge tab tiling tile Allow dropping a dragged tab on the window edge to split Dragging a tab to the edge of the window opens it in a split view.' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin groups', aria: 'Pin new tab groups to the bookmarks bar', description: '', keywords: 'pin tab groups bookmarks bar Pin new tab groups to the bookmarks bar A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.' },
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S', aria: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: '', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut Ctrl+S hides or pins the sidebar in the vertical layout Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.' },
-  // --- window and panels (thread T9) --- each row below acts at once; all sit behind More options. Not here, on purpose:
-  // "open settings in a tab" and "open popups in tabs" (Bowser already always does), "show title bar" (the window
-  // lays its title row out by itself), "reset toolbars" (the toolbar editor) and the Windows and Reading list panels (Bowser has neither).
   { id: 'winAnimations', section: 'appearance', label: 'Animation', aria: 'Use animation', description: '', keywords: 'animation motion transitions reduced motion prefers reduced motion slide Use animation Bowser’s own transitions and the panel slide. Off, they snap. Bowser also stays still when Windows has animations off.' },
   { id: 'winRangeButtons', section: 'appearance', label: 'Steppers', aria: 'Buttons instead of sliders', description: '', keywords: 'sliders range buttons stepper plus minus Buttons instead of sliders Range controls on this page, such as the sidebar width and the interface zoom, show minus and plus buttons instead of a slider.' },
   { id: 'winFade', section: 'appearance', label: 'Fade inactive', aria: 'Fade colours in background windows', description: '', keywords: 'fade colours background window inactive dim grey desaturate Fade colours in background windows Bowser’s bars and panels lose their colour while another window is in front.' },
@@ -1045,17 +844,13 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'panelAutoClose', section: 'appearance', label: 'Auto-close', aria: 'Close floating panels when you click elsewhere', description: '', keywords: 'floating panel auto close dismiss click outside overlay flyout Close floating panels when you click elsewhere Bookmarks and Customize float over the page. Off, they stay until you close them.' },
   { id: 'winReset', section: 'appearance', label: 'Reset window', aria: 'Reset window options', description: '', keywords: 'reset window defaults restore Restores defaults Reset window options Puts animation, sliders, fading, scrollbars and icons back to their defaults.' },
   { id: 'panelReset', section: 'appearance', label: 'Reset panels', aria: 'Reset panel options', description: '', keywords: 'reset panels defaults restore Restores defaults Reset panel options Puts the close button, folder counters and auto-close back to their defaults.' },
-  // --- end window and panels ---
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded page', aria: 'Rounded corners around the page', description: '', keywords: 'rounded corners content frame page Rounded corners around the page Rounds the corners of the page area.' },
-  // --- auto-hide (T11) --- the master switch is the old `frameless` key (core); the other two sit behind "More options".
   { id: 'frameless', section: 'appearance', label: 'Auto-hide', aria: 'Auto-hide toolbars and tabs', description: '', keywords: 'auto hide autohide frameless toolbar tabs immersive fullscreen full screen bars edge Auto-hide toolbars and tabs Hides the bars you choose until the pointer rests at the edge of the window. Ctrl+F11 turns it on or off.', tier: 'more' },
   { id: 'autoHideBars', section: 'appearance', label: 'Hidden bars', aria: 'Bars to hide', description: '', keywords: 'auto hide bars tabs address bookmarks panel status Bars to hide The tab bar and address bar share the top edge in the horizontal layouts, so either one hides both. The side panel opens over the page instead of pushing it.', tier: 'more' },
   { id: 'autoHideFullscreen', section: 'appearance', label: 'Full screen', aria: 'Always auto-hide in full screen', description: '', keywords: 'auto hide full screen fullscreen f11 video Always auto-hide in full screen In full screen (F11, or a video) every bar hides, even with the switch above off.', tier: 'more' },
-  // --- end auto-hide ---
   { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: '', keywords: 'bookmarks bar show hide newtab always never Bookmarks bar When the bookmarks bar is shown.' },
   { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Groups on bar', aria: 'Show tab groups in the bookmarks bar', description: '', keywords: 'tab groups bookmarks bar islands Show tab groups in the bookmarks bar Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
-  // --- layout (thread T6) --- the side panel's edge follows the layout preset above (opposite vertical tabs).
   { id: 'fontSize', section: 'appearance', label: 'Text size', description: '', keywords: 'font size small medium large text Text size The size of text in Bowser’s bars, menus, panels and pages. Web pages keep theirs; Page zoom sets those.' },
   { id: 'uiFont', section: 'appearance', label: 'Font', aria: 'Customise fonts', description: '', keywords: 'font family typeface custom ui Customise fonts A font family to use instead of the system font.' },
   { id: 'defaultZoom', section: 'appearance', label: 'Page zoom', description: '', keywords: 'zoom default starting percent page Page zoom The zoom new pages start at.' },
@@ -1065,13 +860,9 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'translateTarget', section: 'appearance', label: 'Translate to', aria: 'Translate into', description: '', keywords: 'translate translation language foreign page target windows Translate into' },
   { id: 'shiftRightClickContext', section: 'keyboard', label: 'Shift+right-click', aria: 'Shift+right click shows the system menu', description: '', keywords: 'shift right click context menu system Shift+Right Click shows the system menu Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.' },
   { id: 'ctrlShiftCCopyLink', section: 'keyboard', label: 'Ctrl+Shift+C', aria: 'Ctrl+Shift+C copies the address', description: '', keywords: 'ctrl shift c copy link address shortcut Ctrl+Shift+C copies the address Ctrl+Shift+C copies the current page’s address.' },
-  // The Tabs section's rows come from its own table (tab-options-logic.ts).
   ...TABS_SECTION_ROWS,
-  // Tabs on top or down the side: the same layout presets as Appearance > Layout (Classic, Vertical left).
   { id: 'tabPosition', section: 'tabs', label: 'Tab position', aria: 'Tabs on top or down the side', description: '', keywords: 'vertical tabs horizontal tab bar side sidebar top left layout position strip Tab position' },
-  // --- tab stacks, tiling and workspaces (T10) ---
   { id: 'workspaceRules', section: 'tabs', label: 'Rules', aria: 'Workspace rules', description: '', keywords: 'workspace rules sites open automatically named workspace domain Workspace rules Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.' },
-  // --- start page --- (docs/design/start-page.md)
   { id: 'startGroupReopen', section: 'startpage', label: 'Starting group', aria: 'Speed dial group a new tab opens on', description: '', keywords: 'start group speed dial group last used first new tab start page reopen Open the start page on Which speed dial group a new tab shows first.' },
   { id: 'startTitles', section: 'startpage', label: 'Site names', aria: 'Show site names under speed dial tiles', description: '', keywords: 'speed dial titles names always never needed auto if no image hover labels Show titles When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.' },
   { id: 'startDials', section: 'startpage', label: 'Speed dials', aria: 'Show speed dials on new tabs', description: '', keywords: 'speed dials new tab blank start page groups sites pinned Show speed dials on new tabs Off, a new tab is blank.' },
@@ -1088,11 +879,9 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'startWidgetBg', section: 'startpage', label: 'Widget background', description: '', keywords: 'widgets background solid transparent translucent custom colour Widget background How a widget is filled: solid, semi-transparent, transparent or a colour you choose.' },
   { id: 'startWidgetColor', section: 'startpage', label: 'Custom colour', aria: 'Custom widget colour', description: '', keywords: 'widgets colour color custom background Custom widget colour Used when the widget background is Custom.' },
   { id: 'startWidgetDrag', section: 'startpage', label: 'Drag to rearrange', aria: 'Drag to rearrange widgets', description: '', keywords: 'widgets drag rearrange reorder move Drag to rearrange widgets Drag a widget by its handle, or press Alt and an arrow key on it.' },
-  // --- end start page ---
   { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.', reload: true },
   { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.', reload: true },
   { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'YouTube ads', aria: 'Block YouTube video ads', description: '', keywords: 'youtube video ads block skip Block YouTube video ads Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.', reload: true },
-  // Spoiler Firewall for GTA VI (src/spoiler.rs): one line each like every row; the longer wording is the control's aria text and the search keywords.
   { id: 'spoilerProtection', section: 'privacy', label: 'GTA VI spoilers', aria: 'Hide GTA VI spoilers', description: '', keywords: 'spoiler spoilers gta 6 vi grand theft auto rockstar firewall protection shield hide block leak ending Hide GTA VI spoilers Spoiler Firewall for GTA VI is built in and on by default. It covers every tab, including private tabs and guest windows.', reload: true },
   { id: 'spoilerMode', section: 'privacy', label: 'How much to hide', description: '', keywords: 'spoiler mode lockdown strict balanced gta firewall level hide How much to hide', reload: true },
   { id: 'spoilerReducedEffects', section: 'privacy', label: 'Simple covers', aria: 'Simpler spoiler covers', description: '', keywords: 'spoiler reduced effects motion blur animation performance accessibility gta Simpler spoiler covers Opaque covers with no blur or animation. Lighter on slow computers.', reload: true },
@@ -1111,9 +900,8 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'sleep', section: 'performance', label: 'Sleep tabs', aria: 'Sleep unused tabs', description: '', keywords: 'memory discard suspend hibernate inactive hidden tabs Sleep unused tabs Hidden tabs go to sleep after a while to free memory.' },
   { id: 'sleepAfter', section: 'performance', label: 'Sleep after', aria: 'Sleep tabs after', description: '', keywords: 'delay timeout minutes memory Sleep after How long a tab stays hidden before it sleeps. Only while Sleep tabs is on.' },
   ...ADDRESS_ROWS.filter((row) => row.section !== 'appearance'),
-  ...PAGE_TOOLS_ROWS, // --- page tools (T7) ---
-  ...FEED_ROWS, // --- toolbars and feeds (thread T13) ---
-  // --- keyboard and quick commands (docs/commands.md) ---
+  ...PAGE_TOOLS_ROWS,
+  ...FEED_ROWS,
   { id: 'kbEnabled', section: 'keyboard', label: 'Shortcuts', aria: 'Keyboard shortcuts', description: '', keywords: 'keyboard shortcuts enable disable hotkeys keybindings keys ctrl shift k Keyboard shortcuts Turn Bowser’s shortcuts on or off. Quick commands stays available.' },
   { id: 'kbSingleKey', section: 'keyboard', label: 'Single-key shortcuts', aria: 'Allow single-key shortcuts', description: '', keywords: 'single key shortcuts letter number plain keys Allow single-key shortcuts Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.' },
   { id: 'kbAltMenu', section: 'keyboard', label: 'Alt menu', aria: 'Alt opens the menu', description: '', keywords: 'alt key menu windows Alt opens the menu Pressing and releasing Alt on its own opens the Bowser menu. Off, it does nothing.' },
@@ -1127,7 +915,6 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'qcNotesPanel', section: 'commands', label: 'Notes panel', aria: 'Open notes in the Notes panel', description: '', keywords: 'quick commands palette notes manager panel copy Open notes in the Notes panel Picking a note opens the Notes panel; the panel does not yet go to the picked note. Off, it copies the note’s text instead.' },
   { id: 'qcNickname', section: 'commands', label: 'Nicknames', aria: 'Open a bookmark when its nickname is typed', description: '', keywords: 'quick commands palette bookmark nickname automatic open match keyword Open a bookmark when its nickname is typed Typing a bookmark’s whole nickname in Quick commands opens it at once, without pressing Enter. Give a bookmark a nickname in its bookmark dialog.' },
   { id: 'chains', section: 'commands', label: 'Chains', aria: 'Command chains', description: '', keywords: 'command chains macro sequence delay milliseconds test clone create edit delete automation Command chains Run several commands one after another, with a delay in milliseconds before each. Run a chain from Quick commands, give it a shortcut in Keyboard, or test it here.' },
-  // --- end keyboard and quick commands ---
   { id: 'downloadDir', section: 'downloads', label: 'Download folder', description: '', keywords: 'download folder directory save path where change location Download folder' },
   { id: 'downloadAsk', section: 'downloads', label: 'Ask where to save', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above. On, the Save dialog opens in it.' },
   { id: 'media', section: 'media', label: 'Playback', aria: 'Media support', description: '', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode Media support Runs on this device only and sends nothing.' },
@@ -1143,21 +930,15 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: '', keywords: 'default browser make bowser windows handler http https web links Default browser Open links from other apps in Bowser.' },
 ];
 
-/**
- * Every row the page draws. A row's `section` is the section of the group it is drawn in, so a search
- * jump reports (and a reload returns to) the part of the page the row is really in.
- */
 export const ROWS: readonly RowSpec[] = BUILT_ROWS.map((row) => {
   const section = placementOf(row.id, row.section).group.section;
   return section === row.section ? row : { ...row, section };
 });
 
-/** Lower-case, accent-free, single-spaced text for matching. */
 export function fold(text: string): string {
   return text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/** Ids of the rows whose words contain every word of `query`; `null` for an empty query (show all). */
 export function matchRows(query: string, rows: readonly RowSpec[] = ROWS): Set<string> | null {
   const words = fold(query).split(' ').filter(Boolean);
   if (words.length === 0) return null;
@@ -1172,24 +953,15 @@ export function matchRows(query: string, rows: readonly RowSpec[] = ROWS): Set<s
   return hits;
 }
 
-// ---- Simple settings (a UI choice only; nothing here is written to settings.txt) ----
-
-/** Where the page remembers Simple versus All. A viewer convenience, like which More options are open. */
 export const SETTINGS_VIEW_KEY = 'bowser.settings.view';
 export type SettingsView = 'simple' | 'all';
 
-/** `all` only when that exact word was saved. Anything else, including a first visit, is Simple. */
 export function readSettingsView(raw: string | null): SettingsView {
   return raw === 'all' ? 'all' : 'simple';
 }
 
-/** A titled group of the Simple page: rows of All settings, lifted out while Simple shows. */
 export interface SimpleGroupSpec { readonly key: string; readonly title: string; readonly rows: readonly string[] }
 
-/**
- * Simple: the settings an everyday person changes, as the same rows All settings draws (the nodes
- * move, so a control and what it does live in one place), in four short groups.
- */
 export const SIMPLE_GROUPS: readonly SimpleGroupSpec[] = [
   { key: 'start', title: 'Startup and search', rows: ['startupMode', 'startupPages', 'startHomepage', 'searchDefault', 'searchSuggestions'] },
   { key: 'look', title: 'Appearance', rows: ['themeMode', 'themeAccent', 'tabPosition', 'toolbarButtons', 'fontSize', 'defaultZoom'] },
@@ -1197,31 +969,24 @@ export const SIMPLE_GROUPS: readonly SimpleGroupSpec[] = [
   { key: 'browser', title: 'Your browser', rows: ['profile', 'import', 'downloadDir', 'defaultBrowser', 'autoUpdate', 'updateStatus'] },
 ];
 
-/** Every row the simple page lifts out of All settings, in the order it shows them. */
 export const SIMPLE_MOVED: readonly string[] = SIMPLE_GROUPS.flatMap((spec) => spec.rows);
 
 export const SIMPLE_TITLE = 'Settings';
 export const SIMPLE_LEAD = '';
 export const SIMPLE_ALL_LABEL = 'All settings';
 
-/** Light, dark, or follow Windows. `null` when a time-of-day schedule is in use, so the control does not pretend. */
 export function simpleThemeChoice(schedule: string, look: string): 'light' | 'dark' | 'system' | null {
   if (schedule === 'system') return 'system';
   if (schedule === 'none') return look === 'dark' ? 'dark' : 'light';
   return null;
 }
 
-/** Top or side. `null` when the tabs sit along the bottom, which is neither. */
 export function simpleTabChoice(edge: 'top' | 'left' | 'right' | 'bottom'): 'top' | 'side' | null {
   if (edge === 'left' || edge === 'right') return 'side';
   if (edge === 'top') return 'top';
   return null;
 }
 
-/**
- * Where the words of `query` occur in `text` (shown text only), as merged [start, end) ranges
- * over `text` itself. Matching ignores case; accents are compared as written.
- */
 export function highlightRanges(text: string, query: string): Array<[number, number]> {
   const words = query.toLowerCase().split(/\s+/).filter((word) => word.length > 0);
   const lower = text.toLowerCase();
@@ -1250,9 +1015,6 @@ export function resultCountText(count: number, query: string): string {
   return count === 1 ? '1 setting found' : `${count} settings found`;
 }
 
-// ---- Values and words ----
-
-/** Sleep delays the select offers; a stored value that is not one of them is shown as its own option. */
 export const SLEEP_PRESETS: readonly number[] = [30, 60, 300, 900, 1800, 3600, 14400, 86400, 604800];
 
 export function durationLabel(secs: number): string {
@@ -1269,10 +1031,6 @@ export function sleepOptions(current: number): number[] {
   return list.sort((a, b) => a - b);
 }
 
-/**
- * A typed site for the allow list: trimmed and lower-cased, a scheme, path, port or `www.` prefix
- * dropped. `null` when what is left could not be a host.
- */
 export function normaliseSite(input: string): string | null {
   let text = input.trim().toLowerCase();
   text = text.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
@@ -1302,7 +1060,6 @@ export interface UpdateView {
   readonly tone: 'ok' | 'warn' | 'info';
 }
 
-/** What the update card says and offers. */
 export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' | 'lastCheck' | 'checkResult' | 'version' | 'autoUpdate'>): UpdateView {
   if (s.update === 'unavailable') return { title: 'Off', detail: '', action: null, busy: false, tone: 'info' };
   if (s.update === 'checking') return { title: 'Checking…', detail: s.version, action: null, busy: true, tone: 'info' };
@@ -1328,14 +1085,9 @@ export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' 
   return { title, detail, action: 'check', busy: false, tone: s.lastCheck === 'failed' ? 'warn' : 'ok' };
 }
 
-
-// --- back up and restore --- (Rust: src/backup, `chrome_host::settings` `backupexport` / `backupimport`)
-
-/** A new backup's password, in characters (Rust's `backup::MIN_PASSWORD_CHARS` and its ceiling). */
 export const MIN_BACKUP_PASSWORD = 8;
 export const MAX_BACKUP_PASSWORD = 1024;
 
-/** Why a new backup's password cannot be used yet, or `null` when it can. */
 export function backupPasswordProblem(password: string, repeat: string): string | null {
   const length = [...password].length;
   if (length < MIN_BACKUP_PASSWORD) return `Use a password of at least ${MIN_BACKUP_PASSWORD} characters.`;
