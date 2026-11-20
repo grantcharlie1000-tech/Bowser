@@ -40,7 +40,10 @@ import { mountPageToolsSection } from './page-tools-section'; // --- page tools 
 import { mountPasswordsSection } from './passwords-section';
 import { mountWelcome } from './welcome'; // the first-run welcome (docs/design/welcome.md)
 import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
-import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
+import {
+  TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, homepageChoiceTip, numberLabel, tabRowRests, textApplies,
+  type TabOptionSpec, type TabOptionValues, type TabRowContext,
+} from './tab-options-logic';
 import {
   BOOKMARKS_BAR_MODES, EFFICIENCY_ARIA, EFFICIENCY_LABELS, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   ROWS, SPOILER_LIMITS_NOTE, SPOILER_MODES, SPOILER_MODE_HINTS, SPOILER_MODE_LABELS, SPOILER_OFF_WARNING, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
@@ -2036,7 +2039,33 @@ export function startSettingsPage(root: HTMLElement): void {
     translateOffer.set(s.translateOffer);
     translateAuto.set(s.translateAuto);
     paintTranslateSelect(s.translateTarget, s.translateTargets);
-    for (const control of tabControls.values()) { control.set(s.tabOptions); control.disable(!s.readable); }
+    // A tab option that cannot act now (tabs on the side, the switch it tunes off, a new tab with no page)
+    // rests: disabled, dimmed and out of the page until it can (`is-na`; a search still finds it).
+    const tabContext: TabRowContext = { tabsOnSide: simpleTabChoice(tabBarEdge(d.tabLayout)) === 'side', homepage: d.start.homepage };
+    for (const [key, control] of tabControls) {
+      const rests = tabRowRests(key, s.tabOptions, tabContext);
+      control.set(s.tabOptions);
+      control.disable(!s.readable || rests);
+      const node = rows.get(key)?.root;
+      if (node) { setClass(node, 'is-off', s.readable && rests); setClass(node, 'is-na', s.readable && rests); }
+    }
+    // "New tab page: Homepage" with no homepage set opens the start page; its choice says so on hover.
+    const homeChoice = Array.from(rows.get('tabs_new_tab_page')?.root.querySelectorAll<HTMLElement>('[role="radio"]') ?? []).find((radio) => radio.textContent === 'Homepage');
+    const homeTip = homepageChoiceTip(d.start.homepage);
+    if (homeTip !== '') homeChoice?.setAttribute('data-tip', homeTip);
+    else homeChoice?.removeAttribute('data-tip');
+    // The workspace rules wait while Workspaces is off: their opener and their form rest too.
+    const rulesRest = tabRowRests('workspaceRules', s.tabOptions, tabContext);
+    for (const control of [ruleSite, ruleAdd]) control.disabled = rulesRest;
+    ruleSelect?.button.toggleAttribute('disabled', rulesRest);
+    const rulesOpener = openers.get('workspaceRules');
+    if (rulesOpener) {
+      rulesOpener.button.disabled = rulesRest;
+      setClass(rulesOpener.root, 'is-off', rulesRest);
+      setClass(rulesOpener.root, 'is-na', rulesRest);
+    }
+    const rulesNode = rows.get('workspaceRules')?.root;
+    if (rulesNode) setClass(rulesNode, 'is-off', rulesRest);
     themeRows.apply(s.themeOptions, s.readable, d.window.rangeButtons); // --- theme options ---
     autoUpdate.set(s.autoUpdate);
     // A build that cannot update itself (a developer build) has nothing for the switch to turn on.

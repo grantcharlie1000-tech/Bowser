@@ -5918,7 +5918,7 @@ impl App {
                 restored_ids.push(Some(id));
                 // --- tab options --- "Load restored tabs when first selected" / "Always load pinned tabs".
                 if !safe
-                    && (!state.settings.tabs.lazy_restore || (state.settings.tabs.load_pinned && saved.pinned))
+                    && crate::tab_options::loads_at_restore(&state.settings.tabs, saved.pinned)
                     && index != session.active
                 {
                     state.tab_state.eager.push(id);
