@@ -255,7 +255,19 @@ export interface TabRowContext {
   readonly tabsOnSide: boolean;
   /** The homepage "New tab page: Homepage" opens (General > On startup), '' when none is set. */
   readonly homepage: string;
+  /** Appearance > Layout > Tab bar is off: no tab list is drawn anywhere (no strip, no side list). */
+  readonly tabListHidden?: boolean;
 }
+
+/** Options that only change the drawn tab list (its look, or clicks and the wheel on it): nothing to act on
+ *  while the tab bar is hidden. The rest (new tabs, closing, audio, pinned rules, restore, workspaces) act
+ *  through shortcuts and menus too. */
+export const TAB_LIST_KEYS: readonly string[] = [
+  'tabs_scroll', 'tabs_active_min_width', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_load_indicator',
+  'tabs_minimise_active', 'tabs_unread_indicator', 'tabs_title_notifications', 'tabs_dim_hibernated', 'tabs_inactive_days',
+  'tabs_align_close_button', 'tabs_double_click', 'tabs_close_left', 'tabs_close_always', 'tabs_pinned_separator',
+  'tabs_selection', 'tabs_selection_active',
+];
 
 /**
  * Options only the tab bar along the top or bottom has (tabs.ts reads them for the horizontal strip;
@@ -278,6 +290,7 @@ export function newTabOpensPage(values: TabOptionValues, homepage: string): bool
 
 /** Whether row `key` (a tab option, or the workspace rules) cannot act with `values` now. */
 export function tabRowRests(key: string, values: TabOptionValues, context: TabRowContext): boolean {
+  if (context.tabListHidden === true && TAB_LIST_KEYS.includes(key)) return true;
   if (STRIP_ONLY_KEYS.includes(key)) return context.tabsOnSide;
   switch (key) {
     case 'tabs_new_tab_url': return values.tabs_new_tab_page !== 'url';

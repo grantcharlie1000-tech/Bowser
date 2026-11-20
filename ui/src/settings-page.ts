@@ -2066,7 +2066,7 @@ export function startSettingsPage(root: HTMLElement): void {
     paintTranslateSelect(s.translateTarget, s.translateTargets);
     // A tab option that cannot act now (tabs on the side, the switch it tunes off, a new tab with no page)
     // rests: disabled, dimmed and out of the page until it can (`is-na`; a search still finds it).
-    const tabContext: TabRowContext = { tabsOnSide: simpleTabChoice(tabBarEdge(d.tabLayout)) === 'side', homepage: d.start.homepage };
+    const tabContext: TabRowContext = { tabsOnSide: simpleTabChoice(tabBarEdge(d.tabLayout)) === 'side', homepage: d.start.homepage, tabListHidden: !d.layout.tabBarVisible };
     for (const [key, control] of tabControls) {
       const rests = tabRowRests(key, s.tabOptions, tabContext);
       control.set(s.tabOptions);

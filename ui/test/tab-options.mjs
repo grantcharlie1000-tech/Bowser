@@ -181,6 +181,14 @@ test('a row rests exactly while what it tunes cannot act', () => {
   for (const field of ['scroll', 'minWidth', 'wheel', 'removeSpacing', 'alignClose']) {
     assert.doesNotMatch(sidebar, new RegExp(`value\\.${field}\\b`), `the side list never reads ${field}`);
   }
+  // Tab bar hidden (Appearance > Layout): nothing draws the tabs, so every option about the drawn list rests;
+  // the ones that act through shortcuts and menus stay.
+  const hidden = { tabsOnSide: false, homepage: '', tabListHidden: true };
+  for (const key of options.TAB_LIST_KEYS) assert.equal(rests(key, {}, hidden), true, `${key} rests with no tab bar`);
+  for (const key of ['tabs_close_related', 'tabs_keep_window', 'tabs_mute_mode', 'tabs_lazy_restore', 'tabs_link_background']) {
+    assert.equal(rests(key, {}, hidden), false, `${key} still acts with no tab bar`);
+  }
+  for (const key of options.STRIP_ONLY_KEYS) assert.ok(options.TAB_LIST_KEYS.includes(key), key);
   // Options the side list does honour stay live there.
   for (const key of ['tabs_close_left', 'tabs_close_always', 'tabs_load_indicator', 'tabs_pinned_separator', 'tabs_selection', 'tabs_dim_hibernated']) {
     assert.equal(rests(key, {}, side), false, key);
