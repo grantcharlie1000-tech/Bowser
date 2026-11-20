@@ -293,8 +293,8 @@ function Flow-Groups {
   $field = $null; $focused = $false
   if ($editor) {
     $field = WaitFor { FindAll ($UIA::FromHandle($editor)) $CT::Edit { param($n) $n -eq 'Group name' } | Select-Object -First 1 } 5000
-    if ($field) { try { $focused = [bool]$field.Current.HasKeyboardFocus } catch { } }
-    Check 'its name field has the keyboard (type the name straight away)' $focused "field found $([bool]$field), focused $focused, foreground $([E2E]::Cls([E2E]::GetForegroundWindow()))"
+    # Opened by the command, the field should already have the keyboard: type without clicking it.
+    $focused = [bool]$field
   } else {
     # The way left without it: hover the new group's ball, which opens the same editor.
     $top = (WinRect).T
@@ -309,11 +309,18 @@ function Flow-Groups {
   if ($field) {
     if (-not $focused) { $c = Center $field; Click $c[0] $c[1]; Start-Sleep -Milliseconds 500; Keys '^a' 200 }
     Keys 'Research' 500
+    $typed = $null; try { $typed = $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { }
+    $current.data.name_field_after_typing = $typed
+    if ($focused) { Check 'typing straight away (no click in the field) names the group' ($typed -eq 'Research') "field holds '$typed', foreground $([E2E]::Cls([E2E]::GetForegroundWindow()))" }
     Shot 'g05-name-typed'
     $teal = FindAll ($UIA::FromHandle($editor)) $null { param($n) $n -eq 'Teal' } | Select-Object -First 1
     if ($teal) { $c = Center $teal; Click $c[0] $c[1]; Note 'clicked Teal'; Start-Sleep -Milliseconds 900 } else { Note 'no Teal swatch' }
     Shot 'g06-teal-picked'
-    Keys '{ENTER}' 600
+    $tealNow = FindAll ($UIA::FromHandle($editor)) $null { param($n) $n -eq 'Teal' } | Select-Object -First 1
+    $pressed = $null; try { $pressed = $tealNow.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState } catch { }
+    $current.data.teal_toggle_after_one_click = "$pressed"
+    Check 'one click on Teal, right after typing the name, selects it' ("$pressed" -eq 'On') "Teal toggle state '$pressed'"
+    # No Enter here: with the focus on the swatch it would press Teal a second time.
   }
   # Move the pointer to the page so the editor closes (a click there if it is still up).
   $wr = WinRect; [E2E]::SetCursorPos($wr.L + 640, $wr.T + 500) | Out-Null; Start-Sleep -Milliseconds 1200
