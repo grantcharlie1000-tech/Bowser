@@ -1,5 +1,29 @@
 [
  {
+  "tag": "v0.0.41",
+  "date": "2026-11-20",
+  "prs": [
+   [
+    188,
+    "Pin Stable to v0.0.40"
+   ],
+   [
+    189,
+    "New tab: see-through like the area behind the tabs"
+   ],
+   [
+    190,
+    "Bug bash: toolbar, tab strip, tab groups, start page settings, Gmail loading"
+   ],
+   [
+    191,
+    "Bump Bowser to 0.0.41"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 3be5b2c6c03ff109b41440f687b9e21015c09686. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.40",
   "date": "2026-11-20",
   "prs": [
