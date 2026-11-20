@@ -656,6 +656,12 @@
   opacity: 0.6;
 }
 
+/* A row that tunes something switched off (the start page's dial and widget rows) leaves the page, so a
+   section reads as just its switches until one is on. A search still lists it (dimmed, above). A group
+   whose every row has left (the start page's rows under More) goes with them. */
+:where(#app.sp-root) .sp-row.is-na:not(:where(.is-searching) *) { display: none; }
+:where(#app.sp-root) .sp-group:has(.sp-row.is-na):not(:has(.sp-row:not(.is-na))):not(:where(.is-searching) *) { display: none; }
+
 @media (forced-colors: active) {
   :where(#app.sp-root) .sp-row.is-off > .sp-text > .sp-label {
     color: GrayText;
@@ -3731,6 +3737,22 @@
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* The start page's two switches are the exception: their names alone did not say what a new tab gains,
+   so their line shows, under the label. (Same specificity as the rule above, and later, so it wins.) */
+:where(#app.sp-root) :is(.sp-row[data-row="startDials"], .sp-row[data-row="startWidgets"]):has(> .sp-ctl) > .sp-text {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+:where(#app.sp-root) :is(.sp-row[data-row="startDials"], .sp-row[data-row="startWidgets"]):has(> .sp-ctl) > .sp-text > .sp-desc:not(.sp-path) {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
 }
 
 /* ---- Welcome (bowser://settings/welcome, ui/src/welcome.ts, docs/design/welcome.md) ----

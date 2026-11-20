@@ -3,9 +3,10 @@
 // helpers (so the rows look and behave like every other row) and calls `apply` with each snapshot.
 //
 // Every row that tunes the speed dials only does something while Speed dials is on, and every widget
-// row only while Widgets is on: `apply` disables (and dims) them otherwise, so no control looks live
-// while it cannot change what a new tab shows. With the new tab page set to Blank (Tabs > New tabs)
-// there is no start page at all, so the whole section rests and its two switches say why.
+// row only while Widgets is on: `apply` hides them otherwise (`is-na`), so the section is just its two
+// switches until one is turned on, and no control is ever on screen while it cannot change what a new
+// tab shows. A search still finds them, disabled and dimmed. With the new tab page set to Blank
+// (Tabs > New tabs) there is no start page at all, so the whole section rests and its two switches say why.
 import { el, icon } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
@@ -27,7 +28,7 @@ export interface StartSectionHost {
   toast(text: string, ok: boolean): void;
 }
 
-export const GROUP_REOPEN_LABELS: Readonly<Record<GroupReopen, string>> = { last: 'Last used', first: 'First' };
+export const GROUP_REOPEN_LABELS: Readonly<Record<GroupReopen, string>> = { last: 'Last used', first: 'First group' };
 export const GROUP_REOPEN_ARIA: Readonly<Record<GroupReopen, string>> = { last: 'The group you used last', first: 'The first group' };
 // "Auto" read as if it did nothing: it only differs from Always for a tile with a chosen image.
 export const TITLE_LABELS: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'If no image', never: 'Never' };
@@ -85,6 +86,11 @@ function rowNote(row: HTMLElement, id: string, text: string): HTMLElement {
 /** A row whose control cannot act now: dimmed as a whole, so it reads as resting rather than broken. */
 function rest(row: HTMLElement, off: boolean): void {
   row.classList.toggle('is-off', off);
+}
+
+/** A row that tunes something switched off: out of the page (a search still shows it, dimmed). */
+function away(row: HTMLElement, gone: boolean): void {
+  row.classList.toggle('is-na', gone);
 }
 
 export function mountStartSection(host: StartSectionHost): { apply(start: StartSettings, readable: boolean, shown?: boolean): void } {
@@ -251,12 +257,19 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       const dialsLive = live && start.dials;
       for (const control of [reopen, titles, addButton, size, drag]) control.disable(!dialsLive);
       columnsSelect?.button.toggleAttribute('disabled', !dialsLive);
-      for (const row of [reopenRow, titlesRow, addRow, columnsRow, sizeRow, dragRow]) rest(row, readable && !dialsLive);
+      for (const row of [reopenRow, titlesRow, addRow, columnsRow, sizeRow, dragRow]) {
+        rest(row, readable && !dialsLive);
+        away(row, readable && !dialsLive);
+      }
       const widgetsLive = live && start.widgets;
       for (const control of [wcols, wheight, wbg, wdrag]) control.disable(!widgetsLive);
-      for (const row of [wcolsRow, wheightRow, wbgRow, wdragRow]) rest(row, readable && !widgetsLive);
+      for (const row of [wcolsRow, wheightRow, wbgRow, wdragRow]) {
+        rest(row, readable && !widgetsLive);
+        away(row, readable && !widgetsLive);
+      }
       wcolor.disabled = !widgetsLive || start.widgetBg !== 'custom';
       rest(wcolorRow, readable && wcolor.disabled);
+      away(wcolorRow, readable && wcolor.disabled);
       homepage.disabled = !readable;
       startupSelect?.button.toggleAttribute('disabled', !readable);
       pages.disabled = !readable || start.startup !== 'specific_pages';
