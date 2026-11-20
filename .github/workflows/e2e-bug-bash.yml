@@ -1,0 +1,70 @@
+name: E2E bug-bash flows
+
+# Builds Bowser as shipped and drives the real app on a hosted Windows desktop through the
+# fix/bug-bash user flows (benchmarks/scripts/e2e-bug-bash.ps1): manual tab groups and their
+# restore, the service-worker load with 15 tabs open, a toolbar with many buttons, and 40 tabs with
+# the mouse wheel. The service-worker timing also runs on main for comparison.
+# Evidence only (screenshots, results.json/md): nothing here gates a merge.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'e2e/**'
+
+permissions:
+  contents: read
+
+jobs:
+  flows:
+    name: flows (${{ matrix.label }})
+    runs-on: windows-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: fix
+            flows: groups,toolbar,strip,sw
+          - label: main
+            flows: sw,toolbar,strip
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check out main to build it
+        if: matrix.label == 'main'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          path: main-src
+          persist-credentials: false
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+      - name: Build Bowser (HTML chrome, release, as shipped)
+        run: |
+          if ('${{ matrix.label }}' -eq 'main') { Set-Location main-src }
+          cargo +stable build --locked --release --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          git log -1 --format='built %H %s'
+      - name: Run the flows
+        timeout-minutes: 30
+        run: |
+          $exe = if ('${{ matrix.label }}' -eq 'main') { 'main-src/target/release/bowser.exe' } else { 'target/release/bowser.exe' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/e2e-bug-bash.ps1 -Exe $exe -Out "$env:RUNNER_TEMP/e2e" -Label '${{ matrix.label }}' -Flows '${{ matrix.flows }}'
+          Get-Content "$env:RUNNER_TEMP/e2e/results.md"
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-bug-bash-${{ matrix.label }}
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: warn
+          retention-days: 14
