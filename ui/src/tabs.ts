@@ -1426,6 +1426,8 @@ export function startTabs(strip: HTMLElement): void {
       return;
     }
     // --- end tab options ---
+    // The vertical list scrolls up and down by itself; only the horizontal strip turns the wheel sideways.
+    if (layoutMode !== 'horizontal') return;
     const delta = scrollDeltaForWheel(ev.deltaX, ev.deltaY, ev.shiftKey);
     if (delta !== 0) { ev.preventDefault(); strip.scrollLeft += delta; }
   }, { passive: false });

@@ -37,6 +37,8 @@ test('dropIndex counts the other tabs left of the dragged centre', () => {
 test('overflow helpers cover wheel, edge drag and group visibility decisions', () => {
   assert.equal(scrollDeltaForWheel(0, 12, true), 12);
   assert.equal(scrollDeltaForWheel(4, 12, false), 4);
+  assert.equal(scrollDeltaForWheel(0, 12, false), 12, 'a plain mouse wheel scrolls the strip');
+  assert.equal(scrollDeltaForWheel(0, -12, false), -12);
   assert.equal(dragScrollDelta(5, 0, 200), -19);
   assert.equal(dragScrollDelta(195, 0, 200), 19);
   assert.equal(dragScrollDelta(100, 0, 200), 0);
