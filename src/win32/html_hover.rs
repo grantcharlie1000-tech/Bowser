@@ -971,12 +971,13 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
         let _ = SetTimer(Some(window), WATCH_TIMER, WATCH_MS, None);
         // An island opened to edit takes the keyboard once it is on screen; the page has focused and
         // selected its name field. Holding the keyboard also keeps it open (`leave_decision`) until
-        // the user clicks elsewhere, presses Enter or Escape.
+        // the user clicks elsewhere, presses Enter or Escape. The activation itself runs as the
+        // field's own `focus` action does, from the message queue: this runs inside WebView2's
+        // message callback, where moving the focus into the WebView does not reach the page.
         let edit = kind == Kind::Island && with_layer(owner, |layer| std::mem::take(&mut layer.edit)) == Some(true);
         if edit {
             let _ = with_layer(owner, |layer| layer.keyboard = true);
-            let _ = SetForegroundWindow(window);
-            let _ = host.focus();
+            queue_action(owner, tok, HoverAction::Focus);
         }
         // --- omnibox suggest ---
         if kind == Kind::Suggest {
