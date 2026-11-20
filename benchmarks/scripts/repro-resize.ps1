@@ -189,7 +189,8 @@ function Reset {
 try {
   Reset
   Start-Sleep -Seconds 5      # the HTML chrome comes up after the first native paint
-  if (EnsureFg) { [Windows.Forms.SendKeys]::SendWait('^t'); Note 'new tab' }
+  # A few tabs, like a window in everyday use, with a blank new tab in front.
+  if (EnsureFg) { foreach ($i in 1..4) { [Windows.Forms.SendKeys]::SendWait('^t'); Start-Sleep -Milliseconds 400 }; Note 'new tabs' }
   Start-Sleep -Seconds 3
   Snap 'start' -Front
 
