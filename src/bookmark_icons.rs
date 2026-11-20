@@ -37,9 +37,10 @@ const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 /// re-encoded at 32 px when it is not one already), or `None` when there is none.
 pub fn icon_png(host: &str) -> Option<Vec<u8>> {
     let bytes = crate::favicon::load_favicon_bytes(host).ok().flatten()?;
+    type ReencodedIcon = (usize, Option<Vec<u8>>);
     thread_local! {
         /// Re-encodings by host and source length, so a snapshot does not decode the same icon again.
-        static MEMO: std::cell::RefCell<HashMap<String, (usize, Option<Vec<u8>>)>> = std::cell::RefCell::new(HashMap::new());
+        static MEMO: std::cell::RefCell<HashMap<String, ReencodedIcon>> = std::cell::RefCell::new(HashMap::new());
     }
     if let Some(hit) = MEMO.with(|memo| memo.borrow().get(host).filter(|(len, _)| *len == bytes.len()).map(|(_, png)| png.clone())) {
         return hit;
