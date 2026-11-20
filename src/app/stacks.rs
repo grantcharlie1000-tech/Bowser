@@ -213,24 +213,46 @@ impl App {
     }
 
     /// "Bookmark all tabs": a bookmark folder named after the stack with every web page in it.
-    /// Returns how many were bookmarked; the error is a sentence for the user.
-    pub fn bookmark_stack(app: &AppRef, id: TabId) -> std::result::Result<usize, String> {
+    /// Returns what was saved; the error is a sentence for the user.
+    pub fn bookmark_stack(app: &AppRef, id: TabId) -> std::result::Result<crate::bookmarks::TabsSaved, String> {
+        let folder = Self::stack_name(app, id).ok_or_else(|| "This tab is not in a group.".to_owned())?;
+        Self::bookmark_tabs(app, &folder, &Self::stack_members(app, id))
+    }
+
+    /// Bookmarks `tabs` (a tab group) as folder `name`, in the folder the last bookmark went to
+    /// (the bookmarks bar at first), as Chrome's "Bookmark all tabs" does. Bookmarking the same
+    /// group again adds what is new to the same folder; a page bookmarked already stays where it is.
+    pub fn bookmark_tabs(app: &AppRef, name: &str, tabs: &[TabId]) -> std::result::Result<crate::bookmarks::TabsSaved, String> {
         let profile = crate::profile::active().map_err(|_| "The profile is not ready.".to_owned())?;
         if !crate::productivity::profile_allows_productivity(&profile) {
             return Err("A guest window does not keep bookmarks.".to_owned());
         }
-        let folder = Self::stack_name(app, id).ok_or_else(|| "This tab is not in a group.".to_owned())?;
-        let mut count = 0;
-        for member in Self::stack_members(app, id) {
-            let Some(url) = Self::tab_committed_url(app, member).filter(|url| matches!(url.scheme(), "http" | "https")) else {
-                continue;
-            };
-            let title = Self::tab_title(app, member).filter(|title| !title.trim().is_empty()).unwrap_or_else(|| url.to_string());
-            crate::productivity::add_bookmark_in_folder(&profile.bookmarks_file(), url.as_str(), &title, &folder)
-                .map_err(|error| format!("The bookmarks could not be saved: {error}"))?;
-            count += 1;
+        let pages: Vec<(String, String)> = tabs
+            .iter()
+            .filter_map(|tab| {
+                let url = Self::tab_committed_url(app, *tab).filter(|url| matches!(url.scheme(), "http" | "https"))?;
+                let title = Self::tab_name(app, *tab).or_else(|| Self::tab_title(app, *tab)).filter(|title| !title.trim().is_empty()).unwrap_or_else(|| url.to_string());
+                Some((title, url.to_string()))
+            })
+            .collect();
+        if pages.is_empty() {
+            return Err("No tab in the group shows a web page to bookmark.".to_owned());
         }
-        Ok(count)
+        let mut store = crate::bookmarks::BookmarkStore::load(profile.root()).map_err(|error| format!("Bookmarks could not be read: {error}"))?;
+        let parent = store.last_folder();
+        let saved = store.bookmark_tabs(parent, name, &pages).map_err(|error| format!("The bookmarks could not be saved: {error}"))?;
+        store.save(profile.root()).map_err(|error| format!("The bookmarks could not be saved: {error}"))?;
+        Ok(saved)
+    }
+
+    /// The toast after a group was bookmarked.
+    pub fn tabs_saved_message(name: &str, saved: crate::bookmarks::TabsSaved) -> String {
+        let pages = |n: usize| if n == 1 { "1 page".to_owned() } else { format!("{n} pages") };
+        match (saved.added, saved.already) {
+            (0, already) => format!("All {} in \u{201c}{name}\u{201d} were bookmarked already", pages(already)),
+            (added, 0) => format!("Bookmarked {} in \u{201c}{name}\u{201d}", pages(added)),
+            (added, already) => format!("Bookmarked {} in \u{201c}{name}\u{201d} ({already} bookmarked already)", pages(added)),
+        }
     }
 
     /// Tiles `tabs` (2 to 4) in the split view (`stacks::tile_layout`). `bounds_for` gives the pane

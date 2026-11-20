@@ -547,6 +547,42 @@ impl BookmarkStore {
             .find(|i| i.parent.is_none() && i.kind == BookmarkKind::Folder && i.title.trim().eq_ignore_ascii_case(OTHER_TITLE))
             .map(|i| i.id);
     }
+    /// Bookmarks a tab group, as Chrome's "Bookmark all tabs" does: a folder named `name` in
+    /// `parent` (the one already there with that name, so bookmarking the group again brings it up
+    /// to date) holding each of `pages` (`(title, address)`). A page bookmarked already stays where
+    /// it is; one that is not a web address is skipped. Nothing changes on an error.
+    pub fn bookmark_tabs(&mut self, parent: Option<u64>, name: &str, pages: &[(String, String)]) -> io::Result<TabsSaved> {
+        self.check_parent(parent)?;
+        let name = clean_title(name).or_else(|_| clean_title("Tab group"))?;
+        let before = self.clone();
+        let result = (|| {
+            let existing = self
+                .items
+                .iter()
+                .find(|i| i.parent == parent && i.kind == BookmarkKind::Folder && i.title.eq_ignore_ascii_case(&name) && !self.is_permanent(i.id))
+                .map(|i| i.id);
+            let folder = match existing {
+                Some(id) => id,
+                None => self.add_folder(parent, &name)?,
+            };
+            let mut saved = TabsSaved { folder, ..TabsSaved::default() };
+            for (title, url) in pages {
+                let Some(url) = valid_url(url) else { continue };
+                if self.find_url(&url).is_some() {
+                    saved.already += 1;
+                    continue;
+                }
+                let title = if title.trim().is_empty() { url.clone() } else { title.clone() };
+                self.add_bookmark(Some(folder), &title, &url)?;
+                saved.added += 1;
+            }
+            Ok(saved)
+        })();
+        if result.is_err() {
+            *self = before;
+        }
+        result
+    }
     pub fn children(&self, parent: Option<u64>) -> Vec<&Bookmark> {
         self.items.iter().filter(|i| i.parent == parent).collect()
     }
@@ -908,6 +944,16 @@ fn import_folder(path: &str) -> String {
         vec![first]
     };
     head.into_iter().chain(rest).collect::<Vec<_>>().join("/")
+}
+/// What [`BookmarkStore::bookmark_tabs`] did.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TabsSaved {
+    /// The folder that holds the group's pages.
+    pub folder: u64,
+    /// Pages bookmarked into it now.
+    pub added: usize,
+    /// Pages that were bookmarked already (in this folder or elsewhere) and were left where they are.
+    pub already: usize,
 }
 /// What [`BookmarkStore::import_links`] did with the links it was given.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1336,5 +1382,20 @@ mod tests {
         s.sort_folder(None);
         let names: Vec<&str> = s.children(None).iter().map(|i| i.title.as_str()).collect();
         assert_eq!(names, ["Alpha", "zeta", "apple", "Item 2", "item 10", OTHER_TITLE]);
+    }
+
+    #[test]
+    fn a_tab_group_becomes_a_folder_and_again_updates_it() {
+        let mut s = BookmarkStore::new();
+        s.add_bookmark(None, "Kept", "https://kept.example/").unwrap();
+        let pages = |list: &[(&str, &str)]| list.iter().map(|(t, u)| (t.to_string(), u.to_string())).collect::<Vec<_>>();
+        let first = s.bookmark_tabs(None, "GitHub", &pages(&[("Repo", "https://github.com/a"), ("", "https://github.com/b"), ("Kept", "https://kept.example/"), ("Local", "file:///c:/x")])).unwrap();
+        assert_eq!((first.added, first.already), (2, 1), "the bookmarked page stays put, a file is skipped");
+        let names: Vec<&str> = s.children(Some(first.folder)).iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(names, ["Repo", "https://github.com/b"]);
+        let again = s.bookmark_tabs(None, "github", &pages(&[("Repo", "https://github.com/a"), ("Issues", "https://github.com/c")])).unwrap();
+        assert_eq!(again.folder, first.folder, "the same folder, brought up to date");
+        assert_eq!((again.added, again.already), (1, 1));
+        assert!(s.bookmark_tabs(Some(999), "X", &[]).is_err());
     }
 }

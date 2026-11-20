@@ -352,12 +352,26 @@ fn group_chips(app: &AppRef, live: &[(String, Vec<TabId>)]) -> Vec<BarGroup> {
     chips
 }
 
-fn favicon_for(url: &str) -> String {
-    let host = url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned));
-    host.and_then(|host| crate::favicon::load_favicon_bytes(&host).ok().flatten())
-        .and_then(|png| chrome_host::protocol::favicon_uri(&png))
-        .filter(|uri| uri.len() <= 8 * 1024)
-        .unwrap_or_default()
+/// The site's icon as a data URI that fits the bar (any cached icon, re-encoded small when needed);
+/// empty when there is none yet, and its host is then added to `missing`.
+fn favicon_for(url: &str, missing: &mut Vec<String>) -> String {
+    let Some(host) = url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned)) else { return String::new() };
+    match crate::bookmark_icons::icon_png(&host).and_then(|png| chrome_host::protocol::favicon_uri(&png)).filter(|uri| uri.len() <= 8 * 1024) {
+        Some(uri) => uri,
+        None => {
+            missing.push(host);
+            String::new()
+        }
+    }
+}
+
+/// Icons fetched for bookmarks arrived (`bookmark_icons::WM_BOOKMARK_ICONS`): the bar draws again.
+pub(crate) fn icons_changed(owner: HWND, app: &AppRef) {
+    let _ = with(owner, |rt| {
+        rt.built = None;
+        rt.snapshot = None;
+    });
+    sync(owner, app);
 }
 
 /// What the bar lists: folder `folder`'s items, or the top level without "Other bookmarks" (which
@@ -393,13 +407,16 @@ fn snapshot_for(app: &AppRef, owner: HWND) -> Option<(String, BuiltFrom)> {
         return None;
     }
     let store = if crate::productivity::profile_allows_productivity(&profile) { BookmarkStore::load(profile.root()).unwrap_or_default() } else { BookmarkStore::new() };
+    let mut missing = Vec::new();
     let items: Vec<BarItem> = bar_items(&store, settings.address.bar_folder)
         .into_iter()
         .map(|item| match item.kind {
             BookmarkKind::Folder => BarItem { id: item.id, folder: true, title: item.title, url: String::new(), fav: String::new() },
-            BookmarkKind::Link { url, .. } => BarItem { id: item.id, folder: false, title: item.title, fav: favicon_for(&url), url },
+            BookmarkKind::Link { url, .. } => BarItem { id: item.id, folder: false, title: item.title, fav: favicon_for(&url, &mut missing), url },
         })
         .collect();
+    // Sites never opened here (imported bookmarks) have no icon yet: ask them, in the background.
+    crate::bookmark_icons::fetch_missing(owner.0 as isize, missing.iter().map(String::as_str));
     let other = other_button(&store, settings.address.bar_folder);
     Some((address_page::bar_snapshot_json(settings.address.bar_display.key(), &items, &groups, other), built))
 }
@@ -729,10 +746,24 @@ fn run(owner: HWND, app: &AppRef, action: BarAction) {
         BarAction::GroupContext { key } => {
             let settings = App::settings(app);
             let pinned = settings.address.bar_groups.contains(&key);
-            let entries = vec![Entry::Item(Item::new(1, if pinned { "Unpin from the bookmarks bar" } else { "Pin to the bookmarks bar" }, Icon::None).glyph("pin"))];
+            let members: Vec<TabId> = live_groups(app).into_iter().find(|(domain, _)| *domain == key).map(|(_, members)| members).unwrap_or_default();
+            let entries = vec![
+                Entry::Item(Item::new(1, if pinned { "Unpin from the bookmarks bar" } else { "Pin to the bookmarks bar" }, Icon::None).glyph("pin")),
+                Entry::Item(Item::new(2, "Bookmark all tabs in the group", Icon::None).glyph("bookmark").disabled_if(members.is_empty())),
+            ];
             let raw = owner.0 as isize;
             super::menu::show(owner, cursor(), Placement::BelowLeft, Menu { header: None, entries, footer: String::new() }, "bookmark-group", move |app, picked| {
-                if picked.is_none() {
+                let Some(picked) = picked else { return };
+                if picked.id == 2 {
+                    let owner = HWND(raw as *mut _);
+                    let name = members.first().and_then(|tab| App::site_group_tabs(app, *tab)).map_or_else(|| key.clone(), |(name, _)| name);
+                    match App::bookmark_tabs(app, &name, &members) {
+                        Ok(saved) => {
+                            super::window::show_toast(owner, &App::tabs_saved_message(&name, saved), "Bookmarks");
+                            super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                        }
+                        Err(message) => super::show_error_message(&message),
+                    }
                     return;
                 }
                 let mut list = App::settings(app).address.bar_groups.clone();

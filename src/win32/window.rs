@@ -3428,6 +3428,14 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // Site icons fetched for bookmarks arrived: the bar and an open Bookmarks panel redraw.
+            crate::bookmark_icons::WM_BOOKMARK_ICONS => {
+                if let Some(app) = app {
+                    super::bookmark_bar::icons_changed(hwnd, app);
+                }
+                super::html_panel::bookmark_icons_changed(hwnd);
+                LRESULT(0)
+            }
             // Engine suggestions for the address field or the search field arrived.
             super::address_bar::WM_ADDRESS_SUGGEST => {
                 super::address_bar::suggestions_ready(hwnd);
@@ -6446,6 +6454,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     const GROUP_NEW: usize = 30;
     const GROUP_AUTO: usize = 31;
     const GROUP_NEVER: usize = 33;
+    const GROUP_BOOKMARK: usize = 34;
     const UNGROUP: usize = 16;
     const UNDO_ORGANISE: usize = 17;
     const RELOAD: usize = 4;
@@ -6517,6 +6526,14 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     // One "Tab group" submenu: what can be done with this tab's group (or how to make one, from
     // stack_ui.rs, T10), then the site's standing grouping choice.
     let mut group_rows = super::stack_ui::tab_menu_entries(app, id);
+    // A site group's tabs as one bookmark folder (a stack offers the same in its own rows above).
+    let site_group = App::site_group_tabs(app, id);
+    if let Some((_, members)) = &site_group {
+        if !group_rows.is_empty() {
+            group_rows.push(Entry::Separator);
+        }
+        group_rows.push(Entry::Item(Item::new(GROUP_BOOKMARK, "Bookmark all tabs in the group", Icon::None).glyph("bookmark").disabled_if(members.is_empty() || private)));
+    }
     if let Some(key) = &key {
         // The site's standing mode is marked with a check, as the other choice lists do.
         let mode = App::tab_group_preferences(app).mode(key);
@@ -6719,6 +6736,17 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             // --- tab options ---
             tab if tab_options_menu_pick(hwnd, app, id, tab, &targets) => {}
             // --- end tab options ---
+            GROUP_BOOKMARK => {
+                if let Some((name, members)) = App::site_group_tabs(app, id) {
+                    match App::bookmark_tabs(app, &name, &members) {
+                        Ok(saved) => {
+                            show_toast(hwnd, &App::tabs_saved_message(&name, saved), "Bookmarks");
+                            super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                        }
+                        Err(message) => show_error_message(&message),
+                    }
+                }
+            }
             GROUP_NEW => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
             }
@@ -13472,7 +13500,7 @@ mod tests {
             super::super::WM_EXTENSIONS_CHANGED, super::super::WM_HISTORY_PAGE_COMMAND, super::super::WM_SETTINGS_COMMAND,
             super::super::WM_SPLIT_COMMAND, super::super::WM_SPLIT_LINK, super::super::WM_SPLIT_LOOK,
             super::super::WM_TRANSLATE_NET, super::super::WM_CAPTURE_DONE, super::super::address_bar::WM_ADDRESS_SUGGEST,
-            super::super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND,
+            super::super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND, crate::bookmark_icons::WM_BOOKMARK_ICONS,
         ];
         let mut seen = std::collections::HashSet::new();
         for id in ids {

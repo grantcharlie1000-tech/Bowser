@@ -42,6 +42,25 @@ they differ, Bowser follows Chrome.
 | Bookmarks panel | `chrome_host/panels/bookmarks.rs`, `win32/html_panel.rs`, `ui/src/panels/bookmarks*.ts` | Two roots, favicons, counts, word search done in Rust (capped, with a total), a row menu, inline add/edit that stays open on a refusal, Undo (Ctrl+Z), drag and drop. |
 | Bookmarks bar | `win32/bookmark_bar.rs`, `chrome_host/address_page.rs`, `ui/src/bookmark-bar*.ts` | The bar folder's items, Other bookmarks at the far end, a fuller context menu and a background menu, Import on the empty bar. |
 
+### Site icons (`src/bookmark_icons.rs`)
+
+The favicon cache holds what tabs reported, often a PNG larger than the bar's 8 KiB data-URI
+limit, or an ICO the page cannot take; such icons used to fall back to a letter tile.
+`icon_png` sends a cached PNG of up to 6 KiB as it is and decodes anything else (WIC) and
+re-encodes it as a 32 px PNG (a stored-block encoder, a few KiB). A bookmarked host with no cached
+icon is fetched by `fetch_missing` on three background threads with `feeds::fetch` (public hosts,
+no cookies, size and time caps), at most once per host per run and 600 per run; not in guest
+profiles or with history off. A batch posts `WM_BOOKMARK_ICONS` and the bar and an open panel
+redraw. The cache keeps up to 1,500 icons.
+
+### Tab groups
+
+`BookmarkStore::bookmark_tabs` saves a group as a folder named after it (reusing a folder of that
+name in the same place) in the last-used folder. Pages already bookmarked stay put: Bowser keeps
+one bookmark per address, and moving someone's bookmark out of its folder would be worse than a
+folder without it. Entry points: the tab menu's Tab group submenu (site groups), a stack's menu
+(`App::bookmark_stack`) and a group chip's menu on the bar.
+
 ### The panel's message budget
 
 The snapshot always carries every folder (the tree's shape, counts, move targets), then the links

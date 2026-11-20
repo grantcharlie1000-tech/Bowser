@@ -2646,6 +2646,20 @@ impl App {
         changed
     }
 
+    /// The site group tab `id` is in: its name (the one given, else the site's) and its tabs, in
+    /// strip order. `None` when the tab is in no group.
+    pub fn site_group_tabs(app: &AppRef, id: TabId) -> Option<(String, Vec<TabId>)> {
+        let state = app.borrow();
+        let inputs = state.group_inputs();
+        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        let index = inputs.iter().position(|input| input.id == id)?;
+        let key = keys.get(index).cloned().flatten()?;
+        let members = tab_groups::group_members(&keys, &key).into_iter().filter_map(|n| inputs.get(n).map(|input| input.id)).collect();
+        let TabGroupKey::Domain(domain) = &key;
+        let name = state.group_preferences.name(domain).map_or_else(|| crate::tab_organisation::suggested_name(domain), str::to_owned);
+        Some((name, members))
+    }
+
     /// Whether the tab is in any group, so "Remove from group" has something to remove.
     pub fn tab_is_grouped(app: &AppRef, id: TabId) -> bool {
         app.borrow().group_key_of(id).is_some()

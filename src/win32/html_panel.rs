@@ -451,6 +451,13 @@ pub(crate) fn history_changed(owner: HWND) {
 // --- look state (fix group B) ---
 /// Settings were saved: an open flyout takes the new text size, density and window look at once
 /// (only the `state` is posted, so its list, search text and placement stay).
+/// Icons fetched for bookmarks arrived: an open Bookmarks panel draws again.
+pub(crate) fn bookmark_icons_changed(owner: HWND) {
+    let Some(runtime) = runtime(owner) else { return; };
+    let showing = runtime.try_borrow().is_ok_and(|state| state.open && state.panel == PanelId::Bookmarks);
+    if showing { send_current(&runtime); }
+}
+
 pub(crate) fn settings_changed(owner: HWND) {
     let Some(runtime) = runtime(owner) else { return; };
     let host = {
@@ -492,7 +499,15 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
                 undo: state.bookmarks_undo.as_ref().map_or("", |undo| undo.label.as_str()),
                 can_add_current: current_page(&app).is_some(),
             };
-            chrome_host::panels::bookmarks::snapshot_view(&store, &view, |host| crate::favicon::load_favicon_bytes(host).ok().flatten())
+            let missing = RefCell::new(Vec::new());
+            let json = chrome_host::panels::bookmarks::snapshot_view(&store, &view, |host| {
+                let png = crate::bookmark_icons::icon_png(host);
+                if png.is_none() { missing.borrow_mut().push(host.to_owned()); }
+                png
+            });
+            // Sites never opened here (imported bookmarks) have no icon yet: ask them, in the background.
+            crate::bookmark_icons::fetch_missing(owner.0 as isize, missing.borrow().iter().map(String::as_str));
+            json
         }
         PanelId::Customize => {
             let Some(dir) = profile_dir.as_deref() else { return; };
