@@ -318,11 +318,14 @@ pub fn drop_index(ids: &[TabId], moved: TabId, before: u32) -> Option<usize> {
     Some(if from < target { target - 1 } else { target })
 }
 
-/// Stable, non-zero wire key for a group: FNV-1a of a canonical name for the group. The same group
+/// Stable, non-zero wire key for a group: FNV-1a of a canonical name for the group (`d:<site>` for a
+/// site group, `m:<id>` for a manual one, so the two kinds never share a name). The same group
 /// always gets the same key. A hash that lands on `0` is sent as `1`.
 pub fn group_wire_key(key: &TabGroupKey) -> u32 {
-    let TabGroupKey::Domain(domain) = key;
-    let name = format!("d:{}", domain.as_str());
+    let name = match key {
+        TabGroupKey::Domain(domain) => format!("d:{}", domain.as_str()),
+        TabGroupKey::Manual(id) => format!("m:{}", id.0),
+    };
     let mut hash: u32 = 0x811c_9dc5;
     for byte in name.bytes() {
         hash ^= u32::from(byte);
@@ -347,16 +350,19 @@ pub struct RowGroup {
     pub collapsed: bool,
 }
 
-/// Group state for a key: its name, colour and collapse state.
+/// Group state for a key: its name (the given one, else the site, else "Group N"), colour and
+/// collapse state.
 pub fn row_group(key: &TabGroupKey, preferences: &GroupPreferences) -> RowGroup {
-    let TabGroupKey::Domain(domain) = key;
+    let name = match (preferences.group_name(key), key) {
+        (Some(name), _) => name.to_owned(),
+        (None, TabGroupKey::Domain(domain)) => domain.as_str().to_owned(),
+        (None, TabGroupKey::Manual(id)) => crate::tab_groups::default_manual_name(*id),
+    };
     RowGroup {
         key: key.clone(),
-        name: preferences
-            .name(domain)
-            .map_or_else(|| domain.as_str().to_owned(), str::to_owned),
-        colour: preferences.colour(domain),
-        collapsed: preferences.is_collapsed(domain),
+        name,
+        colour: preferences.group_colour(key),
+        collapsed: preferences.group_collapsed(key),
     }
 }
 
@@ -928,10 +934,13 @@ mod tests {
             let url = url::Url::parse(text).expect("url");
             TabGroupKey::Domain(crate::tab_groups::DomainKey::from_url(&url).expect("domain"))
         };
+        let manual = |id: u32| TabGroupKey::Manual(crate::tab_groups::ManualGroupId(id));
         let keys = [
             domain("https://example.com/"),
             domain("https://example.org/"),
             domain("https://example.net/"),
+            manual(1),
+            manual(2),
         ];
         for key in &keys {
             let wire = group_wire_key(key);
@@ -942,6 +951,21 @@ mod tests {
         assert_eq!(group_wire_key(&keys[0]), group_wire_key(&domain("https://example.com/other")));
         let wires: HashSet<u32> = keys.iter().map(group_wire_key).collect();
         assert_eq!(wires.len(), keys.len());
+    }
+
+    #[test]
+    fn a_manual_group_row_shows_its_name_or_group_n() {
+        let mut preferences = GroupPreferences::default();
+        let id = preferences.create_manual_group().expect("room");
+        let key = TabGroupKey::Manual(id);
+        assert_eq!(row_group(&key, &preferences).name, "Group 1");
+        preferences.set_group_name(&key, "Recipes").expect("named");
+        preferences.set_group_colour(&key, Some(6)).expect("coloured");
+        preferences.set_group_collapsed(&key, true).expect("folded");
+        assert_eq!(
+            row_group(&key, &preferences),
+            RowGroup { key: key.clone(), name: "Recipes".into(), colour: Some(6), collapsed: true }
+        );
     }
 
     #[test]

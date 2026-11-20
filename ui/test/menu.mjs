@@ -264,7 +264,7 @@ test('MENU_ICONS is exactly the icon family and every Rust glyph is in it', () =
   const gen = readFileSync(join(here, '..', 'src', 'icons.gen.ts'), 'utf8');
   const family = [...gen.match(/ICON_NAMES[^=]*=\s*\[([^\]]*)\]/s)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]).sort();
   assert.deepEqual([...logic.MENU_ICONS].sort(), family);
-  for (const file of ['window.rs', 'site_info.rs']) {
+  for (const file of ['window.rs', 'site_info.rs', 'stack_ui.rs']) {
     const rust = readFileSync(join(repo, 'src', 'win32', file), 'utf8');
     for (const m of rust.matchAll(/\.glyph\("([^"]+)"\)/g)) assert.ok(family.includes(m[1]), `${file}: ${m[1]}`);
     for (const m of rust.matchAll(/=> "(workspace-[a-z]+)"/g)) assert.ok(family.includes(m[1]), `${file}: ${m[1]}`);
@@ -523,4 +523,32 @@ test('disabled rows keep >= 3:1 contrast on the solid dark and light overlays', 
   // --bw-text-2 over the overlay: dark placeholder #dde2e9 on rgb(44,44,44); light #4b5159 on #f4f6f8.
   assert.ok(ratio(mix([0xdd, 0xe2, 0xe9], [44, 44, 44]), [44, 44, 44]) >= 3);
   assert.ok(ratio(mix([0x4b, 0x51, 0x59], [0xf4, 0xf6, 0xf8]), [0xf4, 0xf6, 0xf8]) >= 3);
+});
+
+test('the tab menu\'s Tab group submenu offers groups made by hand first and says what grouping by website means', () => {
+  const stackUi = readFileSync(join(repo, 'src', 'win32', 'stack_ui.rs'), 'utf8');
+  const rows = stackUi.slice(stackUi.indexOf('pub(super) fn tab_menu_entries('), stackUi.indexOf('fn group_rows('));
+  const order = ['"Add tab to new group"', '"Add tab to group"', '"Remove from group"', 'group_rows(app, id, &members)', '"Group by website"', 'BY_WEBSITE_EXPLAINED.to_owned()', '"Group this website\'s tabs"', '"Group all tabs by website"'];
+  let at = -1;
+  for (const label of order) {
+    const next = rows.indexOf(label, at + 1);
+    assert.ok(next > at, `${label} follows the row before it`);
+    at = next;
+  }
+  // The explanation is its own heading straight under the title, which the HTML menu draws as the
+  // title's explanatory line, and the native menu shows it in its footer on the row.
+  assert.match(rows, /SectionHeader\("Group by website"\.to_owned\(\)\),\s*Entry::SectionHeader\(BY_WEBSITE_EXPLAINED\.to_owned\(\)\)/);
+  assert.match(rows, /"Group all tabs by website"[^\n]*\.described\(BY_WEBSITE_EXPLAINED\)/);
+  const explained = /BY_WEBSITE_EXPLAINED: &str = "([^"]+)"/.exec(stackUi)[1];
+  assert.ok(explained.length <= 128, 'fits a section heading');
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8');
+  assert.match(css, /\.html-menu-section \+ \.html-menu-section \{[^}]*font-weight: 400/);
+  // A heading followed by its explanation is a valid payload.
+  const msg = { v: 1, t: 'menu', tok: 1, kind: 'tab:3', entries: [{ section: 'Group by website' }, { section: explained }, item(1, 'Group all tabs by website', { icon: 'tab-group' })] };
+  assert.equal(logic.validMenuPayload(msg), true);
+  // "Remove from group" lives in the submenu only, not again in the tab menu itself.
+  const windowRs = readFileSync(join(repo, 'src', 'win32', 'window.rs'), 'utf8');
+  const tabMenu = windowRs.slice(windowRs.indexOf('fn show_tab_context_menu('), windowRs.indexOf('menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind'));
+  assert.ok(tabMenu.length > 0 && !tabMenu.includes('"Remove from group"'));
+  assert.ok(!tabMenu.includes('"Group all tabs by site"'), 'the old, unexplained wording is gone');
 });

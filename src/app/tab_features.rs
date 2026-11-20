@@ -123,9 +123,12 @@ impl App {
     // ---- new tabs ----
 
     /// A new tab from the user's hand (Ctrl+T, the new tab button): the new tab page decides what
-    /// it opens.
+    /// it opens. Opened while the shown tab is in a group, it joins that group ("Open new tabs in the
+    /// current tab group", on by default).
     pub fn open_new_tab(app: &AppRef) -> TabId {
+        let shown = Self::active_tab_id(app);
         let id = Self::new_tab(app);
+        let _ = Self::join_group_of(app, id, shown);
         let target = {
             let state = app.borrow();
             // "Homepage" opens the start page settings' homepage (one key set: T5's `homepage`).

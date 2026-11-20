@@ -788,7 +788,7 @@ export const AREAS: readonly AreaSpec[] = [
   ] },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split groups start page speed dial', parts: ['tabs', 'stacks', 'startpage'], groups: [
     group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_active_min_width', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_title_notifications', 'tabs_unread_indicator', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
-    group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_focus_page']),
+    group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_new_tab_in_group', 'tabs_focus_page']),
     // The start page is what "New tab page: Start" shows, so its two groups follow New tabs. The speed
     // dial rows and the widget rows are apart, each under its own switch, so a row behind More still
     // says which switch it belongs to.

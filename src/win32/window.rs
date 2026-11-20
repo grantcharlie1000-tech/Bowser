@@ -3885,7 +3885,7 @@ unsafe extern "system" fn window_proc(
                             let control = with_chrome(hwnd, |s| {
                                 let slot = s.slots.get(i)?;
                                 let tab = s.tabs.get(slot.tab_index)?;
-                                Some((tab.id, slot.collapsed, slot.domain.is_some()))
+                                Some((tab.id, slot.collapsed, slot.group_key.is_some()))
                             })
                             .flatten();
                             if let Some((id, collapsed, can_collapse)) = control {
@@ -4276,7 +4276,7 @@ unsafe extern "system" fn window_proc(
                             card::cancel(hwnd);
                             if let Some(id) = slot_tab_id(hwnd, i) {
                                 let domain_group = with_chrome(hwnd, |s| {
-                                    s.slots.get(i).is_some_and(|slot| slot.domain.is_some())
+                                    s.slots.get(i).is_some_and(|slot| slot.group_key.is_some())
                                 })
                                 .unwrap_or(false);
                                 if domain_group {
@@ -5226,7 +5226,7 @@ struct IslandBall {
 fn island_ball_at(hwnd: HWND, x: i32, y: i32) -> Option<IslandBall> {
     with_chrome(hwnd, |s| {
         s.slots.iter().enumerate().find_map(|(index, slot)| {
-            if !s.visual_group_leader(index) || slot.domain.is_none() {
+            if !s.visual_group_leader(index) || slot.group_key.is_none() {
                 return None;
             }
             let ball = s
@@ -5248,7 +5248,7 @@ fn island_ball_at(hwnd: HWND, x: i32, y: i32) -> Option<IslandBall> {
 fn ball_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     with_chrome(hwnd, |s| {
         s.slots.iter().enumerate().find_map(|(index, slot)| {
-            if !s.visual_group_leader(index) || slot.domain.is_none() {
+            if !s.visual_group_leader(index) || slot.group_key.is_none() {
                 return None;
             }
             if s.tabs.get(slot.tab_index).map(|tab| tab.id) != Some(id) {
@@ -6460,8 +6460,6 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     const GROUP_NEW: usize = 30;
     const GROUP_AUTO: usize = 31;
     const GROUP_NEVER: usize = 33;
-    const GROUP_BOOKMARK: usize = 34;
-    const UNGROUP: usize = 16;
     const UNDO_ORGANISE: usize = 17;
     const RELOAD: usize = 4;
     const DUPLICATE: usize = 5;
@@ -6491,8 +6489,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         return;
     };
     let can_hibernate = App::tab_hibernate_eligible(app, id);
-    let mut has_group = false;
-    let mut collapsed = false;
+    // The tab's group (a site's or one made by hand) and whether it is folded.
+    let group_collapsed = App::tab_group_collapsed(app, id);
     let muted = App::tab_muted(app, id);
     let host = url
         .as_ref()
@@ -6529,24 +6527,15 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.extend(super::split_ui::tab_menu_entries(app, id));
     entries.push(Entry::Separator);
     // --- end split view ---
-    // One "Tab group" submenu: what can be done with this tab's group (or how to make one, from
-    // stack_ui.rs, T10), then the site's standing grouping choice.
+    // One "Tab group" submenu (stack_ui.rs): groups made by hand (add to a new or an existing group,
+    // remove), what can be done with this tab's group, then grouping by website, which ends with the
+    // site's standing grouping choice below.
     let mut group_rows = super::stack_ui::tab_menu_entries(app, id);
-    // A site group's tabs as one bookmark folder (a stack offers the same in its own rows above).
-    let site_group = App::site_group_tabs(app, id);
-    if let Some((_, members)) = &site_group {
-        if !group_rows.is_empty() {
-            group_rows.push(Entry::Separator);
-        }
-        group_rows.push(Entry::Item(Item::new(GROUP_BOOKMARK, "Bookmark all tabs in the group", Icon::None).glyph("bookmark").disabled_if(members.is_empty() || private)));
-    }
     if let Some(key) = &key {
-        // The site's standing mode is marked with a check, as the other choice lists do.
+        // The site's standing mode is marked with a check, as the other choice lists do. It follows
+        // the "Group by website" rows directly, so it reads as part of that section.
         let mode = App::tab_group_preferences(app).mode(key);
         let mode_icon = |_: bool| Icon::None;
-        if !group_rows.is_empty() {
-            group_rows.push(Entry::Separator);
-        }
         group_rows.extend([
             Entry::Item(
                 Item::new(
@@ -6577,15 +6566,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     if !group_rows.is_empty() {
         entries.push(Entry::Item(Item::new(GROUP, "Tab group", Icon::Grid).glyph("tab-group").submenu_with(group_rows)));
     }
-    if let Some(key) = &key {
-        (has_group, collapsed) = with_chrome(hwnd, |state| {
-            state
-                .slots
-                .iter()
-                .find(|slot| slot.domain.as_ref() == Some(key))
-                .map_or((false, false), |slot| (true, slot.collapsed))
-        })
-        .unwrap_or((false, false));
+    if let Some(collapsed) = group_collapsed {
         entries.push(Entry::Item(
             Item::new(
                 GROUP_AUTO + 1,
@@ -6596,15 +6577,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 },
                 Icon::None,
             )
-            .glyph(if collapsed { "chevron-down" } else { "chevron-up" })
-            .disabled_if(!has_group),
+            .glyph(if collapsed { "chevron-down" } else { "chevron-up" }),
         ));
     }
-    entries.push(Entry::Item(
-        Item::new(UNGROUP, "Remove from group", Icon::None)
-            .glyph("caption-minimize")
-            .disabled_if(!App::tab_is_grouped(app, id)),
-    ));
     entries.push(Entry::Item(
         Item::new(UNDO_ORGANISE, "Undo tab organisation", Icon::None)
             .glyph("reset")
@@ -6719,6 +6694,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             PICTURE_IN_PICTURE => App::toggle_picture_in_picture(app, id),
             NEW_RIGHT | NEW_PRIVATE => {
                 let created = if command == NEW_PRIVATE { App::new_private_tab(app) } else { App::new_tab(app) };
+                // "New tab to the right" of a grouped tab opens in that group (a private tab never
+                // joins one). It already sits right of the tab once moved below.
                 let current = App::tab_ids(app);
                 let after = if pinned {
                     current
@@ -6733,6 +6710,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                         + 1
                 };
                 let _ = App::move_tab(app, created, after);
+                if command == NEW_RIGHT {
+                    let _ = App::join_group_of(app, created, id);
+                }
                 focus_omni(hwnd, app, true);
             }
             // --- split view ---
@@ -6742,17 +6722,6 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             // --- tab options ---
             tab if tab_options_menu_pick(hwnd, app, id, tab, &targets) => {}
             // --- end tab options ---
-            GROUP_BOOKMARK => {
-                if let Some((name, members)) = App::site_group_tabs(app, id) {
-                    match App::bookmark_tabs(app, &name, &members) {
-                        Ok(saved) => {
-                            show_toast(hwnd, &App::tabs_saved_message(&name, saved), "Bookmarks");
-                            super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
-                        }
-                        Err(message) => show_error_message(&message),
-                    }
-                }
-            }
             GROUP_NEW => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
             }
@@ -6762,11 +6731,10 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             GROUP_NEVER => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Never);
             }
-            value if value == GROUP_AUTO + 1 && has_group => {
-                let _ = App::set_tab_group_collapsed(app, id, !collapsed);
-            }
-            UNGROUP => {
-                let _ = App::remove_tab_from_group(app, id);
+            value if value == GROUP_AUTO + 1 => {
+                if let Some(collapsed) = group_collapsed {
+                    let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+                }
             }
             UNDO_ORGANISE => {
                 let _ = App::undo_tab_organisation(app);

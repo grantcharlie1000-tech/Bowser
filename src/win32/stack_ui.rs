@@ -1,6 +1,7 @@
 //! Tab groups ("stacks" in the code), tiling and workspaces in the window (T10): the registry
 //! commands (group, ungroup, the three tilings, untile, next and previous workspace) and the tab
-//! menu's "Tab group" rows. The rules are in `crate::stacks` and `app/stacks.rs`; the group editor is the island menu
+//! menu's "Tab group" rows: the manual group rows (new group, add to a group, remove), what can be
+//! done with the tab's group, and the automatic "by website" rows. The rules are in `crate::stacks` and `app/stacks.rs`; the group editor is the island menu
 //! (`island_menu.rs`, its name, colour and member rows), opened through `window::open_stack_editor`.
 
 use windows::Win32::Foundation::HWND;
@@ -114,30 +115,71 @@ const STACK_COPY: usize = 0x5609;
 const STACK_WINDOW: usize = 0x560A;
 const STACK_UNSTACK: usize = 0x560B;
 const STACK_WORKSPACE: usize = 0x560C;
+const STACK_NEW_GROUP: usize = 0x560D;
+const STACK_REMOVE: usize = 0x560E;
+const STACK_ADD_TO: usize = 0x560F;
+/// "Add tab to group" rows: this plus the group's place in [`App::group_choices`].
+const STACK_ADD_TO_BASE: usize = 0x5610;
+const MAX_GROUP_ROWS: usize = 0x60;
 /// "Move the group to workspace" rows: this plus the workspace's place in the rail.
 const STACK_WORKSPACE_BASE: usize = 0x5680;
 const MAX_WORKSPACE_ROWS: usize = 0x70;
 
-/// The tab menu's "Tab group" rows for `id` (window.rs puts them in that submenu, above the site's
-/// grouping choices): what can be done with its group, or how to make one. None for a private or
-/// pinned tab (which never joins a group).
+/// What "Group all tabs by website" does, in one line: the submenu shows it under its heading and
+/// the native menu in its footer while the row is highlighted.
+pub(super) const BY_WEBSITE_EXPLAINED: &str = "Tabs from the same website, such as all your GitHub tabs, share one group";
+
+/// The tab menu's "Tab group" rows for `id` (window.rs puts them in that submenu, then the site's
+/// grouping choices right under the last "By website" row). First the groups made by hand: a new
+/// group, an existing group to add the tab to, and taking it out of its group. Then what can be done
+/// with its group, and last the automatic grouping by website. None for a private or pinned tab
+/// (which never joins a group).
 pub(super) fn tab_menu_entries(app: &AppRef, id: TabId) -> Vec<Entry> {
     if App::tab_private(app, id) || App::tab_pinned(app, id) {
         return Vec::new();
     }
     let members = App::stack_members(app, id);
-    if members.is_empty() {
-        let host = App::tab_committed_url(app, id).and_then(|url| crate::tab_groups::DomainKey::from_url(&url));
-        let same_site = host.as_ref().is_some_and(|key| {
-            App::tab_ids(app).into_iter().filter(|other| {
-                *other != id && !App::tab_pinned(app, *other) && App::tab_committed_url(app, *other).and_then(|url| crate::tab_groups::DomainKey::from_url(&url)).as_ref() == Some(key)
-            }).count() > 0
-        });
-        return vec![
-            Entry::Item(Item::new(STACK_SITE, "Group tabs of this site", Icon::None).glyph("tab-group").disabled_if(!same_site)),
-            Entry::Item(Item::new(STACK_ALL, "Group all tabs by site", Icon::None).glyph("tab-group")),
-        ];
+    let grouped = !members.is_empty();
+    let choices: Vec<Entry> = App::group_choices(app, id)
+        .into_iter()
+        .take(MAX_GROUP_ROWS)
+        .enumerate()
+        .map(|(index, (_, name))| Entry::Item(Item::new(STACK_ADD_TO_BASE + index, name, Icon::None).glyph("tab-group")))
+        .collect();
+    let mut rows = vec![
+        Entry::Item(Item::new(STACK_NEW_GROUP, "Add tab to new group", Icon::None).glyph("plus")),
+    ];
+    if !choices.is_empty() {
+        let label = if grouped { "Move tab to another group" } else { "Add tab to group" };
+        rows.push(Entry::Item(Item::new(STACK_ADD_TO, label, Icon::None).glyph("tab-group").submenu_with(choices)));
     }
+    if grouped {
+        rows.push(Entry::Item(Item::new(STACK_REMOVE, "Remove from group", Icon::None).glyph("caption-minimize")));
+    }
+    rows.push(Entry::Separator);
+    if grouped {
+        rows.extend(group_rows(app, id, &members));
+        rows.push(Entry::Separator);
+    }
+    // Automatic grouping, with a line that says what it means.
+    let host = App::tab_committed_url(app, id).and_then(|url| crate::tab_groups::DomainKey::from_url(&url));
+    let same_site = !grouped
+        && host.as_ref().is_some_and(|key| {
+            App::tab_ids(app).into_iter().any(|other| {
+                other != id && !App::tab_pinned(app, other) && App::tab_committed_url(app, other).and_then(|url| crate::tab_groups::DomainKey::from_url(&url)).as_ref() == Some(key)
+            })
+        });
+    rows.extend([
+        Entry::SectionHeader("Group by website".to_owned()),
+        Entry::SectionHeader(BY_WEBSITE_EXPLAINED.to_owned()),
+        Entry::Item(Item::new(STACK_SITE, "Group this website's tabs", Icon::None).glyph("tab-group").disabled_if(!same_site)),
+        Entry::Item(Item::new(STACK_ALL, "Group all tabs by website", Icon::None).glyph("tab-group").described(BY_WEBSITE_EXPLAINED)),
+    ]);
+    rows
+}
+
+/// What can be done with the group `id` is in (`members`, never empty).
+fn group_rows(app: &AppRef, id: TabId, members: &[TabId]) -> Vec<Entry> {
     let workspaces: Vec<Entry> = App::workspace_entries(app)
         .into_iter()
         .enumerate()
@@ -168,12 +210,32 @@ pub(super) fn tab_menu_entries(app: &AppRef, id: TabId) -> Vec<Entry> {
     rows
 }
 
+/// "Add tab to new group": the new group's name and colour editor opens at once, as in other
+/// browsers, so it can be named straight away (Enter keeps "Group N").
+fn new_group(hwnd: HWND, app: &AppRef, id: TabId) {
+    if App::add_tab_to_new_group(app, id).is_some() {
+        super::window::open_stack_editor(hwnd, app, id);
+    } else {
+        toast(hwnd, "This window has as many groups as it can hold");
+    }
+}
+
 /// Runs a row of [`tab_menu_entries`]. False for any other row.
 pub(super) fn tab_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize) -> bool {
     match command {
         STACK_SITE => stack_site(hwnd, app, id),
         STACK_ALL => {
             let _ = App::stack_all_by_site(app);
+        }
+        STACK_NEW_GROUP => new_group(hwnd, app, id),
+        STACK_REMOVE => {
+            let _ = App::remove_tab_from_group(app, id);
+        }
+        c if (STACK_ADD_TO_BASE..STACK_ADD_TO_BASE + MAX_GROUP_ROWS).contains(&c) => {
+            // The list is read again: the same groups, in the same order, unless one closed meanwhile.
+            if let Some((key, _)) = App::group_choices(app, id).get(c - STACK_ADD_TO_BASE) {
+                let _ = App::add_tab_to_group(app, id, key);
+            }
         }
         STACK_EDIT => super::window::open_stack_editor(hwnd, app, id),
         STACK_PIN => {
@@ -248,5 +310,10 @@ mod tests {
         for id in [STACK_SITE, STACK_UNSTACK, STACK_WORKSPACE, STACK_WORKSPACE_BASE, STACK_WORKSPACE_BASE + MAX_WORKSPACE_ROWS - 1] {
             assert!((0x5600..0x5700).contains(&id), "{id:#x}");
         }
+        // The manual group rows sit between the fixed rows and the workspace rows.
+        for id in [STACK_NEW_GROUP, STACK_REMOVE, STACK_ADD_TO] {
+            assert!(id > STACK_WORKSPACE && id < STACK_ADD_TO_BASE, "{id:#x}");
+        }
+        assert!(STACK_ADD_TO_BASE + MAX_GROUP_ROWS <= STACK_WORKSPACE_BASE);
     }
 }

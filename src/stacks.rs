@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use crate::split_view::{Bounds, Orientation, SplitView};
-use crate::tab_groups::DomainKey;
+use crate::tab_groups::{DomainKey, TabGroupKey};
 use crate::tabs::TabId;
 use crate::workspaces::WorkspaceId;
 
@@ -24,14 +24,16 @@ pub struct StackInput {
     pub domain: Option<DomainKey>,
     pub pinned: bool,
     pub private: bool,
+    /// In a group the user made by hand. Grouping by site never takes such a tab out of it.
+    pub manual: bool,
 }
 
 fn stackable(tab: &StackInput) -> bool {
-    !tab.pinned && !tab.private && tab.domain.is_some()
+    !tab.pinned && !tab.private && !tab.manual && tab.domain.is_some()
 }
 
 /// "Group tabs of this site": the tabs that join `domain`'s stack, in strip order. Pinned and
-/// private tabs never stack.
+/// private tabs never stack, and a tab in a group the user made stays there.
 pub fn site_members(tabs: &[StackInput], domain: &DomainKey) -> Vec<TabId> {
     tabs.iter()
         .filter(|tab| stackable(tab) && tab.domain.as_ref() == Some(domain))
@@ -39,8 +41,8 @@ pub fn site_members(tabs: &[StackInput], domain: &DomainKey) -> Vec<TabId> {
         .collect()
 }
 
-/// "Group all tabs by site": one stack per site that has two tabs or more, sites in the order their
-/// first tab appears.
+/// "Group all tabs by website": one stack per site that has two tabs or more, sites in the order their
+/// first tab appears. Tabs in a group the user made are left where they are and do not count.
 pub fn sites_to_stack(tabs: &[StackInput]) -> Vec<(DomainKey, Vec<TabId>)> {
     let mut first_seen: Vec<DomainKey> = Vec::new();
     let mut members: BTreeMap<DomainKey, Vec<TabId>> = BTreeMap::new();
@@ -83,7 +85,7 @@ pub fn over_middle(left: i32, right: i32, x: i32) -> bool {
 pub struct StripSlot {
     pub id: TabId,
     /// The island the tab is drawn in; `None` for an ungrouped (or pinned) tab.
-    pub island: Option<DomainKey>,
+    pub island: Option<TabGroupKey>,
     pub pinned: bool,
 }
 
@@ -100,7 +102,7 @@ pub enum IslandAnchor {
 /// that island. Pinned tabs stay first, so a `before` among them means in front of the first unpinned
 /// tab. `None` when the island is not in `strip`, `before` is unknown or one of its own members, or the
 /// block would end up exactly where it is.
-pub fn island_move_anchor(strip: &[StripSlot], island: &DomainKey, before: Option<TabId>) -> Option<IslandAnchor> {
+pub fn island_move_anchor(strip: &[StripSlot], island: &TabGroupKey, before: Option<TabId>) -> Option<IslandAnchor> {
     let member = |slot: &StripSlot| !slot.pinned && slot.island.as_ref() == Some(island);
     if !strip.iter().any(member) {
         return None;
@@ -254,7 +256,7 @@ mod tests {
     }
 
     fn tab(id: u32, domain: Option<&str>) -> StackInput {
-        StackInput { id: TabId(id), domain: domain.map(key), pinned: false, private: false }
+        StackInput { id: TabId(id), domain: domain.map(key), pinned: false, private: false, manual: false }
     }
 
     #[test]
@@ -266,6 +268,15 @@ mod tests {
         let tabs = vec![tab(1, Some("a.com")), tab(2, Some("b.com")), tab(3, Some("a.com")), tab(4, None), pinned, private, tab(7, Some("b.com")), tab(8, Some("c.com"))];
         assert_eq!(site_members(&tabs, &key("a.com")), ids(&[1, 3]));
         assert_eq!(sites_to_stack(&tabs), vec![(key("a.com"), ids(&[1, 3])), (key("b.com"), ids(&[2, 7]))], "a lone c.com tab is no stack");
+    }
+
+    #[test]
+    fn grouping_by_site_leaves_tabs_in_a_manual_group_alone() {
+        let mut held = tab(3, Some("a.com"));
+        held.manual = true;
+        let tabs = vec![tab(1, Some("a.com")), tab(2, Some("b.com")), held, tab(4, Some("b.com"))];
+        assert_eq!(site_members(&tabs, &key("a.com")), ids(&[1]));
+        assert_eq!(sites_to_stack(&tabs), vec![(key("b.com"), ids(&[2, 4]))], "a.com has one free tab left");
     }
 
     #[test]
@@ -348,7 +359,7 @@ mod tests {
         spec.iter()
             .map(|&(id, c)| StripSlot {
                 id: TabId(id),
-                island: c.is_ascii_lowercase().then(|| key(&format!("{c}.com"))).filter(|_| c != 'p'),
+                island: c.is_ascii_lowercase().then(|| TabGroupKey::Domain(key(&format!("{c}.com")))).filter(|_| c != 'p'),
                 pinned: c == 'p',
             })
             .collect()
@@ -358,7 +369,7 @@ mod tests {
     fn an_island_moves_as_one_block_in_front_of_a_tab_or_to_the_end() {
         // 1 pinned, 2 ungrouped, island a = 3 4 5, 6 ungrouped, island b = 7 8, 9 ungrouped.
         let s = strip(&[(1, 'p'), (2, '-'), (3, 'a'), (4, 'a'), (5, 'a'), (6, '-'), (7, 'b'), (8, 'b'), (9, '-')]);
-        let a = key("a.com");
+        let a = TabGroupKey::Domain(key("a.com"));
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(2))), Some(IslandAnchor::Before(TabId(2))));
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(9))), Some(IslandAnchor::Before(TabId(9))));
         assert_eq!(island_move_anchor(&s, &a, None), Some(IslandAnchor::End));
@@ -369,7 +380,7 @@ mod tests {
     #[test]
     fn an_island_never_lands_inside_another_or_among_pinned_tabs() {
         let s = strip(&[(1, 'p'), (2, 'p'), (3, 'b'), (4, 'b'), (5, 'b'), (6, '-'), (7, 'a'), (8, 'a')]);
-        let a = key("a.com");
+        let a = TabGroupKey::Domain(key("a.com"));
         // Between b's members: in front of b.
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(4))), Some(IslandAnchor::Before(TabId(3))));
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(5))), Some(IslandAnchor::Before(TabId(3))));
@@ -385,14 +396,14 @@ mod tests {
     #[test]
     fn an_island_move_that_changes_nothing_or_names_no_known_tab_is_refused() {
         let s = strip(&[(2, '-'), (3, 'a'), (4, 'a'), (6, '-'), (7, 'b')]);
-        let a = key("a.com");
+        let a = TabGroupKey::Domain(key("a.com"));
         // Already in front of 6, and its own members are no anchor.
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(6))), None);
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(3))), None);
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(4))), None);
         // An unknown tab, or an island that is not on the strip.
         assert_eq!(island_move_anchor(&s, &a, Some(TabId(42))), None);
-        assert_eq!(island_move_anchor(&s, &key("c.com"), Some(TabId(2))), None);
+        assert_eq!(island_move_anchor(&s, &TabGroupKey::Domain(key("c.com")), Some(TabId(2))), None);
         // At the end already; in front of the first tab is a move.
         let last = strip(&[(2, '-'), (3, 'a'), (4, 'a')]);
         assert_eq!(island_move_anchor(&last, &a, None), None);

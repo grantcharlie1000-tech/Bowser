@@ -736,12 +736,13 @@ fn restored_tabs_load_lazily_unless_the_options_say_otherwise() {
         });
         let session = crate::session::Session {
             tabs: vec![
-                crate::session::SessionTab { url: "https://pinned.example/".into(), title: "P".into(), pinned: true, used: 0 },
-                crate::session::SessionTab { url: "https://active.example/".into(), title: "A".into(), pinned: false, used: 0 },
-                crate::session::SessionTab { url: "https://other.example/".into(), title: "O".into(), pinned: false, used: 0 },
+                crate::session::SessionTab { url: "https://pinned.example/".into(), title: "P".into(), pinned: true, used: 0, group: None },
+                crate::session::SessionTab { url: "https://active.example/".into(), title: "A".into(), pinned: false, used: 0, group: None },
+                crate::session::SessionTab { url: "https://other.example/".into(), title: "O".into(), pinned: false, used: 0, group: None },
             ],
             active: 1,
             split: None,
+            groups: Vec::new(),
         };
         app.borrow_mut().pending_restore = Some(session);
         App::restore_pending_session(&app);
@@ -767,13 +768,14 @@ fn a_crash_loop_restores_every_tab_asleep_and_loads_none() {
         tabs.lazy_restore = false;
         tabs.load_pinned = true;
     });
-    let tab = |url: &str, pinned: bool| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned, used: 0 };
+    let tab = |url: &str, pinned: bool| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned, used: 0, group: None };
     {
         let mut state = app.borrow_mut();
         state.pending_restore = Some(crate::session::Session {
             tabs: vec![tab("https://pinned.example/", true), tab("https://crashy.example/", false), tab("https://other.example/", false)],
             active: 1,
             split: None,
+            groups: Vec::new(),
         });
         state.pending_restore_safe = true;
     }
@@ -836,11 +838,12 @@ fn sleeping_tabs_restored_after_a_restart_show_their_site_icon_without_loading()
 
     // Second run: the session restores; only the active tab loads, yet the sleeping tab has its icon.
     let (app, shared) = fixture();
-    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0 };
+    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0, group: None };
     app.borrow_mut().pending_restore = Some(crate::session::Session {
         tabs: vec![tab("https://active.example/"), tab("https://icon.example/b"), tab("https://secret.example/")],
         active: 0,
         split: None,
+        groups: Vec::new(),
     });
     App::restore_pending_session(&app);
     let state = app.borrow();

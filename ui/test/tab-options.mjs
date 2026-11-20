@@ -144,6 +144,26 @@ test('the new tab page offers the four choices, and homepage and blank are legal
   }
 });
 
+test('a new tab opened from a grouped tab joins its group by default, and the New tabs card can turn that off', () => {
+  const spec = options.TAB_OPTIONS.find((s) => s.key === 'tabs_new_tab_in_group');
+  assert.ok(spec, 'listed');
+  assert.equal(spec.kind, 'toggle');
+  assert.equal(spec.card, 'new');
+  assert.equal(spec.default, true, 'on unless turned off, as the Rust default');
+  assert.match(spec.keywords, /ctrl\+t/i);
+  const rust = read(join(root, 'src', 'tab_options.rs'));
+  assert.match(rust, /new_tab_in_group: bool = true, "tabs_new_tab_in_group";/);
+  // The snapshot carries it, and a value that is not a boolean is refused.
+  const good = { ...settingsFixture.snap.d.tabOptions };
+  assert.equal(good.tabs_new_tab_in_group, true);
+  assert.ok(options.parseTabOptions(good));
+  assert.equal(options.parseTabOptions({ ...good, tabs_new_tab_in_group: 'yes' }), null);
+  assert.equal(options.assignmentText('tabs_new_tab_in_group', false), 'tabs_new_tab_in_group=false');
+  // Settings lists it with the other new tab rows.
+  const page = read(join(root, 'ui', 'src', 'settings-page-logic.ts'));
+  assert.match(page, /group\('newTabs', 'New tabs', 'tabs', \[[^\]]*'tabs_new_tab_in_group'[^\]]*\]\)/);
+});
+
 // ---- the strip's marks and inputs ----
 
 test('a load shows in the way the option says, and never goes unseen', () => {
