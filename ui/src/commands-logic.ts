@@ -329,3 +329,20 @@ export function conflictText(snapshot: Pick<CommandsSnapshot, 'conflictChord' | 
 
 export const SHORTCUTS_OFF_NOTE = 'Shortcuts are off. Quick commands (Ctrl+Shift+K) still works so you can turn them back on.';
 export const ALT_MENU_NOTE = 'Alt on its own opens the Bowser menu.';
+
+/**
+ * The Keyboard and Quick commands rows that cannot change anything in snapshot `s`, so the page rests
+ * (and hides) them. With shortcuts off no chord runs (src/commands/mod.rs `resolve_in`; only Quick
+ * commands' own stays), so single-key shortcuts, F6 (a bound chord) and the website-priority sites do
+ * nothing. A Quick commands switch about links, notes or bookmark nicknames waits for those result types
+ * to be shown (src/win32/command_palette.rs lists only the shown types).
+ */
+export function restingCommandRows(s: Pick<CommandsSnapshot, 'shortcutsEnabled' | 'paletteTypes'>): ReadonlySet<string> {
+  const rest = new Set<string>();
+  if (!s.shortcutsEnabled) for (const id of ['kbSingleKey', 'kbFocusCycling', 'kbSites']) rest.add(id);
+  const shown = (type: ResultTypeKey): boolean => s.paletteTypes.includes(type);
+  if (!shown('bookmark') && !shown('history')) rest.add('qcNewTab');
+  if (!shown('note')) rest.add('qcNotesPanel');
+  if (!shown('bookmark')) rest.add('qcNickname');
+  return rest;
+}

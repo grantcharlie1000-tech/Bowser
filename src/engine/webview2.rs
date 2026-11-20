@@ -4670,6 +4670,23 @@ impl EngineAdapter for WebView2Engine {
     }
     // --- end layout ---
 
+    fn set_tracking_prevention(&mut self, level: TrackingPreventionLevel) {
+        // A launch that keeps the engine default (a benchmark) has no level to change. Tabs created from
+        // now on take the new level from the policy; one normal tab sets it on the shared profile now.
+        let (webview, enabled, log) = {
+            let mut core = self.core.borrow_mut();
+            if core.tracking_policy.level.is_none() {
+                return;
+            }
+            core.tracking_policy.level = Some(level);
+            let webview = core.tabs.values().filter(|tab| !tab.private).find_map(|tab| tab.webview.clone());
+            (webview, core.tracking_policy.enabled, core.events.policy_event.clone())
+        };
+        if let Some(webview) = webview {
+            apply_tracking_prevention(&webview, level, enabled, log.as_ref());
+        }
+    }
+
     fn clear_browsing_data_set(
         &mut self,
         tab: TabId,

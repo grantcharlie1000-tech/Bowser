@@ -224,8 +224,9 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   const restart = logic.ROWS.filter((row) => row.restart).map((row) => row.id).sort();
   // The blocking level and the sites it skips apply at once (App::apply_live_settings reaches the blocker).
   // The side panel position is read each time a panel opens (side_panel.rs), so it needs no restart.
-  // Automatic grouping regroups the strip at once (apply_live_settings copies it).
-  assert.deepEqual(restart, ['tracking']);
+  // Automatic grouping regroups the strip at once (apply_live_settings copies it). Tracking prevention is
+  // the profile's, put in force at once (App::apply_privacy_settings -> set_tracking_prevention).
+  assert.deepEqual(restart, []);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   // --- toolbars and feeds (thread T13) --- the toolbar editor acts on the HTML toolbar, tab strip and rail, so only
   // the frameless window is left that saves a choice and does nothing.
@@ -570,16 +571,10 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   assert.equal(flagOf('autoHideBars'), null);
   assert.equal(flagOf('autoHideFullscreen'), null);
   assert.equal(flagOf('tabPreviewImages'), null, 'the tab preview rows act now: the hover card honours them');
-  // The row Rust applies only at the next start (App::apply_live_settings does not copy it) says so,
-  // and the note is part of the control's description: Strict tracking prevention is not in force yet.
+  // No row waits for a restart any more: tracking prevention is put in force on the profile at once.
   assert.equal(flagOf('grouping'), null, 'automatic grouping applies at once');
-  for (const id of ['tracking']) {
-    const flag = flagOf(id);
-    assert.ok(flag, `${id} carries the restart note`);
-    assert.equal(flag.textContent, logic.RESTART_NOTE);
-    const target = app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('[role="switch"], [role="radiogroup"]');
-    assert.ok(target.getAttribute('aria-describedby').split(' ').includes(flag.id), `${id}: the note describes the control`);
-  }
+  assert.equal(flagOf('tracking'), null, 'tracking prevention applies at once');
+  assert.equal(app.querySelectorAll('.sp-flag').filter((flag) => flag.textContent === logic.RESTART_NOTE).length, 0);
   assert.equal(flagOf('blocker'), null, 'the blocking level applies at once');
   assert.equal(flagOf('centredAddressBar'), null);
   // The bookmarks bar rows (T2) and the shortcut rows (T4) act now: no note on any of them.
@@ -822,7 +817,8 @@ test('Keyboard and Quick commands are two sections whose controls land where Rus
   assert.deepEqual(keyboard().children.filter((c) => c.classList.contains('sp-group')).map((g) => g.dataset.group), ['keyboard', 'keys', 'commands']);
   assert.equal(kbPage().querySelector('.sp-kb').dataset.row, 'kbEditor');
   assert.equal(chainsPage().querySelector('.sp-chains').dataset.row, 'chains');
-  deliver(commandsSnap());
+  // Every result type shown, so the Quick commands switches about links, notes and nicknames can act.
+  deliver(commandsSnap({ paletteTypes: ['tab', 'closed', 'workspace', 'command', 'action', 'bookmark', 'note', 'history', 'calc'] }));
   const on = (root, id) => rowIn(root, id).querySelector('[role="switch"]').getAttribute('aria-checked');
   assert.deepEqual(['kbEnabled', 'kbSingleKey', 'kbAltMenu', 'kbFocusCycling'].map((id) => on(keyboard(), id)), ['true', 'false', 'false', 'false']);
   assert.deepEqual(['qcKeepLast', 'qcNewTab', 'qcNotesPanel', 'qcNickname'].map((id) => on(quick(), id)), ['false', 'false', 'true', 'true']);
@@ -3128,4 +3124,100 @@ test('Back up and restore: passwords are checked, sent once with the command and
   assert.equal(importPassword.value, '');
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'failed', error: 'The password is wrong, or the file is damaged.' } });
   assert.equal(app.querySelector('.sp-toast').textContent, 'The password is wrong, or the file is damaged.');
+});
+
+// ---- settings audit: Privacy, Browsing and Shortcuts (every row acts, or rests and leaves the page) ----
+
+const ALL_TYPES = ['tab', 'closed', 'workspace', 'command', 'action', 'bookmark', 'note', 'history', 'calc'];
+
+test('restingPageRows, restingAddressRows and restingCommandRows name exactly the rows that cannot act', async () => {
+  const { restingAddressRows } = await bundle('address-settings-logic.ts');
+  const { restingCommandRows } = await bundle('commands-logic.ts');
+  const page = (spoilerProtection, tabLayout, offer, shortcuts) => [...logic.restingPageRows({ spoilerProtection, tabLayout }, offer, shortcuts)].sort();
+  assert.deepEqual(page(true, 'vertical', true, true), []);
+  assert.deepEqual(page(true, 'vertical-right', true, true), []);
+  assert.deepEqual(page(true, 'horizontal', true, true), ['ctrlSVerticalTabs'], 'Ctrl+S only exists in the vertical layouts');
+  assert.deepEqual(page(false, 'vertical', true, true), ['spoilerMode', 'spoilerOcr', 'spoilerReducedEffects']);
+  assert.deepEqual(page(true, 'vertical', false, true), ['translateAuto'], 'auto-translate waits for the offer');
+  assert.deepEqual(page(true, 'vertical', true, false), ['ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'ctrlTabMru'], 'no chord runs with shortcuts off');
+
+  const address = (typed, button, sources) => [...restingAddressRows({ dd_typed_history: typed, dd_history_button: button, dd_sources: sources })].sort();
+  assert.deepEqual(address(true, false, 'bookmarks'), []);
+  assert.deepEqual(address(false, true, 'direct,bookmarks'), [], 'the history button opens the typed list too');
+  assert.deepEqual(address(false, false, 'bookmarks'), ['ddTypedSearches']);
+  assert.deepEqual(address(true, true, 'direct,history'), ['ddPriorityBookmarks'], 'no Bookmarks source, nothing to lift');
+
+  const commands = (shortcutsEnabled, paletteTypes) => [...restingCommandRows({ shortcutsEnabled, paletteTypes })].sort();
+  assert.deepEqual(commands(true, ALL_TYPES), []);
+  assert.deepEqual(commands(false, ALL_TYPES), ['kbFocusCycling', 'kbSingleKey', 'kbSites']);
+  assert.deepEqual(commands(true, ['command', 'history']), ['qcNickname', 'qcNotesPanel'], 'history links still open in a tab');
+  assert.deepEqual(commands(true, ['command']), ['qcNewTab', 'qcNickname', 'qcNotesPanel']);
+});
+
+test('a row that cannot act is disabled and leaves the page; it comes back when it can', () => {
+  searchFor('');
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const resting = (id) => rowOf(id).classList.contains('is-na') && rowOf(id).classList.contains('is-off');
+  const switchOf = (id) => rowOf(id).querySelector('[role="switch"], [role="radiogroup"]');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  deliver(commandsSnap({ paletteTypes: ALL_TYPES }));
+  for (const id of ['spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'translateAuto', 'ctrlTabMru', 'ctrlShiftCCopyLink']) assert.ok(!resting(id), id);
+  assert.ok(resting('ctrlSVerticalTabs'), 'Ctrl+S rests outside the vertical layouts');
+  assert.equal(switchOf('ctrlSVerticalTabs').disabled, true);
+
+  // Spoiler protection off: the mode, the covers and the image scan rest; term updates stay.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, spoilerProtection: false, ack: 'saved' } });
+  for (const id of ['spoilerMode', 'spoilerReducedEffects', 'spoilerOcr']) assert.ok(resting(id), id);
+  assert.equal(switchOf('spoilerReducedEffects').disabled, true);
+  assert.ok(!resting('spoilerFeed'));
+  // No translate offer: auto-translate rests. A vertical layout brings Ctrl+S back.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, translateOffer: false, tabLayout: 'vertical', ack: 'saved' } });
+  assert.ok(resting('translateAuto'));
+  assert.equal(switchOf('translateAuto').disabled, true);
+  assert.ok(!resting('spoilerMode'));
+  assert.ok(!resting('ctrlSVerticalTabs'));
+  assert.equal(switchOf('ctrlSVerticalTabs').disabled, false);
+
+  // Shortcuts off: every chord row rests, in Keys and clicks and in Keyboard; Alt and the master switch stay.
+  deliver(commandsSnap({ shortcutsEnabled: false, paletteTypes: ALL_TYPES }));
+  for (const id of ['ctrlTabMru', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'kbSingleKey', 'kbFocusCycling', 'kbSites']) assert.ok(resting(id), id);
+  for (const id of ['kbEnabled', 'kbAltMenu', 'shiftRightClickContext']) assert.ok(!resting(id), id);
+  assert.equal(switchOf('kbSingleKey').disabled, true);
+  assert.equal(rowOf('kbSites').querySelector('input').disabled, true);
+  // Quick commands hiding notes and bookmarks: the switches about them rest.
+  deliver(commandsSnap({ paletteTypes: ['command', 'history'] }));
+  for (const id of ['ctrlTabMru', 'kbSingleKey', 'kbSites']) assert.ok(!resting(id), id);
+  assert.ok(resting('qcNotesPanel') && resting('qcNickname') && !resting('qcNewTab'));
+
+  // Suggestions: the typed-search switch waits for the typed list; bookmarks first for the Bookmarks source.
+  const s = addressFixture.snap.d.s;
+  deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, s: { ...s, dd_typed_history: false, dd_history_button: false, dd_sources: 'history' } } });
+  assert.ok(resting('ddTypedSearches') && resting('ddPriorityBookmarks'));
+  assert.equal(switchOf('ddTypedSearches').disabled, true);
+  deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, s: { ...s, dd_typed_history: true, dd_sources: 'bookmarks,history' } } });
+  assert.ok(!resting('ddTypedSearches') && !resting('ddPriorityBookmarks'));
+  assert.equal(switchOf('ddTypedSearches').disabled, false);
+
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  deliver(commandsSnap());
+  deliver(addressFixture.snap);
+});
+
+test('a change that reaches pages as they load says so without a sub-line; labels say what the row does', () => {
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const reload = logic.ROWS.filter((row) => row.reload).map((row) => row.id).sort();
+  assert.deepEqual(reload, ['allow', 'blockYoutubeVideoAds', 'blocker', 'cookieNotices', 'feedsDetect', 'spoilerMode', 'spoilerOcr', 'spoilerProtection', 'spoilerReducedEffects']);
+  for (const id of reload) {
+    const node = rowOf(id);
+    assert.equal(node.getAttribute('data-tip'), logic.RELOAD_NOTE, id);
+    assert.equal(node.querySelector('.sp-flag'), null, `${id}: no sub-line`);
+    assert.equal(node.querySelector('.sp-desc'), null, `${id}: no description`);
+  }
+  for (const id of ['cookieNotices', 'blockYoutubeVideoAds', 'spoilerOcr', 'feedsDetect']) {
+    assert.equal(rowOf(id).querySelector('[role="switch"]').getAttribute('aria-description'), logic.RELOAD_NOTE, id);
+  }
+  assert.equal(rowOf('tracking').getAttribute('data-tip'), null, 'tracking prevention applies to open tabs at once');
+  const label = (id) => rowOf(id).querySelector('.sp-label').textContent;
+  assert.deepEqual(['addrAutocomplete', 'ddTyping', 'addrEncoded', 'addrExpansion', 'secHttps', 'secJs', 'secBase', 'spoilerMode', 'kbSingleKey'].map(label),
+    ['Inline completion', 'Show while typing', 'Copy encoded', 'Ctrl+Enter suffix', 'Always HTTPS', 'Strip pasted scripts', 'Highlight domain', 'How much to hide', 'Single-key shortcuts']);
 });

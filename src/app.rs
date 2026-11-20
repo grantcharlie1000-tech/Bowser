@@ -1083,8 +1083,8 @@ fn extension_records(
 /// holds their startup value. Without this, any later save (a Tabs option, a sidebar drag, the
 /// translate or download settings) put the old value back in the file.
 fn keep_file_owned_keys(settings: &mut crate::settings::Settings, file: &crate::settings::Settings) {
-    // `automatic_tab_grouping` is live (`apply_live_settings`), so memory holds it.
-    settings.tracking_prevention = file.tracking_prevention;
+    // `automatic_tab_grouping` is live (`apply_live_settings`), so memory holds it. So is
+    // `tracking_prevention` (`apply_privacy_settings` puts it in force on the profile).
     settings.block_youtube_video_ads = file.block_youtube_video_ads;
     // --- layout (thread T6) --- `side_panel_position` is live now (`apply_live_settings`), so memory holds it.
     // --- auto-hide (T11) --- so is `frameless` (the auto-hide master switch).
@@ -4440,7 +4440,7 @@ impl App {
         )
     }
 
-    /// The tracking-prevention level chosen in Settings, which the next start will apply.
+    /// The tracking-prevention level chosen in Settings (in force now: `apply_privacy_settings`).
     pub fn tracking_setting(app: &AppRef) -> &'static str {
         app.borrow().settings.tracking_prevention.key()
     }

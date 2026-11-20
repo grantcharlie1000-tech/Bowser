@@ -183,8 +183,9 @@ fn the_new_tab_page_option_decides_what_a_fresh_tab_opens() {
 }
 
 /// Integration: a later save from memory keeps the keys the page wrote straight to the file
-/// (tracking, YouTube ads, side panel, legacy engine) instead of reverting them. `frameless`
-/// (auto-hide) and automatic grouping are not among them any more: they are applied live, so memory owns them.
+/// (YouTube ads, side panel, legacy engine) instead of reverting them. `frameless` (auto-hide),
+/// automatic grouping and tracking prevention are not among them any more: they are applied live, so
+/// memory owns them.
 #[test]
 fn a_save_from_memory_keeps_the_keys_only_the_file_holds() {
     let defaults = crate::settings::Settings::default();
@@ -201,7 +202,7 @@ fn a_save_from_memory_keeps_the_keys_only_the_file_holds() {
     assert_eq!(memory.automatic_tab_grouping, defaults.automatic_tab_grouping, "grouping is memory's own");
     assert_eq!(memory.block_youtube_video_ads, file.block_youtube_video_ads);
     assert!(!memory.frameless, "auto-hide is memory's own");
-    assert_eq!(memory.tracking_prevention, crate::settings::TrackingLevel::Strict);
+    assert_eq!(memory.tracking_prevention, defaults.tracking_prevention, "tracking prevention is memory's own");
     assert_eq!(memory.sidebar_width, width);
 }
 

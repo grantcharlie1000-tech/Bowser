@@ -14,7 +14,7 @@ import {
   CHEAT_SHEET_COMMAND, captureModeCommand, MAX_CHAIN_NAME, MAX_DELAY_MS, MAX_RESULTS, MAX_STEPS, MIN_RESULTS, RESTORE_ALL_COMMAND, RESULT_TYPES, RESULT_TYPE_LABELS,
   TYPES_RESET_COMMAND, ackToast, assignCommand, captureChord, chainCloneCommand, chainDeleteCommand, chainSaveCommand, chainTestCommand, clearCommand,
   conflictText, draftError, flagCommand, groupCommands, moveItem, parseCommandsSnapshot, parseDelay, priorityCommand, removeChordCommand, restoreCommand, resultsMaxCommand,
-  siteAddCommand, siteError, siteRemoveCommand, toggleType, typesCommand,
+  restingCommandRows, siteAddCommand, siteError, siteRemoveCommand, toggleType, typesCommand,
   type ChainDraft, type ChainInfo, type CommandInfo, type CommandsSnapshot, type FlagName, type ResultTypeKey,
 } from './commands-logic';
 import type { PanelFields, SnapshotMsg } from './protocol';
@@ -48,7 +48,7 @@ export interface CommandsSections {
   receive(message: SnapshotMsg): void;
 }
 
-interface Switch { readonly root: HTMLButtonElement; set(on: boolean): void }
+interface Switch { readonly root: HTMLButtonElement; set(on: boolean): void; disable(off: boolean): void }
 
 function switchControl(label: string, onChange: (on: boolean) => void): Switch {
   const button = el('button', 'bw-toggle sp-switch');
@@ -61,7 +61,11 @@ function switchControl(label: string, onChange: (on: boolean) => void): Switch {
     button.setAttribute('aria-checked', String(next));
     onChange(next);
   });
-  return { root: button, set: (on) => button.setAttribute('aria-checked', String(on)) };
+  return {
+    root: button,
+    set: (on) => button.setAttribute('aria-checked', String(on)),
+    disable: (off) => { button.disabled = off; button.setAttribute('aria-disabled', String(off)); },
+  };
 }
 
 const specOf = (id: string): RowSpec => {
@@ -679,6 +683,17 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   const apply = (s: CommandsSnapshot): void => {
     for (const entry of flags) entry.control.set(entry.read(s));
     paintSites(s.sites);
+    // A row that cannot change anything now is disabled and leaves the page (`is-na`, as on the start
+    // page; a search still finds it, dimmed): `restingCommandRows` says which.
+    const resting = restingCommandRows(s);
+    for (const entry of flags) entry.control.disable(resting.has(entry.id));
+    siteInput.disabled = resting.has('kbSites');
+    siteAdd.disabled = resting.has('kbSites');
+    for (const found of rows) {
+      const off = resting.has(found.spec.id);
+      found.root.classList.toggle('is-off', off);
+      found.root.classList.toggle('is-na', off);
+    }
     paintTypes(s);
     maxInput.value = String(s.paletteMax);
     paintChains(s);

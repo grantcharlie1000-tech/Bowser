@@ -583,6 +583,27 @@ export type Draft = Pick<SettingsSnapshot,
   | 'window' // --- window and panels (thread T9) ---
 >;
 
+/**
+ * The rows of the page's own controls that cannot change anything in this state, so the page rests (and
+ * hides) them, as the start page does:
+ * - the spoiler mode, covers and image scan only matter while spoiler protection is on;
+ * - "Auto-translate" only acts on a page Bowser offers to translate (`translate::should_offer`);
+ * - Ctrl+Tab order and the two chord switches are shortcuts, and with shortcuts off no chord runs;
+ *   Ctrl+S only exists in the vertical layouts (`shortcuts::GatedChords`).
+ */
+export function restingPageRows(
+  draft: Pick<Draft, 'spoilerProtection' | 'tabLayout'>,
+  translateOffer: boolean,
+  shortcutsEnabled: boolean,
+): ReadonlySet<string> {
+  const rest = new Set<string>();
+  if (!draft.spoilerProtection) for (const id of ['spoilerMode', 'spoilerReducedEffects', 'spoilerOcr']) rest.add(id);
+  if (!translateOffer) rest.add('translateAuto');
+  if (!shortcutsEnabled) for (const id of ['ctrlTabMru', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs']) rest.add(id);
+  if (draft.tabLayout !== 'vertical' && draft.tabLayout !== 'vertical-right') rest.add('ctrlSVerticalTabs');
+  return rest;
+}
+
 export function draftOf(snapshot: SettingsSnapshot): Draft {
   const {
     tabLayout, sidebarWidth, sidebarPinned, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow, searchEngine, automaticTabGrouping, efficiencyMode,
@@ -721,6 +742,11 @@ export interface RowSpec {
   readonly keywords: string;
   /** The change waits for a restart. */
   readonly restart?: boolean;
+  /**
+   * The change reaches pages as they load: a page already open keeps what it loaded with until it is
+   * reloaded. Said in the row's tooltip and its control's accessible description, never as a sub-line.
+   */
+  readonly reload?: boolean;
   /** Saved, but Bowser does not act on it yet: the page says so instead of pretending. */
   readonly notYet?: boolean;
   /** Where the row is drawn (`rowTier`); a row that sets none gets the table's choice. */
@@ -936,6 +962,8 @@ export function rowTier(row: RowSpec): RowTier {
 
 /** The note under a row whose change waits for a restart. */
 export const RESTART_NOTE = 'Applies after restart';
+/** What a `reload` row says (tooltip and accessible description): open pages keep what they loaded. */
+export const RELOAD_NOTE = 'Applies to pages as they load. Reload an open page to apply it there.';
 /** The note under a row (or a whole group of rows) Bowser saves but does not act on yet. */
 export const NOT_YET_NOTE = 'Has no effect yet. Bowser keeps your choice for when it does.';
 export const NOT_YET_GROUP_NOTE = 'These have no effect yet. Bowser keeps your choices for when they do.';
@@ -1055,18 +1083,18 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'startWidgetColor', section: 'startpage', label: 'Custom colour', aria: 'Custom widget colour', description: '', keywords: 'widgets colour color custom background Custom widget colour Used when the widget background is Custom.' },
   { id: 'startWidgetDrag', section: 'startpage', label: 'Drag to rearrange', aria: 'Drag to rearrange widgets', description: '', keywords: 'widgets drag rearrange reorder move Drag to rearrange widgets Drag a widget by its handle, or press Alt and an arrow key on it.' },
   // --- end start page ---
-  { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.' },
-  { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.' },
-  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'YouTube ads', aria: 'Block YouTube video ads', description: '', keywords: 'youtube video ads block skip Block YouTube video ads Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.' },
+  { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.', reload: true },
+  { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.', reload: true },
+  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'YouTube ads', aria: 'Block YouTube video ads', description: '', keywords: 'youtube video ads block skip Block YouTube video ads Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.', reload: true },
   // Spoiler Firewall for GTA VI (src/spoiler.rs): one line each like every row; the longer wording is the control's aria text and the search keywords.
-  { id: 'spoilerProtection', section: 'privacy', label: 'GTA VI spoilers', aria: 'Hide GTA VI spoilers', description: '', keywords: 'spoiler spoilers gta 6 vi grand theft auto rockstar firewall protection shield hide block leak ending Hide GTA VI spoilers Spoiler Firewall for GTA VI is built in and on by default. It covers every tab, including private tabs and guest windows.' },
-  { id: 'spoilerMode', section: 'privacy', label: 'Hide', aria: 'How much to hide', description: '', keywords: 'spoiler mode lockdown strict balanced gta firewall level How much to hide' },
-  { id: 'spoilerReducedEffects', section: 'privacy', label: 'Simple covers', aria: 'Simpler spoiler covers', description: '', keywords: 'spoiler reduced effects motion blur animation performance accessibility gta Simpler spoiler covers Opaque covers with no blur or animation. Lighter on slow computers.' },
-  { id: 'spoilerOcr', section: 'privacy', label: 'Scan images', aria: 'Scan images for text on this device', description: '', keywords: 'spoiler ocr image text screenshot scan on-device gta Scan images for text Reads text in images on sites like X, Reddit and YouTube so a spoiler inside a screenshot is hidden too. Nothing leaves your computer. Needs a Windows OCR language; images in other formats may not be read.' },
+  { id: 'spoilerProtection', section: 'privacy', label: 'GTA VI spoilers', aria: 'Hide GTA VI spoilers', description: '', keywords: 'spoiler spoilers gta 6 vi grand theft auto rockstar firewall protection shield hide block leak ending Hide GTA VI spoilers Spoiler Firewall for GTA VI is built in and on by default. It covers every tab, including private tabs and guest windows.', reload: true },
+  { id: 'spoilerMode', section: 'privacy', label: 'How much to hide', description: '', keywords: 'spoiler mode lockdown strict balanced gta firewall level hide How much to hide', reload: true },
+  { id: 'spoilerReducedEffects', section: 'privacy', label: 'Simple covers', aria: 'Simpler spoiler covers', description: '', keywords: 'spoiler reduced effects motion blur animation performance accessibility gta Simpler spoiler covers Opaque covers with no blur or animation. Lighter on slow computers.', reload: true },
+  { id: 'spoilerOcr', section: 'privacy', label: 'Scan images', aria: 'Scan images for text on this device', description: '', keywords: 'spoiler ocr image text screenshot scan on-device gta Scan images for text Reads text in images on sites like X, Reddit and YouTube so a spoiler inside a screenshot is hidden too. Nothing leaves your computer. Needs a Windows OCR language; images in other formats may not be read.', reload: true },
   { id: 'spoilerFeed', section: 'privacy', label: 'Term updates', aria: 'Download spoiler term updates', description: '', keywords: 'spoiler term updates feed word list download signed gta names missions Download spoiler term updates Fetches a small signed word list about every 12 hours so new names and missions are covered before Bowser itself updates. It sends no browsing data and can only add protection.' },
   { id: 'spoilerNote', section: 'privacy', label: 'Spoiler limits', aria: SPOILER_LIMITS_NOTE, description: '', keywords: 'spoiler limits limitations images screenshots video notifications unofficial gta What spoiler protection cannot do ' + SPOILER_LIMITS_NOTE },
-  { id: 'allow', section: 'privacy', label: 'Skipped sites', aria: 'Sites the blocker skips', description: '', keywords: 'allow list exceptions whitelist adblock Sites the blocker skips The blocker never blocks on these sites.' },
-  { id: 'tracking', section: 'privacy', label: 'Tracking', aria: 'Tracking prevention', description: '', keywords: 'privacy cookies strict balanced fingerprinting Tracking prevention Balanced is the default. Strict blocks more trackers but can break some sites.', restart: true },
+  { id: 'allow', section: 'privacy', label: 'Skipped sites', aria: 'Sites the blocker skips', description: '', keywords: 'allow list exceptions whitelist adblock Sites the blocker skips The blocker never blocks on these sites.', reload: true },
+  { id: 'tracking', section: 'privacy', label: 'Tracking', aria: 'Tracking prevention', description: '', keywords: 'privacy cookies strict balanced fingerprinting Tracking prevention Balanced is the default. Strict blocks more trackers but can break some sites. Applies at once, to open tabs too.' },
   { id: 'history', section: 'privacy', label: 'History', aria: 'Save history', description: '', keywords: 'history visits record browsing save Save history Pages you visit are listed in History and suggested in the address bar.' },
   { id: 'historyRetention', section: 'privacy', label: 'Keep history', aria: 'Keep history for', description: '', keywords: 'history retention expire delete old days week month year forever session Keep history for Older visits are deleted from the history list. Session only clears it when Bowser closes.' },
   { id: 'siteRules', section: 'privacy', label: 'Site rules', aria: 'Sites with their own choices', description: '', keywords: 'site exceptions per site level blocking cookie notices list shield Sites with their own choices Give one site its own blocking level or cookie-notice choice.' },
@@ -1081,11 +1109,11 @@ const BUILT_ROWS: readonly RowSpec[] = [
   ...FEED_ROWS, // --- toolbars and feeds (thread T13) ---
   // --- keyboard and quick commands (docs/commands.md) ---
   { id: 'kbEnabled', section: 'keyboard', label: 'Shortcuts', aria: 'Keyboard shortcuts', description: '', keywords: 'keyboard shortcuts enable disable hotkeys keybindings keys ctrl shift k Keyboard shortcuts Turn Bowser’s shortcuts on or off. Quick commands stays available.' },
-  { id: 'kbSingleKey', section: 'keyboard', label: 'Single-key', aria: 'Allow single-key shortcuts', description: '', keywords: 'single key shortcuts letter number plain keys Allow single-key shortcuts Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.' },
+  { id: 'kbSingleKey', section: 'keyboard', label: 'Single-key shortcuts', aria: 'Allow single-key shortcuts', description: '', keywords: 'single key shortcuts letter number plain keys Allow single-key shortcuts Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.' },
   { id: 'kbAltMenu', section: 'keyboard', label: 'Alt menu', aria: 'Alt opens the menu', description: '', keywords: 'alt key menu windows Alt opens the menu Pressing and releasing Alt on its own opens the Bowser menu. Off, it does nothing.' },
   { id: 'kbFocusCycling', section: 'keyboard', label: 'F6 focus', aria: 'F6 moves between the address bar and the page', description: '', keywords: 'f6 focus cycle address bar page tab F6 moves between the address bar and the page F6 jumps from the address bar to the page, and back. Off, F6 always goes to the address bar.' },
   { id: 'kbSites', section: 'keyboard', label: 'Site shortcuts', aria: 'Prioritise website shortcuts on these sites', description: '', keywords: 'website shortcuts priority sites page keys web app gmail docs Prioritise website shortcuts on these sites On a site listed here, shortcuts the page uses go to the page. The browser keeps the shortcuts marked Browser priority below. The “Prioritise website shortcuts on this site” command adds or removes the site you are on.' },
-  { id: 'kbEditor', section: 'keyboard', label: 'Bindings', aria: 'Edit shortcuts', description: '', keywords: 'shortcuts assign rebind remap clear restore reset cheat sheet ctrl f1 keybindings browser priority Shortcuts Give a command several shortcuts, clear them or restore the defaults. Ctrl+F1 shows the cheat sheet. Editing shortcuts such as Ctrl+C and Ctrl+V cannot be taken.' },
+  { id: 'kbEditor', section: 'keyboard', label: 'Key bindings', aria: 'Edit shortcuts', description: '', keywords: 'shortcuts assign rebind remap clear restore reset cheat sheet ctrl f1 keybindings browser priority Shortcuts Give a command several shortcuts, clear them or restore the defaults. Ctrl+F1 shows the cheat sheet. Editing shortcuts such as Ctrl+C and Ctrl+V cannot be taken.' },
   { id: 'qcTypes', section: 'commands', label: 'Result types', description: '', keywords: 'quick commands palette results types order prefix bookmark note tab history command action workspace calculator Result types Choose which kinds of result Quick commands shows and in what order. Type bkm:, tb:, cmd: and similar before a search to look in one place. Shift or the right arrow completes the top result.' },
   { id: 'qcMax', section: 'commands', label: 'Result limit', aria: 'Visible results', description: '', keywords: 'quick commands palette results limit maximum number Visible results The most results shown for a typed search.' },
   { id: 'qcKeepLast', section: 'commands', label: 'Remember search', aria: 'Keep the last typed search', description: '', keywords: 'quick commands palette remember last typed value query Keep the last typed search Quick commands opens with what you typed last time, selected, so the first key you press replaces it.' },

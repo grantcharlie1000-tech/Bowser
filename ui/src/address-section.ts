@@ -9,7 +9,7 @@ import { textButton } from './panels/kit';
 import type { PanelFields, SettingsSection, SnapshotMsg } from './protocol';
 import {
   BAR_DISPLAYS, BAR_DISPLAY_LABELS, BAR_POSITIONS, MAX_CONFIRM, MAX_ENGINES, MAX_RESULTS, MIN_CONFIRM, MIN_RESULTS, SEARCH_FIELD_MODES, SOURCE_LABELS,
-  EMPTY_ENGINE, draftOfEngine, engineChoiceLabel, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
+  EMPTY_ENGINE, restingAddressRows, draftOfEngine, engineChoiceLabel, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
   type AddressKey, type AddressSnapshot, type BarDisplay, type BarPosition, type EngineDraft, type EngineOp, type EngineView, type SearchFieldMode, type SourceId,
 } from './address-settings-logic';
 
@@ -44,9 +44,12 @@ export function mountAddressSections(host: AddressHost): AddressSection {
     host.send(fields);
   };
 
+  /** The switch rows by row id, so `restingAddressRows` can rest the ones that cannot act. */
+  const switches = new Map<string, { readonly root: HTMLElement; disable(off: boolean): void }>();
   const toggle = (cardNode: HTMLElement, id: string, key: AddressKey, options: { stack?: boolean } = {}): void => {
     const control = host.switchControl((on) => put(key, on));
-    host.row(cardNode, id, control.root, options);
+    const made = host.row(cardNode, id, control.root, options);
+    switches.set(id, { root: made.root, disable: (off) => control.disable(off) });
     painters.push((s) => control.set(Boolean(s.s[key])));
   };
 
@@ -205,6 +208,15 @@ export function mountAddressSections(host: AddressHost): AddressSection {
       if (!parsed) return;
       snapshot = parsed;
       for (const paint of painters) paint(parsed);
+      // A suggestion row that cannot change anything with these values is disabled and leaves the page
+      // (`is-na`, as on the start page; a search still finds it, dimmed).
+      const resting = restingAddressRows(parsed.s);
+      for (const [id, row] of switches) {
+        const off = resting.has(id);
+        row.disable(off);
+        row.root.classList.toggle('is-off', off);
+        row.root.classList.toggle('is-na', off);
+      }
       // The answer to the change (Saved, or why not) comes with the settings snapshot's own toast.
     },
   };

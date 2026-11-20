@@ -204,8 +204,14 @@ the bookmarks bar pair, the tab preview pair, and, until their Rust wiring lands
 working. A group whose every row is `notYet` (Bookmarks bar, Shortcuts) says so once under its
 heading instead of on each row. In a group, the rows that work come first. Changes apply on change, not on a Save
 button; Bowser answers with a snapshot and the page shows a small "Saved" toast. Live: layout and
-sidebar width, efficiency mode, sleeping tabs, search engine, history, automatic updates. After a
-restart: blocker, allow list, tracking prevention, automatic grouping (as before).
+sidebar width, efficiency mode, sleeping tabs, search engine, history, automatic updates, tracking
+prevention (set on the profile, so open tabs follow) and automatic grouping. The blocker, the sites it
+skips, cookie notices, YouTube ads, spoiler protection and the feed button reach pages as they load:
+those rows say so in their tooltip and accessible description ("Reload an open page to apply it
+there"), never as a sub-line. A row that cannot act in the current state (Auto-translate with the
+offer off, the spoiler options with protection off, chord rows with shortcuts off, Ctrl+S outside the
+vertical layouts, typed searches with no typed list, Quick commands switches for hidden result types)
+is disabled and leaves the page (`is-na`), as on the start page; a search still finds it.
 
 Search: filters rows by label, description, keywords and section title as you type (every word
 must match, case and accents folded); matching words are marked, empty cards and sections hide
