@@ -25,6 +25,9 @@ const SEARCH_ENGINES = ['optimised', 'google', 'duckduckgo'] as const;
 export type SearchEngine = typeof SEARCH_ENGINES[number];
 export const EFFICIENCY_MODES = ['auto', 'on', 'off'] as const;
 export type EfficiencyMode = typeof EFFICIENCY_MODES[number];
+export const EFFICIENCY_LABELS: Readonly<Record<EfficiencyMode, string>> = { auto: 'Auto', on: 'On', off: 'Off' };
+/** What each choice means (src/efficiency.rs): Auto is in force on battery or with Battery saver on. */
+export const EFFICIENCY_ARIA: Readonly<Record<EfficiencyMode, string>> = { auto: 'On battery or with Battery saver on', on: 'Always', off: 'Never' };
 export type TrackingPrevention = 'balanced' | 'strict';
 // --- layout (thread T6) --- the layouts (six now), the Layout block's `layout` object and its presets live in layout-logic.ts.
 import {
@@ -1046,8 +1049,8 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'startThumbSize', section: 'startpage', label: 'Tile size', description: '', keywords: 'speed dial thumbnail size tiny small medium large huge tiles Tile size How large each speed dial tile is.' },
   { id: 'startDragReorder', section: 'startpage', label: 'Drag to reorder', aria: 'Drag speed dials to reorder them', description: '', keywords: 'speed dial drag drop reorder move sort Drag to reorder Drag speed dials to reorder them, or onto a folder to put them inside it. Alt and the arrow keys do the same.' },
   { id: 'startHomepage', section: 'startpage', label: 'Homepage', description: '', keywords: 'home page homepage address url Homepage The Home button opens this. Leave it empty for the start page.' },
-  { id: 'startupMode', section: 'startpage', label: 'Startup', aria: 'On startup', description: '', keywords: 'startup launch open start page last session where you left off homepage specific pages restore when bowser starts On startup What opens when Bowser starts.' },
-  { id: 'startupPages', section: 'startpage', label: 'Startup pages', aria: 'Pages to open at startup', description: '', keywords: 'startup pages specific urls tabs launch Pages to open at startup One address per line, up to eight. Used when Bowser starts with specific pages.' },
+  { id: 'startupMode', section: 'startpage', label: 'Startup', aria: 'What opens in front of your tabs at startup', description: '', keywords: 'startup launch open start page last session continue where you left off your tabs homepage specific pages restore when bowser starts On startup Your open tabs always come back. Tabs + homepage or Tabs + pages also opens those in front of them; a page already open is shown, not opened twice.' },
+  { id: 'startupPages', section: 'startpage', label: 'Startup pages', aria: 'Pages to open at startup', description: '', keywords: 'startup pages specific urls tabs launch Pages to open at startup One address per line, up to eight. Used when Startup is Tabs + pages.' },
   { id: 'startWidgets', section: 'startpage', label: 'Widgets', aria: 'Show widgets on the start page', description: '', keywords: 'widgets dashboard start page top sites sticky note date privacy statistics webpage Show the dashboard Widgets under the speed dials: top sites, bookmarks, a sticky note, the date, privacy statistics and a web page.' },
   { id: 'startWidgetColumns', section: 'startpage', label: 'Widget columns', description: '', keywords: 'widgets columns row dashboard Widget columns The most widgets in a row, 1 to 4.' },
   { id: 'startWidgetHeight', section: 'startpage', label: 'Widget height', description: '', keywords: 'widgets height tall regular dashboard Widget height Regular or tall widgets.' },
@@ -1073,9 +1076,9 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'blockLists', section: 'privacy', label: 'Block lists', aria: 'Blocking lists', description: '', keywords: 'sources filter lists easylist easyprivacy subscription url file add cookie list Blocking lists Switch lists on or off, add one from an address or a file, or remove one you added.' },
   { id: 'deleteData', section: 'privacy', label: 'Clear data', aria: 'Clear browsing data', description: '', keywords: 'clear delete browsing data history cookies cache storage logins sign-ins autofill site settings hour day week Cannot be undone Clear browsing data Delete history, cookies, cache and other site data for a period you choose.' },
   { id: 'dashboard', section: 'privacy', label: 'Dashboard', aria: 'Privacy dashboard', description: '', keywords: 'clear cookies cache data permissions camera microphone location notifications statistics Privacy dashboard Review site permissions and blocking statistics.' },
-  { id: 'efficiency', section: 'performance', label: 'Efficiency', description: '', keywords: 'battery power eco energy saver laptop efficiency mode Efficiency On battery, hidden tabs sleep sooner and use less memory.' },
+  { id: 'efficiency', section: 'performance', label: 'Efficiency', aria: 'Efficiency mode', description: '', keywords: 'battery power eco energy saver laptop efficiency mode Efficiency While it is in force, hidden tabs use less memory and sleep sooner. Auto: on battery or with Battery saver on.' },
   { id: 'sleep', section: 'performance', label: 'Sleep tabs', aria: 'Sleep unused tabs', description: '', keywords: 'memory discard suspend hibernate inactive hidden tabs Sleep unused tabs Hidden tabs go to sleep after a while to free memory.' },
-  { id: 'sleepAfter', section: 'performance', label: 'Sleep after', description: '', keywords: 'delay timeout minutes memory Sleep after How long a tab stays hidden before it sleeps.' },
+  { id: 'sleepAfter', section: 'performance', label: 'Sleep after', aria: 'Sleep tabs after', description: '', keywords: 'delay timeout minutes memory Sleep after How long a tab stays hidden before it sleeps. Only while Sleep tabs is on.' },
   ...ADDRESS_ROWS.filter((row) => row.section !== 'appearance'),
   ...PAGE_TOOLS_ROWS, // --- page tools (T7) ---
   ...FEED_ROWS, // --- toolbars and feeds (thread T13) ---
@@ -1095,7 +1098,7 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'chains', section: 'commands', label: 'Chains', aria: 'Command chains', description: '', keywords: 'command chains macro sequence delay milliseconds test clone create edit delete automation Command chains Run several commands one after another, with a delay in milliseconds before each. Run a chain from Quick commands, give it a shortcut in Keyboard, or test it here.' },
   // --- end keyboard and quick commands ---
   { id: 'downloadDir', section: 'downloads', label: 'Download folder', description: '', keywords: 'download folder directory save path where change location Download folder' },
-  { id: 'downloadAsk', section: 'downloads', label: 'Ask where', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above.' },
+  { id: 'downloadAsk', section: 'downloads', label: 'Ask where to save', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above. On, the Save dialog opens in it.' },
   { id: 'media', section: 'media', label: 'Playback', aria: 'Media support', description: '', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode Media support Runs on this device only and sends nothing.' },
   { id: 'passwords', section: 'passwords', label: 'Passwords and autofill', description: '', keywords: 'password passwords saved logins sign-in credentials autofill auto fill form address addresses name email phone card cards credit debit payment checkout generator generate strong import export csv chrome edge firefox safari 1password bitwarden lastpass dashlane nordpass proton keepass passkeys weak reused' },
   { id: 'extensions', section: 'extensions', label: 'Extensions', description: '', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable installed Extensions Turn extensions on or off, or remove one.' },

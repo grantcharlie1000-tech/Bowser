@@ -240,7 +240,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=true\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=true\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=last_session\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -1165,7 +1165,7 @@ test('the Start page section: the snapshot parses, every row exists once and the
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   assert.ok(s, 'the Rust snapshot carries the start object');
   assert.equal(s.start.columns, 6);
-  assert.equal(s.start.startup, 'start_page');
+  assert.equal(s.start.startup, 'last_session', 'tabs come back on every start, so Continue is the default');
   // The start page's own rows sit in Tabs > Start page; the startup rows in General > On startup.
   const ids = logic.ROWS.filter((row) => row.section === 'startpage').map((row) => row.id);
   assert.deepEqual(ids, [
@@ -1304,7 +1304,7 @@ test('the Start page section follows the snapshot: values, the startup mode and 
   deliver({ ...fixture.snap, d: tuned });
   const row = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
   assert.equal(row('startColumns').querySelector('.bw-select-button').textContent, '9');
-  assert.equal(row('startupMode').querySelector('.bw-select-button').textContent, 'Homepage');
+  assert.equal(row('startupMode').querySelector('.bw-select-button').textContent, 'Tabs + homepage');
   assert.equal(row('startHomepage').querySelector('input').value, 'https://home.example/');
   assert.equal(row('startWidgetColor').querySelector('input').value, '#336699');
   assert.equal(row('startWidgetBg').querySelector('[role="radio"][aria-checked="true"]').textContent, 'Custom');
@@ -1420,7 +1420,9 @@ test('Address bar section: every switch sends one addrset command, never part of
 });
 
 test('Search suggestions: off from the snapshot, one addrset command, a sub-line that says what is sent', () => {
-  deliver(addressFixture.snap);
+  // The fixture's drop-down has no Suggestions source; with it on (the default) the switch can act.
+  const withSource = { ...addressFixture.snap, d: { ...addressFixture.snap.d, s: { ...addressFixture.snap.d.s, dd_sources: 'bookmarks,history,search' } } };
+  deliver(withSource);
   const row = app.querySelector('.sp-row[data-row="searchSuggestions"]');
   assert.ok(row, 'the row is drawn');
   assert.equal(row.querySelector('.sp-label').textContent, 'Search suggestions');
@@ -1432,7 +1434,7 @@ test('Search suggestions: off from the snapshot, one addrset command, a sub-line
   sent.length = 0;
   sw.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'addrset', text: 'search_suggestions=true' }]);
-  deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, s: { ...addressFixture.snap.d.s, search_suggestions: true } } });
+  deliver({ ...withSource, d: { ...withSource.d, s: { ...withSource.d.s, search_suggestions: true } } });
   assert.equal(sw.getAttribute('aria-checked'), 'true');
   assert.ok(logic.matchRows('google autocomplete').has('searchSuggestions'));
   assert.ok(logic.matchRows('autofill').has('searchSuggestions'));
@@ -3128,4 +3130,103 @@ test('Back up and restore: passwords are checked, sent once with the command and
   assert.equal(importPassword.value, '');
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'failed', error: 'The password is wrong, or the file is damaged.' } });
   assert.equal(app.querySelector('.sp-toast').textContent, 'The password is wrong, or the file is damaged.');
+});
+
+// ---- settings audit (General, System, About): every control acts, or rests and says so ----
+
+test('audit: the search rows that cannot act rest and leave the page until what they need is on', () => {
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const with_ = (s) => ({ ...addressFixture.snap, d: { ...addressFixture.snap.d, s: { ...addressFixture.snap.d.s, ...s } } });
+  const resting = (id) => {
+    const node = rowOf(id);
+    const sw = node.querySelector('[role="switch"]');
+    const off = node.classList.contains('is-na');
+    assert.equal(node.classList.contains('is-off'), off, `${id}: dimmed exactly when hidden`);
+    assert.equal(sw.disabled, off, `${id}: disabled exactly when hidden`);
+    return off;
+  };
+  const fieldRows = ['searchIcon', 'searchKeepEngine', 'searchKeepText', 'searchSuggestField'];
+  deliver(with_({ search_field: 'field', dd_sources: 'bookmarks,search', search_in_address: true }));
+  for (const id of [...fieldRows, 'searchSuggestions', 'searchSuggestAddress', 'searchNickname']) assert.equal(resting(id), false, id);
+  // No search field: its own options have nothing to act on; nicknames still label the address bar's list.
+  deliver(with_({ search_field: 'off', dd_sources: 'bookmarks,search', search_in_address: true }));
+  for (const id of fieldRows) assert.equal(resting(id), true, id);
+  assert.equal(resting('searchNickname'), false, 'nicknames also show in the address bar drop-down');
+  // Searching from the address field off: plain typing is never searched, so it is never suggested for.
+  deliver(with_({ search_field: 'button', dd_sources: 'bookmarks,search', search_in_address: false }));
+  for (const id of fieldRows) assert.equal(resting(id), false, `${id}: a button is a search field too`);
+  assert.equal(resting('searchSuggestions'), true);
+  assert.equal(resting('searchSuggestAddress'), false, 'engine nicknames still work');
+  // The drop-down's Suggestions source off: neither kind of engine suggestion can show.
+  deliver(with_({ search_field: 'field', dd_sources: 'bookmarks,history', search_in_address: true }));
+  assert.equal(resting('searchSuggestions'), true);
+  assert.equal(resting('searchSuggestAddress'), true);
+  assert.equal(resting('searchSuggestField'), false, 'the field asks its engine whatever the drop-down shows');
+  // A search still finds a resting row.
+  assert.ok(logic.matchRows('suggestions source').has('searchSuggestions'));
+  deliver(addressFixture.snap);
+});
+
+test('audit: searchRowsOff mirrors what Rust reads', async () => {
+  const addressLogic = await bundle('address-settings-logic.ts');
+  const off = addressLogic.searchRowsOff;
+  assert.deepEqual(off({ search_field: 'off', search_in_address: true, dd_sources: 'search' }), { field: true, suggestions: false, nicknameSuggestions: false });
+  assert.deepEqual(off({ search_field: 'field', search_in_address: false, dd_sources: 'search' }), { field: false, suggestions: true, nicknameSuggestions: false });
+  assert.deepEqual(off({ search_field: 'button', search_in_address: true, dd_sources: 'bookmarks,history' }), { field: false, suggestions: true, nicknameSuggestions: true });
+});
+
+test('audit: Sleep after rests while Sleep tabs is off; automatic updates rest when the build cannot update', () => {
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, sleepEnabled: true } });
+  assert.equal(rowOf('sleepAfter').classList.contains('is-na'), false);
+  assert.equal(rowOf('sleepAfter').querySelector('.bw-select-button').disabled, false);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, sleepEnabled: false } });
+  assert.equal(rowOf('sleepAfter').classList.contains('is-na'), true, 'out of the page while it cannot act');
+  assert.equal(rowOf('sleepAfter').classList.contains('is-off'), true);
+  assert.equal(rowOf('sleepAfter').querySelector('.bw-select-button').disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, sleepEnabled: true, readable: false } });
+  assert.equal(rowOf('sleepAfter').querySelector('.bw-select-button').disabled, true, 'an unreadable file locks it like every control');
+  deliver(fixture.guest);
+  assert.equal(rowOf('autoUpdate').classList.contains('is-na'), true, 'update unavailable: nothing for the switch to do');
+  assert.equal(rowOf('autoUpdate').querySelector('[role="switch"]').disabled, true);
+  deliver(fixture.snap);
+  assert.equal(rowOf('autoUpdate').classList.contains('is-na'), false);
+});
+
+test('audit: Efficiency says what Auto means; startup offers only choices that differ', () => {
+  deliver(fixture.snap);
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const radios = rowOf('efficiency').querySelectorAll('[role="radio"]');
+  assert.deepEqual(radios.map((b) => b.textContent), ['Auto', 'On', 'Off']);
+  assert.match(radios[0].getAttribute('aria-label'), /battery/i);
+  // Tabs come back on every start, so each startup choice is what opens in front of them.
+  const startup = rowOf('startupMode').querySelector('.bw-select-button');
+  assert.equal(startup.textContent, 'Your tabs');
+  startup.click();
+  const options = app.querySelectorAll('[role="option"]').map((o) => o.textContent);
+  assert.deepEqual(options.slice(-3), ['Your tabs', 'Tabs + homepage', 'Tabs + pages']);
+  startup.click();
+  // The old start_page value reads as Your tabs (src/start_page.rs LEGACY_START_PAGE).
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, start: { ...fixture.snap.d.start, startup: 'start_page' } } });
+  assert.equal(startup.textContent, 'Your tabs');
+  // The page list only acts with Tabs + pages.
+  assert.equal(rowOf('startupPages').classList.contains('is-na'), true);
+  assert.equal(rowOf('startupPages').querySelector('textarea').disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, start: { ...fixture.snap.d.start, startup: 'specific_pages' } } });
+  assert.equal(rowOf('startupPages').classList.contains('is-na'), false);
+  assert.equal(rowOf('startupPages').querySelector('textarea').disabled, false);
+  deliver(fixture.snap);
+  assert.ok(logic.matchRows('always come back').has('startupMode'));
+});
+
+test('audit: terse labels in General say what they do', () => {
+  const label = (id) => logic.ROWS.find((row) => row.id === id).label;
+  assert.equal(label('downloadAsk'), 'Ask where to save');
+  assert.deepEqual(['nickBookmarks', 'nickHistory', 'nickTabs'].map(label), ['Bookmarks scope', 'History scope', 'Tabs scope']);
+  assert.equal(label('searchInAddress'), 'Search from address');
+  assert.equal(label('searchSuggestAddress'), 'Nickname suggestions');
+  assert.equal(label('searchSuggestField'), 'Field suggestions');
+  assert.equal(label('searchNewTab'), 'Search in new tab');
+  // The old words still find the rows.
+  for (const [words, id] of [['bookmarks nick', 'nickBookmarks'], ['address search', 'searchInAddress'], ['ask where', 'downloadAsk']]) assert.ok(logic.matchRows(words).has(id), words);
 });

@@ -42,7 +42,7 @@ import { mountWelcome } from './welcome'; // the first-run welcome (docs/design/
 import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
-  BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
+  BOOKMARKS_BAR_MODES, EFFICIENCY_ARIA, EFFICIENCY_LABELS, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   ROWS, SPOILER_LIMITS_NOTE, SPOILER_MODES, SPOILER_MODE_HINTS, SPOILER_MODE_LABELS, SPOILER_OFF_WARNING, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
@@ -102,6 +102,12 @@ export function isTyping(target: EventTarget | null): boolean {
   if (!node || typeof node.tagName !== 'string') return false;
   const tag = node.tagName.toUpperCase();
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || node.isContentEditable === true;
+}
+
+/** A row whose control cannot act now: dimmed (`is-off`) and out of the page (`is-na`; a search still finds it), as settings-start.ts does. */
+function restRow(row: HTMLElement, off: boolean): void {
+  row.classList.toggle('is-off', off);
+  row.classList.toggle('is-na', off);
 }
 
 function cmd(fields: PanelFields): boolean {
@@ -1255,7 +1261,7 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // Performance
   const powerCard = card('performance', 'Power');
-  const efficiency = segmentedControl<EfficiencyMode>('Efficiency mode', EFFICIENCY_MODES.map((mode) => [mode, mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'] as const), (value) => change((d) => { d.efficiencyMode = value; }));
+  const efficiency = segmentedControl<EfficiencyMode>('Efficiency mode', EFFICIENCY_MODES.map((mode) => [mode, EFFICIENCY_LABELS[mode], EFFICIENCY_ARIA[mode]] as const), (value) => change((d) => { d.efficiencyMode = value; }));
   row(powerCard, 'efficiency', efficiency.root);
   const memoryCard = card('performance', 'Memory');
   const sleep = switchControl((on) => change((d) => { d.sleepEnabled = on; }));
@@ -1284,7 +1290,7 @@ export function startSettingsPage(root: HTMLElement): void {
       sleepSelect.set(String(value));
     }
   };
-  row(memoryCard, 'sleepAfter', sleepHost);
+  const sleepAfterRow = row(memoryCard, 'sleepAfter', sleepHost);
 
   // --- start page --- the Start page section builds its own rows through this page's helpers
   const startSection = mountStartSection({
@@ -1450,7 +1456,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // Updates
   const updateCard = card('updates');
   const autoUpdate = switchControl((on) => { if (cmd({ a: 'autoupdate', on })) pending += 1; });
-  row(updateCard, 'autoUpdate', autoUpdate.root);
+  const autoUpdateRow = row(updateCard, 'autoUpdate', autoUpdate.root);
   const statusBox = el('div', 'sp-update');
   const statusIcon = el('span', 'sp-update-icon');
   const statusText = el('div', 'sp-text');
@@ -1980,7 +1986,9 @@ export function startSettingsPage(root: HTMLElement): void {
     efficiency.set(d.efficiencyMode);
     sleep.set(d.sleepEnabled);
     paintSleepSelect(d.sleepAfterSecs);
-    sleepSelect?.button.toggleAttribute('disabled', !d.sleepEnabled);
+    // "Sleep after" only acts while Sleep tabs is on: otherwise it rests and leaves the page (search still finds it).
+    sleepSelect?.button.toggleAttribute('disabled', !s.readable || !d.sleepEnabled);
+    restRow(sleepAfterRow.root, s.readable && !d.sleepEnabled);
     downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Downloads';
     downloadAsk.set(s.downloadAsk);
     translateOffer.set(s.translateOffer);
@@ -1989,7 +1997,9 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const control of tabControls.values()) { control.set(s.tabOptions); control.disable(!s.readable); }
     themeRows.apply(s.themeOptions, s.readable, d.window.rangeButtons); // --- theme options ---
     autoUpdate.set(s.autoUpdate);
+    // A build that cannot update itself (a developer build) has nothing for the switch to turn on.
     autoUpdate.disable(s.update === 'unavailable');
+    restRow(autoUpdateRow.root, s.update === 'unavailable');
     const view = updateView(s);
     statusBox.dataset.tone = view.tone;
     statusIcon.replaceChildren(view.busy ? el('span', 'bw-spinner') : icon(view.tone === 'warn' ? 'warning' : view.action === 'restart' ? 'download' : 'check', { size: 20 }));
