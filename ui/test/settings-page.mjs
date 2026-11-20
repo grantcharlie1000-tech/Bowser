@@ -2519,10 +2519,9 @@ test('simple: Manage on the profile row opens All settings at Profiles', () => {
 
 test('settings rows render a single line of text', () => {
   // Only rows that must say what leaves Bowser or what is replaced carry a sub-line: Search suggestions
-  // (what turning it on sends, and to whom) and the backup file (what it holds; what a restore replaces);
-  // and the start page's two switches, whose names alone did not say what a new tab gains.
+  // (what turning it on sends, and to whom) and the backup file (what it holds; what a restore replaces).
   const described = logic.ROWS.filter((row) => row.description !== '').map((row) => row.id);
-  assert.deepEqual(described, ['startDials', 'startWidgets', 'searchSuggestions', 'backupExport', 'backupImport']);
+  assert.deepEqual(described, ['searchSuggestions', 'backupExport', 'backupImport']);
   deliver(fixture.snap);
   const nodeOf = (id) => app.querySelector(`[data-opens="${id}"]`) ?? app.querySelector(`.sp-row[data-row="${id}"]`);
   for (const id of ['reset', 'deleteData', 'winReset', 'panelReset']) {

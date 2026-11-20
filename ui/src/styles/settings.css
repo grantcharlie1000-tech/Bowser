@@ -3739,22 +3739,6 @@
   white-space: nowrap;
 }
 
-/* The start page's two switches are the exception: their names alone did not say what a new tab gains,
-   so their line shows, under the label. (Same specificity as the rule above, and later, so it wins.) */
-:where(#app.sp-root) :is(.sp-row[data-row="startDials"], .sp-row[data-row="startWidgets"]):has(> .sp-ctl) > .sp-text {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-}
-:where(#app.sp-root) :is(.sp-row[data-row="startDials"], .sp-row[data-row="startWidgets"]):has(> .sp-ctl) > .sp-text > .sp-desc:not(.sp-path) {
-  position: static;
-  width: auto;
-  height: auto;
-  overflow: visible;
-  clip-path: none;
-  white-space: normal;
-}
-
 /* ---- Welcome (bowser://settings/welcome, ui/src/welcome.ts, docs/design/welcome.md) ----
  * The first-run flow, drawn over the settings page while the tab is on the welcome section.
  * Hello and Done are a centred hero; the steps between put the question on the left and a live
