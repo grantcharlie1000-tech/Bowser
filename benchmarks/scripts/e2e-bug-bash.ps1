@@ -161,7 +161,21 @@ function Wheel([int]$x, [int]$y, [int]$notches) {
 }
 function Keys([string]$k, [int]$wait = 400) { [Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds $wait }
 function Literal([string]$text) { return ($text -replace '([\+\^%~\(\)\{\}\[\]])', '{$1}') }
-function Go([string]$url) { Keys '^l' 500; Keys '^a' 150; Keys (Literal $url) 200; Keys '{ENTER}' 300 }
+function Field { return (FindAll (Root) $CT::Edit { param($n) $n -like 'Address and search bar*' } | Select-Object -First 1) }
+function FieldValue { $f = Field; if (-not $f) { return $null }; try { return $f.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { return $null } }
+# Types an address into the address field and goes there; the field's text is checked before Enter
+# (a slow window can drop the first keys), and typed again when it is wrong.
+function Go([string]$url) {
+  for ($try = 0; $try -lt 3; $try++) {
+    Front | Out-Null
+    Keys '^l' 700; Keys '^a' 200; Keys (Literal $url) 500
+    $v = FieldValue
+    if ($null -eq $v -or $v.StartsWith($url) -or ($url.StartsWith($v.TrimEnd('/')) -and $v.Length -gt 8)) { Keys '{ENTER}' 300; return }
+    Note "address field holds '$v', not '$url': typing it again"
+    Keys '{ESC}' 300
+  }
+  Keys '{ENTER}' 300
+}
 function Shot([string]$name, [int]$x = -1, [int]$y = -1, [int]$w = -1, [int]$ht = -1, [double]$scale = 1) {
   Start-Sleep -Milliseconds 300
   $r = New-Object E2E+RECT; [E2E]::GetWindowRect($script:h, [ref]$r) | Out-Null
@@ -248,37 +262,62 @@ function ParseSession([string]$text) {
 function Flow-Groups {
   Begin-Flow 'groups'
   $dir = New-DataDir 'groups' @()
-  Start-Bowser $dir @("$A/site/alpha?t=Alpha%20site&c=d93025", "$B/site/beta?t=Beta%20site&c=1a73e8") 'groups-1'
+  # Alpha opens with the launch; Beta is handed over like a clicked link, so it is a live, loaded tab.
+  Start-Bowser $dir @("$A/site/alpha?t=Alpha%20site&c=d93025") 'groups-1'
+  Start-Sleep -Seconds 3
+  Forward @("$B/site/beta?t=Beta%20site&c=1a73e8")
   $tabsUp = WaitFor { $t = Tabs; if ((@($t | Where-Object { $_.name -like 'Alpha*' }).Count -ge 1) -and (@($t | Where-Object { $_.name -like 'Beta*' }).Count -ge 1)) { $t } } 30000
   Check 'two tabs of two sites open' ([bool]$tabsUp) ((Tabs | ForEach-Object { $_.name }) -join ' | ')
   Start-Sleep -Seconds 2
   Shot 'g01-two-tabs'
 
-  # 1a. Tab menu > Tab group > Add tab to new group
+  # 1a. Tab menu > Tab group > Add tab to new group, clicked with the mouse like a person would.
   $opened = TabMenu 'Alpha'
   Shot 'g02-tab-menu'
   $sub = $opened -and (ClickMenu 'Tab group')
   Shot 'g03-tab-group-submenu'
-  $made = $sub -and (ClickMenu 'Add tab to new group')
+  $item = $(if ($sub) { MenuItem 'Add tab to new group' } else { $null })
+  $made = $false
+  if ($item) {
+    $c = Center $item; Click $c[0] $c[1]; $made = $true; Note 'menu: Add tab to new group'
+    # Watch the group editor (HTML hover layer) for 3 s from the click, the pointer left on the row.
+    $clock = [Diagnostics.Stopwatch]::StartNew(); $first = $null; $last = $null
+    while ($clock.ElapsedMilliseconds -lt 3000) { if (Popup 'BowserHtmlHover') { if ($null -eq $first) { $first = $clock.ElapsedMilliseconds }; $last = $clock.ElapsedMilliseconds }; Start-Sleep -Milliseconds 25 }
+    $current.data.editor_after_menu_click = [ordered]@{ first_seen_ms = $first; last_seen_ms = $last; still_open_at_3s = [bool](Popup 'BowserHtmlHover') }
+    Note ("group editor after the click: first seen {0} ms, last seen {1} ms, open at 3 s {2}" -f $first, $last, [bool](Popup 'BowserHtmlHover'))
+  }
   Check 'menu: Tab group > Add tab to new group' $made "menu opened $opened, submenu $sub"
-  # The group editor opens at once (HTML hover layer).
-  $editor = WaitFor { Popup 'BowserHtmlHover' } 5000 200
-  Start-Sleep -Milliseconds 600
   Shot 'g04-group-editor'
-  $field = $null
-  if ($editor) { $field = WaitFor { FindAll ($UIA::FromHandle($editor)) $CT::Edit { param($n) $n -eq 'Group name' } | Select-Object -First 1 } 5000 }
-  Check 'group editor opens with a name field' ([bool]$field) "hover window $editor; visible: $([E2E]::Visible([uint32]$script:bowser.Id) -join ' | ')"
+  $editor = Popup 'BowserHtmlHover'
+  Check 'the group editor opens at once and stays open (pointer still on the menu row)' ([bool]$editor) ($current.data.editor_after_menu_click | ConvertTo-Json -Compress)
+  $field = $null; $focused = $false
+  if ($editor) {
+    $field = WaitFor { FindAll ($UIA::FromHandle($editor)) $CT::Edit { param($n) $n -eq 'Group name' } | Select-Object -First 1 } 5000
+    if ($field) { try { $focused = [bool]$field.Current.HasKeyboardFocus } catch { } }
+    Check 'its name field has the keyboard (type the name straight away)' $focused "field found $([bool]$field), focused $focused, foreground $([E2E]::Cls([E2E]::GetForegroundWindow()))"
+  } else {
+    # The way left without it: hover the new group's ball, which opens the same editor.
+    $top = (WinRect).T
+    $ball0 = WaitFor { FindAll (Root) $null { param($n) $n -like 'Group *' -or $n -eq 'Tab island' } | Where-Object { $r = $_.Current.BoundingRectangle; $r.Width -gt 2 -and $r.Height -gt 2 -and $r.Y -lt $top + 80 } | Select-Object -First 1 } 5000
+    if ($ball0) {
+      $c = Center $ball0; [E2E]::SetCursorPos($c[0], $c[1]) | Out-Null; Note "hovering the group ball '$($ball0.Current.Name)'"
+      $editor = WaitFor { Popup 'BowserHtmlHover' } 4000 100
+      if ($editor) { $field = WaitFor { FindAll ($UIA::FromHandle($editor)) $CT::Edit { param($n) $n -eq 'Group name' } | Select-Object -First 1 } 5000 }
+      $current.data.editor_via_ball_hover = [bool]$field
+    } else { Note 'no group ball found to hover' }
+  }
   if ($field) {
-    $c = Center $field; Click $c[0] $c[1]; Start-Sleep -Milliseconds 500
-    Keys '^a' 200; Keys 'Research' 400
+    if (-not $focused) { $c = Center $field; Click $c[0] $c[1]; Start-Sleep -Milliseconds 500; Keys '^a' 200 }
+    Keys 'Research' 500
     Shot 'g05-name-typed'
     $teal = FindAll ($UIA::FromHandle($editor)) $null { param($n) $n -eq 'Teal' } | Select-Object -First 1
     if ($teal) { $c = Center $teal; Click $c[0] $c[1]; Note 'clicked Teal'; Start-Sleep -Milliseconds 900 } else { Note 'no Teal swatch' }
     Shot 'g06-teal-picked'
     Keys '{ENTER}' 600
   }
-  # Move the pointer to the page so the editor closes.
+  # Move the pointer to the page so the editor closes (a click there if it is still up).
   $wr = WinRect; [E2E]::SetCursorPos($wr.L + 640, $wr.T + 500) | Out-Null; Start-Sleep -Milliseconds 1200
+  if (Popup 'BowserHtmlHover') { Click ($wr.L + 640) ($wr.T + 500); Start-Sleep -Milliseconds 800 }
   $ball = WaitFor { FindAll (Root) $null { param($n) $n -eq 'Research' } | Where-Object { $_.Current.BoundingRectangle.Width -gt 2 } | Select-Object -First 1 } 6000
   Check 'strip shows the group named Research' ([bool]$ball) $(if ($ball) { "ball at $($ball.Current.BoundingRectangle)" } else { 'no element named Research' })
   Shot 'g07-group-made'
@@ -465,7 +504,7 @@ function Flow-ServiceWorker {
   Check 'worker installed and controls the page' ($installed.Count -ge 1 -and $installed[0].controlled) ($installed | ConvertTo-Json -Compress)
   Check "alone: $Runs controlled loads of $Fetches worker fetches" ($r1.Count -ge $Runs) ($current.data.alone | ConvertTo-Json -Compress)
   # Fifteen more live tabs (each forwarded address opens as a live foreground tab).
-  $fill = @(); for ($i = 1; $i -le 15; $i++) { $fill += "$A/site/filler$i?t=Filler%20$i&c=5f6368" }
+  $fill = @(); for ($i = 1; $i -le 15; $i++) { $fill += "$A/site/filler${i}?t=Filler%20${i}&c=5f6368" }
   Forward $fill[0..7]; Start-Sleep -Seconds 3
   Forward $fill[8..14]; Start-Sleep -Seconds 5
   $count = @(Tabs).Count

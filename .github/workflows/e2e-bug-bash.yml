@@ -3,7 +3,8 @@ name: E2E bug-bash flows
 # Builds Bowser as shipped and drives the real app on a hosted Windows desktop through the
 # fix/bug-bash user flows (benchmarks/scripts/e2e-bug-bash.ps1): manual tab groups and their
 # restore, the service-worker load with 15 tabs open, a toolbar with many buttons, and 40 tabs with
-# the mouse wheel. The service-worker timing also runs on main for comparison.
+# the mouse wheel. The same harness also runs against main (before the bug bash) and against
+# fix/bug-bash as it was before this branch's fixes, for comparison.
 # Evidence only (screenshots, results.json/md): nothing here gates a merge.
 
 on:
@@ -24,10 +25,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # This branch: every flow.
           - label: fix
+            ref: ''
             flows: groups,toolbar,strip,sw
+          # main, before the bug bash: the same measurements, for comparison.
           - label: main
+            ref: main
             flows: sw,toolbar,strip
+          # fix/bug-bash without this branch's fixes: the group flow it was failing.
+          - label: bugbash
+            ref: fix/bug-bash
+            flows: groups
     defaults:
       run:
         shell: pwsh
@@ -37,12 +46,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Check out main to build it
-        if: matrix.label == 'main'
+      - name: Check out the build to compare
+        if: matrix.ref != ''
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: main
-          path: main-src
+          ref: ${{ matrix.ref }}
+          path: other-src
           persist-credentials: false
       - name: Install official Rust toolchain
         run: |
@@ -50,14 +59,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
       - name: Build Bowser (HTML chrome, release, as shipped)
         run: |
-          if ('${{ matrix.label }}' -eq 'main') { Set-Location main-src }
+          if ('${{ matrix.ref }}' -ne '') { Set-Location other-src }
           cargo +stable build --locked --release --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
           git log -1 --format='built %H %s'
       - name: Run the flows
         timeout-minutes: 30
         run: |
-          $exe = if ('${{ matrix.label }}' -eq 'main') { 'main-src/target/release/bowser.exe' } else { 'target/release/bowser.exe' }
+          $exe = if ('${{ matrix.ref }}' -ne '') { 'other-src/target/release/bowser.exe' } else { 'target/release/bowser.exe' }
           powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/e2e-bug-bash.ps1 -Exe $exe -Out "$env:RUNNER_TEMP/e2e" -Label '${{ matrix.label }}' -Flows '${{ matrix.flows }}'
           Get-Content "$env:RUNNER_TEMP/e2e/results.md"
       - name: Keep the evidence
@@ -68,3 +77,36 @@ jobs:
           path: ${{ runner.temp }}/e2e
           if-no-files-found: warn
           retention-days: 14
+
+  # The unit tests next to what this branch changed (the hover layer's protocol and the tab groups).
+  unit:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+      - name: Rust tests (hover layer, protocol, tab groups, session)
+        run: |
+          cargo +stable test --locked --features html-chrome-default --lib -- hover island stack tab_group session
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed.' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: UI tests
+        working-directory: ui
+        run: |
+          npm ci
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { throw 'typecheck failed' }
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'UI tests failed' }
