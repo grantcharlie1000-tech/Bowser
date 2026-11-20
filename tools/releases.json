@@ -1,5 +1,33 @@
 [
  {
+  "tag": "v0.0.40",
+  "date": "2026-11-20",
+  "prs": [
+   [
+    183,
+    "Pin Stable to v0.0.39"
+   ],
+   [
+    184,
+    "Spoiler Firewall: fix playback, typing, and GTA VI image detection"
+   ],
+   [
+    185,
+    "Rework bookmarks on the Chrome / Edge / Firefox model"
+   ],
+   [
+    186,
+    "Fix Clippy on the bookmark icon cache"
+   ],
+   [
+    187,
+    "Bump Bowser to 0.0.40"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from b25e72cc702e53a7309d4534bdcfaf84e543f0b0. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.39",
   "date": "2026-11-19",
   "prs": [
