@@ -214,6 +214,20 @@ jobs:
       - name: Test shipped Shield extension
         if: matrix.shard == 2
         run: node --test extensions/bowser-shield/test/run-tests.js
+      - name: Install locked Spoiler Firewall browser test dependencies
+        if: matrix.shard == 2
+        working-directory: extensions/spoiler-firewall/test/e2e
+        run: npm ci --no-audit --no-fund
+      - name: Verify text-only video filtering and live spoiler term updates in Edge
+        if: matrix.shard == 2
+        working-directory: extensions/spoiler-firewall
+        run: |
+          node build/build.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Spoiler Firewall build failed.' }
+          node test/e2e/youtube.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'YouTube spoiler regression tests failed.' }
+          node test/e2e/bowser-feed.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Live spoiler term update tests failed.' }
 
 
   ui-repro:

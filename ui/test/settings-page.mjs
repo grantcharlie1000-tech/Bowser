@@ -131,6 +131,7 @@ test('browser-customizability fields: parse, draftOf and save', () => {
     assert.equal(matches.length, 1, `${line} appears exactly once`);
   }
   assert.doesNotMatch(text, /defaultBrowser|default_browser/);
+  assert.match(logic.saveText({ ...draft, spoilerOcr: true }), /^spoiler_ocr=false$/m, 'legacy drafts cannot reactivate image scanning');
 
   for (const broken of [
     { theme: 'dark' },

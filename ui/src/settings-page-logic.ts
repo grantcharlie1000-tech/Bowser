@@ -567,7 +567,7 @@ export function saveText(draft: Draft): string | null {
     `spoiler_protection=${draft.spoilerProtection}`,
     `spoiler_mode=${draft.spoilerMode}`,
     `spoiler_reduced_effects=${draft.spoilerReducedEffects}`,
-    `spoiler_ocr=false`, // retired legacy key; never reactivate image checking
+    `spoiler_ocr=false`,
     `spoiler_feed=${draft.spoilerFeed}`,
   );
   const startLines = startSaveLines(draft.start);

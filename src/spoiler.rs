@@ -181,9 +181,9 @@ pub fn bundle_version(bundle: &str) -> &str {
         .unwrap_or("unknown")
 }
 
-/// Per-tab secrets for the native OCR pull (docs/spoiler-firewall.md). `hook` names the one
+/// Per-tab secrets for live signed term updates (docs/spoiler-firewall.md). `hook` names the one
 /// non-enumerable `window` property the bundle defines; `key` must accompany every call to it, so a
-/// page that lists its own property names still cannot drain requests or forge results.
+/// page that lists its own property names still cannot forge updates. The legacy type name is retained.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OcrCredentials {
     pub hook: String,
@@ -191,7 +191,7 @@ pub struct OcrCredentials {
 }
 
 impl OcrCredentials {
-    /// 128 random bits each, from the system RNG. `None` when the RNG fails: OCR is then off.
+    /// 128 random bits each, from the system RNG. `None` when the RNG fails: live feed pushes are unavailable.
     pub fn generate() -> Option<Self> {
         use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
         let mut bytes = [0u8; 32];
@@ -217,8 +217,8 @@ impl OcrCredentials {
 
 /// The config object the engine reads: `{"enabled":true,"mode":"strict","reducedEffects":false,
 /// "version":"1.0.0","private":false,"ocr":false}`; with credentials the last members become
-/// `"ocr":true,"ocrHook":"__sfw_<hex>","ocrKey":"<hex>"`. OCR is on only when the setting is on, protection
-/// is on and well-formed credentials are given.
+/// `"ocr":false,"ocrHook":"__sfw_<hex>","ocrKey":"<hex>"`. The hook is included only when protection
+/// is on and well-formed credentials are given. Image scanning stays off; the hook serves live term updates.
 pub fn config_json(
     settings: &SpoilerSettings,
     version: &str,
@@ -248,12 +248,10 @@ pub fn config_json_with_feed(
         json_string(version),
         private,
     );
-    // The hook (a per-tab closure) exists whenever credentials do, even with OCR off: Bowser also uses it
-    // to push a new term update into pages already open. "ocr" says whether image requests are served.
+    // Keep the per-tab hook for pushing term updates into pages already open. Image scanning stays off.
     match ocr.filter(|c| settings.enabled && c.is_well_formed()) {
         Some(c) => json.push_str(&format!(
-            ",\"ocr\":{},\"ocrHook\":{},\"ocrKey\":{}}}",
-            false, // retain the hook for signed term updates, but never allow image scanning
+            ",\"ocr\":false,\"ocrHook\":{},\"ocrKey\":{}}}",
             json_string(&c.hook),
             json_string(&c.key)
         )),
@@ -610,16 +608,14 @@ mod tests {
         for enabled in [true, false] {
             for mode in Mode::ALL {
                 for reduced_effects in [true, false] {
-                    for ocr in [false] {
-                        for feed in [true, false] {
-                            let settings = SpoilerSettings { enabled, mode, reduced_effects, ocr, feed };
-                            let text = settings
-                                .lines()
-                                .iter()
-                                .map(|(key, value)| format!("{key}={value}\n"))
-                                .collect::<String>();
-                            assert_eq!(parse(&text), settings, "{text}");
-                        }
+                    for feed in [true, false] {
+                        let settings = SpoilerSettings { enabled, mode, reduced_effects, ocr: false, feed };
+                        let text = settings
+                            .lines()
+                            .iter()
+                            .map(|(key, value)| format!("{key}={value}\n"))
+                            .collect::<String>();
+                        assert_eq!(parse(&text), settings, "{text}");
                     }
                 }
             }

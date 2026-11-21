@@ -643,7 +643,7 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
             "spoiler_protection" => settings.spoiler.enabled = match value { "true" => true, "false" => false, _ => return false },
             "spoiler_mode" => { let Some(mode) = crate::spoiler::Mode::ALL.into_iter().find(|mode| mode.key() == value) else { return false; }; settings.spoiler.mode = mode; }
             "spoiler_reduced_effects" => settings.spoiler.reduced_effects = match value { "true" => true, "false" => false, _ => return false },
-            "spoiler_ocr" => settings.spoiler.ocr = match value { "true" => true, "false" => false, _ => return false },
+            "spoiler_ocr" => settings.spoiler.ocr = match value { "true" | "false" => false, _ => return false },
             "spoiler_feed" => settings.spoiler.feed = match value { "true" => true, "false" => false, _ => return false },
             _ => return false,
         }
@@ -766,6 +766,9 @@ mod tests {
         assert!(settings.spoiler.reduced_effects);
         assert!(apply_settings_text(&mut settings, &format!("{valid}\nspoiler_protection=true\nspoiler_mode=lockdown\nspoiler_reduced_effects=false")));
         assert!(settings.spoiler.enabled);
+        assert!(apply_settings_text(&mut settings, &format!("{valid}\nspoiler_ocr=true")));
+        assert!(!settings.spoiler.ocr, "an older settings page cannot re-enable retired image scanning");
+        assert!(settings.spoiler.enabled, "retiring image scanning leaves text protection enabled");
         for bad in ["spoiler_protection=off", "spoiler_protection=1", "spoiler_protection=", "spoiler_mode=Strict", "spoiler_mode=off", "spoiler_reduced_effects=yes", "spoiler_ocr=off", "spoiler_ocr=1"] {
             assert!(!apply_settings_text(&mut Settings::default(), &format!("{valid}\n{bad}")), "{bad}");
         }

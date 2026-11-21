@@ -134,9 +134,9 @@ are unchanged. Cost: while protection is on, web notifications from sites never 
   characters of text) that holds a shielded block is covered whole in the same evaluation pass, so a spoiler's picture
   (an `img` or a CSS `background-image`), links and captions are covered with it; a generic card with an inline or
   computed `background-image` counts as media. A long article of many paragraphs is still shielded per paragraph.
-- **Image documents.** A top-level image on a high-risk host (`https://i.imgur.com/x.png`) is held and read like any
-  other media of that host: the body is the unit, spoiler text covers it, a clean read releases it, an unreadable one stays
-  covered in Strict.
+- **Image documents.** A top-level image on a high-risk host (`https://i.imgur.com/x.png`) uses the body as its
+  filtering unit. Bowser checks available title, URL and text context; it does not inspect the image pixels or hold it
+  awaiting OCR. An image-only spoiler with neutral metadata may remain visible, including in Strict.
 - **More high-risk adapters:** imgur, 4chan, GTAForums, ResetEra, Telegram Web, Kick, Tumblr, Steam Community,
   rockstargames.com, games press and guides (IGN, GameSpot, Kotaku, Polygon, Eurogamer, GamesRadar, PC Gamer, VG247,
   Push Square, Pure Xbox, GameFAQs and similar) and Fandom wikis (`gta.fandom.com` is hot for pages naming GTA VI and
