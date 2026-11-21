@@ -239,7 +239,6 @@ pub fn known_small(url: &str) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Status {
     Ok,
-    Visual,
     Unavailable,
     Error,
     Skipped,
@@ -249,7 +248,6 @@ impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
-            Self::Visual => "visual",
             Self::Unavailable => "unavailable",
             Self::Error => "error",
             Self::Skipped => "skipped",
