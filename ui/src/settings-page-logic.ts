@@ -68,11 +68,11 @@ export const SPOILER_MODES = ['lockdown', 'strict', 'balanced'] as const;
 export type SpoilerMode = typeof SPOILER_MODES[number];
 export const SPOILER_MODE_LABELS: Readonly<Record<SpoilerMode, string>> = { lockdown: 'Lockdown', strict: 'Strict', balanced: 'Balanced' };
 export const SPOILER_MODE_HINTS: Readonly<Record<SpoilerMode, string>> = {
-  lockdown: 'Hides anything that mentions GTA VI and keeps its images and video hidden until you reveal them. Hides the most, including some harmless posts.',
-  strict: 'Hides anything that reads like a GTA VI spoiler, and media on sites where spoilers are common. Recommended.',
+  lockdown: 'Hides GTA VI mentions in posts and video details, including their attached media. May also hide harmless content.',
+  strict: 'Checks posts, comments, video titles, descriptions and captions for GTA VI spoiler language. Recommended.',
   balanced: 'Hides clear spoilers only. A plain mention of the game, or a spoiler written in code words, can get through.',
 };
-export const SPOILER_LIMITS_NOTE = 'Applies to pages you open or reload from now on. It reads text, so a screenshot with no readable text or a spoiler in code words can get through. Not notifications or other apps. Unofficial; not affiliated with Rockstar Games or Take-Two.';
+export const SPOILER_LIMITS_NOTE = 'Checks written posts, comments, video titles, descriptions and accessible captions. Image pixels, video frames and audio are not scanned; image-only spoilers and coded wording can get through. Unofficial; not affiliated with Rockstar Games or Take-Two.';
 export const SPOILER_OFF_WARNING = 'GTA VI spoilers will no longer be hidden on any page, including private tabs and guest windows. Pages already open are not changed.';
 export const MIN_ZOOM = 25;
 export const MAX_ZOOM = 500;
@@ -485,7 +485,7 @@ export function restingPageRows(
   shortcutsEnabled: boolean,
 ): ReadonlySet<string> {
   const rest = new Set<string>();
-  if (!draft.spoilerProtection) for (const id of ['spoilerMode', 'spoilerReducedEffects', 'spoilerOcr']) rest.add(id);
+  if (!draft.spoilerProtection) for (const id of ['spoilerMode', 'spoilerReducedEffects']) rest.add(id);
   if (!translateOffer) rest.add('translateAuto');
   if (!shortcutsEnabled) for (const id of ['ctrlTabMru', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs']) rest.add(id);
   if (draft.tabLayout !== 'vertical' && draft.tabLayout !== 'vertical-right') rest.add('ctrlSVerticalTabs');
@@ -567,7 +567,7 @@ export function saveText(draft: Draft): string | null {
     `spoiler_protection=${draft.spoilerProtection}`,
     `spoiler_mode=${draft.spoilerMode}`,
     `spoiler_reduced_effects=${draft.spoilerReducedEffects}`,
-    `spoiler_ocr=${draft.spoilerOcr}`,
+    `spoiler_ocr=false`, // retired legacy key; never reactivate image checking
     `spoiler_feed=${draft.spoilerFeed}`,
   );
   const startLines = startSaveLines(draft.start);
@@ -677,7 +677,7 @@ export const AREAS: readonly AreaSpec[] = [
     group('history', 'History and tracking', 'privacy', ['history', 'historyRetention', 'tracking']),
     group('siteData', 'Site data', 'privacy', ['deleteData', 'siteRules', 'dashboard']),
     group('security', 'Security', 'privacy', ['secHttps', 'secBase', 'secJs']),
-    group('spoilers', 'Spoiler protection', 'privacy', ['spoilerProtection', 'spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'spoilerFeed', 'spoilerNote']),
+    group('spoilers', 'Spoiler protection', 'privacy', ['spoilerProtection', 'spoilerMode', 'spoilerReducedEffects', 'spoilerFeed', 'spoilerNote']),
   ] },
   { key: 'passwords', title: 'Passwords and autofill', nav: 'Passwords', lead: '', aliases: 'autofill addresses payment cards generator import export', parts: ['passwords'], groups: [
     group('passwords', 'Passwords and autofill', 'passwords', ['passwords']),
@@ -885,7 +885,6 @@ const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'spoilerProtection', section: 'privacy', label: 'GTA VI spoilers', aria: 'Hide GTA VI spoilers', description: '', keywords: 'spoiler spoilers gta 6 vi grand theft auto rockstar firewall protection shield hide block leak ending Hide GTA VI spoilers Spoiler Firewall for GTA VI is built in and on by default. It covers every tab, including private tabs and guest windows.', reload: true },
   { id: 'spoilerMode', section: 'privacy', label: 'How much to hide', description: '', keywords: 'spoiler mode lockdown strict balanced gta firewall level hide How much to hide', reload: true },
   { id: 'spoilerReducedEffects', section: 'privacy', label: 'Simple covers', aria: 'Simpler spoiler covers', description: '', keywords: 'spoiler reduced effects motion blur animation performance accessibility gta Simpler spoiler covers Opaque covers with no blur or animation. Lighter on slow computers.', reload: true },
-  { id: 'spoilerOcr', section: 'privacy', label: 'Scan images', aria: 'Scan images for text on this device', description: '', keywords: 'spoiler ocr image text screenshot scan on-device gta Scan images for text Reads text in images on sites like X, Reddit and YouTube so a spoiler inside a screenshot is hidden too. Nothing leaves your computer. Needs a Windows OCR language; images in other formats may not be read.', reload: true },
   { id: 'spoilerFeed', section: 'privacy', label: 'Term updates', aria: 'Download spoiler term updates', description: '', keywords: 'spoiler term updates feed word list download signed gta names missions Download spoiler term updates Fetches a small signed word list about every 12 hours so new names and missions are covered before Bowser itself updates. It sends no browsing data and can only add protection.' },
   { id: 'spoilerNote', section: 'privacy', label: 'Spoiler limits', aria: SPOILER_LIMITS_NOTE, description: '', keywords: 'spoiler limits limitations images screenshots video notifications unofficial gta What spoiler protection cannot do ' + SPOILER_LIMITS_NOTE },
   { id: 'allow', section: 'privacy', label: 'Skipped sites', aria: 'Sites the blocker skips', description: '', keywords: 'allow list exceptions whitelist adblock Sites the blocker skips The blocker never blocks on these sites.', reload: true },
