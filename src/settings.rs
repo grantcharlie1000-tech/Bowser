@@ -119,7 +119,7 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # spoiler_protection=on\r\n\
     # spoiler_mode=strict\r\n\
     # spoiler_reduced_effects=false\r\n\
-    # spoiler_ocr=on\r\n\
+    # spoiler_ocr=off (legacy key; image scanning is retired)\r\n\
     # spoiler_feed=on\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely. Holds every setting
 /// with each list at its cap (`a_profile_with_every_list_at_its_cap_fits_the_file`).

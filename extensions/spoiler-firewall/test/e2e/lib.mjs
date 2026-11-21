@@ -8,7 +8,7 @@ import { decodePng, countSentinel } from "./png.mjs";
 export const BF_ARGS = ["--enable-begin-frame-control", "--run-all-compositor-stages-before-draw", "--disable-new-content-rendering-timeout", "--disable-threaded-animation", "--disable-threaded-scrolling", "--disable-checker-imaging", "--disable-image-animation-resync"];
 
 export async function launch({ beginFrame = false } = {}) {
-  return chromium.launch({ headless: true, executablePath: HEADLESS_SHELL || CHROMIUM, args: beginFrame ? [...BASE_ARGS, ...BF_ARGS] : BASE_ARGS });
+  return chromium.launch({ headless: true, executablePath: process.env.BOWSER_TEST_EDGE || HEADLESS_SHELL || CHROMIUM, args: beginFrame ? [...BASE_ARGS, ...BF_ARGS] : BASE_ARGS });
 }
 
 // In-page script, injected AFTER the engine bundle: per-frame DOM invariant probe + audit helper.

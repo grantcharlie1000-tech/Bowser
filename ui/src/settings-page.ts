@@ -1107,8 +1107,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(spoilerCard, 'spoilerMode', spoilerMode.root);
   const spoilerEffects = switchControl((on) => change((d) => { d.spoilerReducedEffects = on; }));
   row(spoilerCard, 'spoilerReducedEffects', spoilerEffects.root);
-  const spoilerOcr = switchControl((on) => change((d) => { d.spoilerOcr = on; }));
-  row(spoilerCard, 'spoilerOcr', spoilerOcr.root);
   const spoilerFeed = switchControl((on) => change((d) => { d.spoilerFeed = on; }));
   const spoilerFeedRow = row(spoilerCard, 'spoilerFeed', spoilerFeed.root);
   const spoilerNoteRow = row(spoilerCard, 'spoilerNote');
@@ -1743,7 +1741,7 @@ export function startSettingsPage(root: HTMLElement): void {
 
   let shortcutsOn = true;
   const restingControls: ReadonlyArray<readonly [string, { disable(off: boolean): void }]> = [
-    ['spoilerMode', spoilerMode], ['spoilerReducedEffects', spoilerEffects], ['spoilerOcr', spoilerOcr], ['translateAuto', translateAuto],
+    ['spoilerMode', spoilerMode], ['spoilerReducedEffects', spoilerEffects], ['translateAuto', translateAuto],
     ['ctrlTabMru', mru], ['ctrlShiftCCopyLink', copyLink], ['ctrlSVerticalTabs', vTabs],
   ];
   const paintResting = (readable: boolean, translateOn: boolean): void => {
@@ -1829,7 +1827,6 @@ export function startSettingsPage(root: HTMLElement): void {
     if (d.spoilerProtection === false && offAsked) { offAsked = false; paintOffAsk(); }
     spoilerMode.set(d.spoilerMode);
     spoilerEffects.set(d.spoilerReducedEffects);
-    spoilerOcr.set(d.spoilerOcr);
     spoilerFeed.set(d.spoilerFeed);
     if (s.spoilerFeedStatus) spoilerFeedRow.root.setAttribute('data-tip', s.spoilerFeedStatus);
     else spoilerFeedRow.root.removeAttribute('data-tip');

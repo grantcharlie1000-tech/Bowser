@@ -35,96 +35,35 @@ Built in, on by default, unofficial. The detection engine is shared with the Chr
   internal pages (`bowser://settings` and friends have no content WebView2; the engine never sees `bowser:`).
   Pinned web apps (side panels) are injected at creation and re-registered like tabs whenever the setting or the term
   update changes (`engine::web_app::refresh_spoiler_scripts`); a web app view whose registration fails after its retry is
-  stopped and hidden. They have no OCR hooks (text-only protection).
+  stopped and hidden. They have text-only protection.
 - Pop-ups open as ordinary Bowser tabs through the same creation path.
 - Extensions list (Ctrl+Shift+E): a first entry "Spoiler Firewall for GTA VI - built in (on, strict)" with its
   on/off check; it has no record and no remove entry, and choosing it opens Settings, Privacy and security.
 - Debug builds only: `BOWSER_SPOILER_BUNDLE=<file>` swaps the injected bundle (live testing without a rebuild).
-  Release builds do not contain this path. Likewise `BOWSER_SPOILER_OCR_TEST_HOST=<host>` (debug only) makes one
-  host count as a listed site for OCR, so local fixtures can exercise it.
+  Release builds do not contain this path. The legacy OCR test-host override cannot activate image scanning.
 
-## Native OCR (images with text)
+## Text-only post and video detection (21 November 2026)
 
-Screenshots of spoilers carry their text in pixels. With `spoiler_ocr=on` (default; settings page "Scan images
-for text (on-device)") Bowser reads text in images of high-risk sites with the Windows on-device OCR engine and
-hands it to the engine, which classifies it like any other text. Code: `src/spoiler_ocr.rs` (policy, parsing,
-cache, worker, WinRT) and `src/engine/webview2/ocr.rs` (per-tab events and pump).
+Bowser's built-in Spoiler Firewall checks **written webpage content**: posts, comments, thread context,
+headlines, video titles, descriptions, visible captions/live chat, image alt text and available page
+metadata. The shared classifier and signed spoiler term updates are unchanged.
 
-**There is no web message channel** (`IsWebMessageEnabled` stays off for this feature and the login handler is
-untouched). Native *pulls* with `ExecuteScript`:
+**No image pixels are inspected.** The old on-device OCR pipeline and perceptual matcher against
+Rockstar screenshots are retired. Bowser no longer subscribes to image response bodies, decodes them,
+calculates visual fingerprints or sends images to OCR workers. The fingerprint catalogue was removed.
+Images and videos may still be *covered* when the written text or page/thread context triggers a
+spoiler verdict; covering media is not the same as inspecting its pixels.
 
-1. The config JSON carries `"ocr":<bool>,"ocrHook":"__sfw_<128-bit hex>","ocrKey":"<128-bit hex>"` (the hook and key are present whenever protection is on and the hooks were installed, even with OCR off, because live term updates use the same hook; per tab; the
-   hook is created before the script is registered and kept for the tab's life, so re-registration after a
-   settings change keeps pages loaded earlier answerable). `bowser-host.js` defines that one property on
-   `window` (non-enumerable, non-writable, non-configurable, frozen `{drain, deliver, feed}`) and implements the shared
-   host contract `host.ocr = {request(req) -> Promise<{status:"ok",text}|{status:"unavailable"|"error"|"skipped"}>}`.
-   Requests are absolute http(s) only (data:/blob: answer `unavailable` at once), capped at 256 pending, and
-   settle `error` after 30 s (the runtime shows "Couldn't check image", never auto-reveals). Both hook calls take
-   the key, so a page that lists its own property names still cannot drain requests or forge answers (a
-   hardening over the first design, which had no key).
-2. A tab with protection and OCR on subscribes `WebResourceResponseReceived`. An image response (content type
-   `image/*` except SVG, status 200, GET, Content-Length 256 bytes to 5 MB, or unknown and capped while reading)
-   whose host is on the allowlist while the tab's top-level site is on it too is read with `GetContent` (the
-   IStream is copied on the UI thread) and parked in memory, unscanned (`ocr::Parked`: 600 bodies / 64 MB per
-   cache, oldest out first). It is queued for a worker only when the page asks about that URL (a drain names it,
-   or a held request is already waiting for it): the page asks only for media near the viewport whose post is not
-   already decided by its words, so most images a feed loads are never scanned. Scanning every image response
-   kept a core busy for as long as a feed was scrolled. Known-small URLs (X avatars in their `_normal` / `_mini` /
-   `_bigger` variants, emoji, hashflags) are not read at all and answer `skipped`. The response event needs no resource filter and never
-   holds a request, so the tab adds none: an image filter makes every matching request wait for Bowser's UI thread
-   (the blocker's `WebResourceRequested` handler), and with filters for YouTube, ytimg, twimg and the other listed hosts
-   that made the whole browser crawl. Only if a navigation to a listed site completes without one response event (a
-   runtime that raises it for filtered requests only) does the tab fall back to image filters for the listed hosts.
-   Native never fetches anything.
-3. The workers (one thread, two on a machine with 8 or more hardware threads, below-normal priority, sharing one queue; MTA, queue of 64 jobs / 48 MB with the oldest dropped first,
-   jobs of a previous document dropped by a per-tab navigation epoch) decodes with `BitmapDecoder`, skips images
-   under 96x64 and animated or multi-frame images (`skipped`), scales a short edge under 300 px up 2x, scales a
-   width above the engine limit down, cuts very tall images into overlapping 4096 px bands (at most 8) and runs
-   `Windows.Media.Ocr.OcrEngine` (user-profile languages, falling back to en-US). Where a small image (at most 2
-   bands, 2.5 megapixels) gives fewer than 12 letters or digits, up to two more installed engines from ja, zh, ko,
-   ru are tried and the richer text is kept. No engine at all: OCR is unavailable for the session and every
-   request answers `unavailable`.
-4. The pump drains the top frame and every tracked child frame (`FrameCreated`, nested `FrameCreated`, frame
-   `ExecuteScript`) only while the tab is visible: on DOMContentLoaded and NavigationCompleted, 150 ms after image
-   responses (debounced), on becoming visible, then every 300 ms for two empty rounds or while a frame still
-   returned requests. No timer runs for a hidden tab or a page off the allowlist. The drain result is hostile: it
-   is parsed strictly (one level of string wrapping, depth 32, at most 64 items, ids of at most 64 safe
-   characters, URLs of at most 2048 characters, http(s) only, no credentials) and anything else is dropped.
-5. A request is served only when the asking frame's site group and the image host's group are the same platform
-   (x/twitter/twimg, reddit/redditmedia/redd.it, instagram/facebook/fbcdn/threads, tiktok, bsky.app,
-   youtube/ytimg, twitch/jtvnw, discord/discordapp, imgur, 4chan/4cdn, gtaforums, resetera, telegram, kick, tumblr,
-   steamcommunity + steamuserimages, rockstargames.com, games press (IGN, GameSpot, Kotaku, Polygon, Eurogamer, GamesRadar,
-   PC Gamer, VG247, Push Square, Pure Xbox, GameFAQs and their CDNs) and fandom/wikia), so Bowser is never a cross-origin image reader elsewhere.
-   The frame's group comes from native navigation events, never from what the page says. A cached answer is
-   delivered at once; an image still being scanned is delivered when done; an image not seen yet is held 2 s (its
-   response normally precedes the request) and then answered `unavailable`. Deliveries are JSON inside a
-   JavaScript string literal with U+2028/2029 and `</` escaped, at most 192 KB per call, text at most 4096
-   UTF-16 units.
+The legacy `spoiler_ocr` setting is accepted only to migrate old profiles: it is always forced off,
+and saving settings writes `spoiler_ocr=off`. The UI no longer exposes image scanning. The per-tab
+hook and credentials remain because **signed term updates** use them to update already-open tabs;
+their image scanning branch is disabled. Existing Rust image-adapter code is retained for now but
+cannot be entered through Bowser's settings or native WebView2 image-response subscriptions.
 
-**Cache and privacy.** An in-memory LRU of 2000 entries per cache, keyed by (top-level site group, URL); private
-tabs have their own, cleared when the last private tab closes. OCR text is never written to disk and never
-logged (the policy log carries event names only). Everything stays on the machine.
-
-**Limits (honest).**
-- Bowser checks X photos and eligible YouTube thumbnails against a local catalogue of Rockstar screenshot
-  and video thumbnail fingerprints. An X image that does not match continues through OCR when available.
-  YouTube's per-card metadata remains the fallback when its visual check is unavailable or takes longer
-  than 1.5 seconds after dispatch. The catalogue detects close copies of known images. Original player
-  captures, heavy crops and novel gameplay scenes can pass when their surrounding text is clear.
-- OCR needs a Windows OCR language. English is installed with most Windows editions; others are optional
-  (Settings, Time and language, Language and region). Without the pack for the text's language, recognition of
-  that text is poor or empty.
-- WebP and AVIF decode only if Windows has the codec (AVIF needs the AV1 extension; WebP support depends on the
-  Windows build). A failed decode is cached as `unavailable` for that URL. No heavier decoder is bundled.
-- Animated images are not scanned (`skipped`). On a high-risk host in Strict and Lockdown a `skipped` image stays held
-  with the "Couldn't check image · Click to reveal" cover (only Balanced releases it; before, Strict released it).
-  Local `data:`/`blob:` images the engine never sends are the exception and keep the older rule. Video frames are not scanned.
-- A redirected image is cached under the URL the response event reports, which may differ from the `src` the page
-  asks about; that request answers `unavailable` after the grace. Whether an image served from the browser's HTTP
-  cache raises the response event is unverified (live check pending); if it does not, such an image answers
-  `unavailable` until it is fetched again.
-- Only sites on the allowlist are scanned; text in images on other sites is not read.
-- Stylised or low-contrast text, heavily compressed screenshots and handwriting may not be read.
+On YouTube, Bowser classifies titles/descriptions and visible caption or chat text when accessible;
+it does not watch video frames, transcribe audio or fetch full video transcripts. Standalone Chrome
+extension OCR is a separate, optional feature unaffected by this Bowser-only change. An image-only
+spoiler with neutral surrounding text may get through.
 
 ## Signed term updates
 
@@ -195,9 +134,9 @@ are unchanged. Cost: while protection is on, web notifications from sites never 
   characters of text) that holds a shielded block is covered whole in the same evaluation pass, so a spoiler's picture
   (an `img` or a CSS `background-image`), links and captions are covered with it; a generic card with an inline or
   computed `background-image` counts as media. A long article of many paragraphs is still shielded per paragraph.
-- **Image documents.** A top-level image on a high-risk host (`https://i.imgur.com/x.png`) is held and read like any
-  other media of that host: the body is the unit, spoiler text covers it, a clean read releases it, an unreadable one stays
-  covered in Strict.
+- **Image documents.** A top-level image on a high-risk host (`https://i.imgur.com/x.png`) uses the body as its
+  filtering unit. Bowser checks available title, URL and text context; it does not inspect the image pixels or hold it
+  awaiting OCR. An image-only spoiler with neutral metadata may remain visible, including in Strict.
 - **More high-risk adapters:** imgur, 4chan, GTAForums, ResetEra, Telegram Web, Kick, Tumblr, Steam Community,
   rockstargames.com, games press and guides (IGN, GameSpot, Kotaku, Polygon, Eurogamer, GamesRadar, PC Gamer, VG247,
   Push Square, Pure Xbox, GameFAQs and similar) and Fandom wikis (`gta.fandom.com` is hot for pages naming GTA VI and
@@ -242,7 +181,7 @@ substitution and frame coverage; the real engine still needs the same fixtures r
 
 ## Known limits
 
-Main-world script (a page can observe or tamper with it); images with no text; code words; sandboxed frames
+Main-world script (a page can observe or tamper with it); image-only spoilers; code words; sandboxed frames
 if the runtime withholds the script; other apps; the native
 (GDI) settings window has no spoiler controls (it keeps the saved values; use the settings page or settings.txt).
 A focused address bar shows the full URL on purpose.

@@ -125,12 +125,13 @@ test('browser-customizability fields: parse, draftOf and save', () => {
     'bookmarks_bar_tab_groups=false', 'side_panel_position=left', 'tab_preview_images=true', 'tab_preview_memory=true', 'font_size=medium',
     'ui_font=', 'default_zoom=100', 'show_zoom_indicator=true', 'new_tab_beside_active=true', 'ctrl_tab_mru=true', 'shift_right_click_context=false',
     'ctrl_shift_c_copy_link=true', 'ctrl_s_vertical_tabs=false', 'pin_new_tab_groups=false', 'split_edge_drop=true', 'block_youtube_video_ads=true',
-    'spoiler_protection=true', 'spoiler_mode=strict', 'spoiler_reduced_effects=false', 'spoiler_ocr=true', 'spoiler_feed=true',
+    'spoiler_protection=true', 'spoiler_mode=strict', 'spoiler_reduced_effects=false', 'spoiler_ocr=false', 'spoiler_feed=true',
   ]) {
     const matches = text.split('\n').filter((l) => l === line);
     assert.equal(matches.length, 1, `${line} appears exactly once`);
   }
   assert.doesNotMatch(text, /defaultBrowser|default_browser/);
+  assert.match(logic.saveText({ ...draft, spoilerOcr: true }), /^spoiler_ocr=false$/m, 'legacy drafts cannot reactivate image scanning');
 
   for (const broken of [
     { theme: 'dark' },
@@ -241,7 +242,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=true\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=last_session\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=false\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=last_session\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -269,6 +270,7 @@ test('search matches every word across label, description, keywords and section;
   assert.ok(logic.matchRows('youtube').has('blockYoutubeVideoAds'));
   assert.ok(logic.matchRows('gta').has('spoilerProtection'));
   assert.ok(logic.matchRows('spoiler lockdown').has('spoilerMode'));
+  assert.ok(!logic.ROWS.some((row) => row.id === 'spoilerOcr'), 'retired image scanner cannot be re-enabled in settings');
   assert.ok(logic.matchRows('frameless').has('frameless'));
   assert.ok(logic.matchRows('accent colour').has('themeAccent'));
   assert.ok(logic.matchRows('default browser').has('defaultBrowser'));
@@ -3238,7 +3240,7 @@ test('restingPageRows, restingAddressRows and restingCommandRows name exactly th
   assert.deepEqual(page(true, 'vertical', true, true), []);
   assert.deepEqual(page(true, 'vertical-right', true, true), []);
   assert.deepEqual(page(true, 'horizontal', true, true), ['ctrlSVerticalTabs'], 'Ctrl+S only exists in the vertical layouts');
-  assert.deepEqual(page(false, 'vertical', true, true), ['spoilerMode', 'spoilerOcr', 'spoilerReducedEffects']);
+  assert.deepEqual(page(false, 'vertical', true, true), ['spoilerMode', 'spoilerReducedEffects']);
   assert.deepEqual(page(true, 'vertical', false, true), ['translateAuto'], 'auto-translate waits for the offer');
   assert.deepEqual(page(true, 'vertical', true, false), ['ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'ctrlTabMru'], 'no chord runs with shortcuts off');
 
@@ -3262,13 +3264,13 @@ test('a row that cannot act is disabled and leaves the page; it comes back when 
   const switchOf = (id) => rowOf(id).querySelector('[role="switch"], [role="radiogroup"]');
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
   deliver(commandsSnap({ paletteTypes: ALL_TYPES }));
-  for (const id of ['spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'translateAuto', 'ctrlTabMru', 'ctrlShiftCCopyLink']) assert.ok(!resting(id), id);
+  for (const id of ['spoilerMode', 'spoilerReducedEffects', 'translateAuto', 'ctrlTabMru', 'ctrlShiftCCopyLink']) assert.ok(!resting(id), id);
   assert.ok(resting('ctrlSVerticalTabs'), 'Ctrl+S rests outside the vertical layouts');
   assert.equal(switchOf('ctrlSVerticalTabs').disabled, true);
 
-  // Spoiler protection off: the mode, the covers and the image scan rest; term updates stay.
+  // Spoiler protection off: its mode and cover effects rest; term updates stay.
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, spoilerProtection: false, ack: 'saved' } });
-  for (const id of ['spoilerMode', 'spoilerReducedEffects', 'spoilerOcr']) assert.ok(resting(id), id);
+  for (const id of ['spoilerMode', 'spoilerReducedEffects']) assert.ok(resting(id), id);
   assert.equal(switchOf('spoilerReducedEffects').disabled, true);
   assert.ok(!resting('spoilerFeed'));
   // No translate offer: auto-translate rests. A vertical layout brings Ctrl+S back.
@@ -3307,14 +3309,14 @@ test('a row that cannot act is disabled and leaves the page; it comes back when 
 test('a change that reaches pages as they load says so without a sub-line; labels say what the row does', () => {
   const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
   const reload = logic.ROWS.filter((row) => row.reload).map((row) => row.id).sort();
-  assert.deepEqual(reload, ['allow', 'blockYoutubeVideoAds', 'blocker', 'cookieNotices', 'feedsDetect', 'spoilerMode', 'spoilerOcr', 'spoilerProtection', 'spoilerReducedEffects']);
+  assert.deepEqual(reload, ['allow', 'blockYoutubeVideoAds', 'blocker', 'cookieNotices', 'feedsDetect', 'spoilerMode', 'spoilerProtection', 'spoilerReducedEffects']);
   for (const id of reload) {
     const node = rowOf(id);
     assert.equal(node.getAttribute('data-tip'), logic.RELOAD_NOTE, id);
     assert.equal(node.querySelector('.sp-flag'), null, `${id}: no sub-line`);
     assert.equal(node.querySelector('.sp-desc'), null, `${id}: no description`);
   }
-  for (const id of ['cookieNotices', 'blockYoutubeVideoAds', 'spoilerOcr', 'feedsDetect']) {
+  for (const id of ['cookieNotices', 'blockYoutubeVideoAds', 'feedsDetect']) {
     assert.equal(rowOf(id).querySelector('[role="switch"]').getAttribute('aria-description'), logic.RELOAD_NOTE, id);
   }
   assert.equal(rowOf('tracking').getAttribute('data-tip'), null, 'tracking prevention applies to open tabs at once');

@@ -52,6 +52,15 @@ await test("thumbnails of clear results show without waiting for OCR", async () 
   await ctx.close();
 });
 
+await test("text-only: video titles, descriptions and comments are filtered with no image inspection", async () => {
+  const { ctx, p } = await open("/watch", { ocr: null });
+  try {
+    await audit(p, "text-only watch page");
+    assert.equal(await p.evaluate(() => window.__sfw.ocr.log.length), 0, "no image OCR or visual requests");
+    assert.notEqual(await p.locator("#ytspoiler").getAttribute("data-sfw"), null, "spoiler video recommendation is shielded");
+  } finally { await ctx.close(); }
+});
+
 await test("live stream: the player plays uncovered; title, description, comments and chat are checked", async () => {
   const { ctx, p } = await open("/live/abc123");
   await audit(p, "live");

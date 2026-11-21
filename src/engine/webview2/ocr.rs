@@ -1,4 +1,4 @@
-//! Per-tab glue of the Spoiler Firewall's native OCR adapter (`crate::spoiler_ocr`,
+//! Legacy per-tab bridge for Spoiler Firewall term updates (image inspection retired; `crate::spoiler_ocr`,
 //! docs/spoiler-firewall.md). Everything here runs on the UI thread; only decoding and OCR run on
 //! the worker thread, whose results are collected by a short UI-thread poll timer.
 //!
@@ -276,9 +276,9 @@ impl Drop for TabOcr {
     }
 }
 
+// The verified-term update hook still needs to exist, but no image resources are read or decoded.
 fn setting_on() -> bool {
-    let settings = crate::spoiler::current();
-    settings.enabled && settings.ocr
+    false
 }
 
 impl TabOcr {
@@ -337,16 +337,20 @@ impl TabOcr {
             *self.webview.borrow_mut() = Some(webview.clone());
             let mut token = 0i64;
 
-            let weak = Rc::downgrade(self);
-            responses.add_WebResourceResponseReceived(
-                &WebResourceResponseReceivedEventHandler::create(Box::new(move |_sender, args| {
-                    if let (Some(tab), Some(args)) = (weak.upgrade(), args) {
-                        let _ = tab.on_response(&args);
-                    }
-                    Ok(())
-                })),
-                &mut token,
-            )?;
+            // Image inspection is retired. Keep the legacy handler type-checked but do not
+            // subscribe to image responses in text-only Bowser.
+            if setting_on() {
+                let weak = Rc::downgrade(self);
+                responses.add_WebResourceResponseReceived(
+                    &WebResourceResponseReceivedEventHandler::create(Box::new(move |_sender, args| {
+                        if let (Some(tab), Some(args)) = (weak.upgrade(), args) {
+                            let _ = tab.on_response(&args);
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )?;
+            }
 
             let weak = Rc::downgrade(self);
             frames_api.add_FrameCreated(

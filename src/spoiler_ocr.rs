@@ -17,7 +17,6 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::spoiler::{OcrCredentials, json_string};
 
-mod visual;
 
 /// Largest image body taken (Content-Length, or bytes read when the length is unknown).
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
@@ -240,7 +239,6 @@ pub fn known_small(url: &str) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Status {
     Ok,
-    Visual,
     Unavailable,
     Error,
     Skipped,
@@ -250,7 +248,6 @@ impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
-            Self::Visual => "visual",
             Self::Unavailable => "unavailable",
             Self::Error => "error",
             Self::Skipped => "skipped",
@@ -823,10 +820,8 @@ impl Recognizer {
         let (Ok(width), Ok(height)) = (decoder.OrientedPixelWidth(), decoder.OrientedPixelHeight()) else {
             return (Status::Error, String::new());
         };
-        if group.is_some_and(visual_group) && visual::matches(&decoder, width, height) {
-            return (Status::Visual, String::new());
-        }
-        // Thumbnail checks use the same worker and cache, with no Tesseract or Windows OCR passes.
+        // Retired: there is no perceptual screenshot matching or other visual recognition.
+        // The native image adapter is disabled in Bowser; this code is legacy-only.
         if group == Some(Group::YouTube) {
             return (Status::Ok, String::new());
         }

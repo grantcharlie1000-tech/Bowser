@@ -135,7 +135,8 @@ Hosted account management is not included. The main menu is short: new tabs, His
 ## Spoiler protection
 
 Spoiler Firewall for GTA VI is built in and **on by default**, in every tab: normal, private, guest and
-pop-ups, plus pinned web apps. It hides text, images and video that look like GTA VI spoilers behind a
+pop-ups, plus pinned web apps. It checks written posts, comments, video titles, descriptions and visible captions,
+then hides spoiler-marked text and any media attached to covered items behind a
 click-to-reveal cover, and replaces a risky page title with "Spoiler-protected page" in the tab strip and
 history. It is unofficial and not affiliated with Rockstar Games or Take-Two Interactive.
 
@@ -144,7 +145,7 @@ history. It is unofficial and not affiliated with Rockstar Games or Take-Two Int
   off; any other value keeps it on), `spoiler_mode=lockdown|strict|balanced` (default `strict`; anything
   else means `strict`), `spoiler_reduced_effects=true`.
 - A change applies to pages opened or reloaded afterwards; open pages keep the script they loaded with.
-- Limits: it reads text and page details, so a screenshot with no readable text, code words, or a site that
+- Limits: image pixels, video frames and audio are not inspected. Image-only spoilers, code words, or a site that
   blocks scripts can get through; the address bar still shows a URL slug; notifications and other apps are not
   covered. Details and the verification matrix: `docs/spoiler-firewall.md`.
 - The engine lives in `extensions/spoiler-firewall`; Bowser embeds the committed bundle
