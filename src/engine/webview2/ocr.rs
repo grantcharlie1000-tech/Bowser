@@ -14,7 +14,7 @@ use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use super::*;
 use webview2_com::{
     FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDOMContentLoadedEventHandler,
-    FrameDestroyedEventHandler, FrameNavigationStartingEventHandler,
+    FrameDestroyedEventHandler, FrameNavigationStartingEventHandler, WebResourceResponseReceivedEventHandler,
     WebResourceResponseViewGetContentCompletedHandler,
 };
 use crate::spoiler::OcrCredentials;
@@ -336,6 +336,21 @@ impl TabOcr {
             let creds = OcrCredentials::generate().ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
             *self.webview.borrow_mut() = Some(webview.clone());
             let mut token = 0i64;
+
+            // Image inspection is retired. Keep the legacy handler type-checked but do not
+            // subscribe to image responses in text-only Bowser.
+            if setting_on() {
+                let weak = Rc::downgrade(self);
+                responses.add_WebResourceResponseReceived(
+                    &WebResourceResponseReceivedEventHandler::create(Box::new(move |_sender, args| {
+                        if let (Some(tab), Some(args)) = (weak.upgrade(), args) {
+                            let _ = tab.on_response(&args);
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )?;
+            }
 
             let weak = Rc::downgrade(self);
             frames_api.add_FrameCreated(
