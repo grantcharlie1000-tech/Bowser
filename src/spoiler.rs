@@ -14,7 +14,7 @@
 //! spoiler_protection=on          # off only for exactly off, false or 0
 //! spoiler_mode=strict            # lockdown | strict | balanced; anything else means strict
 //! spoiler_reduced_effects=false  # opaque shields, no blur or animation
-//! spoiler_ocr=on                 # on-device text scan of images on high-risk sites (off, false, 0)
+//! spoiler_ocr=off                # legacy key; image scanning retired, always off
 //! spoiler_feed=on                # download signed term updates (crate::spoiler_feed; off, false, 0)
 //! ```
 
@@ -81,7 +81,7 @@ pub struct SpoilerSettings {
     pub enabled: bool,
     pub mode: Mode,
     pub reduced_effects: bool,
-    /// `spoiler_ocr`. On unless the value is exactly off, false or 0 (see `crate::spoiler_ocr`).
+    /// Legacy `spoiler_ocr` field kept for settings compatibility; image inspection is permanently off.
     pub ocr: bool,
     /// `spoiler_feed`. On unless the value is exactly off, false or 0. Controls only the DOWNLOAD of signed term
     /// updates (see `crate::spoiler_feed`); an update already held stays in force either way.
@@ -94,7 +94,7 @@ impl Default for SpoilerSettings {
             enabled: true,
             mode: Mode::Strict,
             reduced_effects: false,
-            ocr: true,
+            ocr: false,
             feed: true,
         }
     }
@@ -124,7 +124,7 @@ impl SpoilerSettings {
             KEY_PROTECTION => self.enabled = parse_enabled(value),
             KEY_MODE => self.mode = Mode::parse(value).unwrap_or(Mode::Strict),
             KEY_REDUCED_EFFECTS => self.reduced_effects = parse_reduced_effects(value),
-            KEY_OCR => self.ocr = parse_enabled(value),
+            KEY_OCR => self.ocr = false, // ignore old profiles that enabled image inspection
             KEY_FEED => self.feed = parse_enabled(value),
             _ => return false,
         }
@@ -137,7 +137,7 @@ impl SpoilerSettings {
             (KEY_PROTECTION, if self.enabled { "on" } else { "off" }.to_owned()),
             (KEY_MODE, self.mode.key().to_owned()),
             (KEY_REDUCED_EFFECTS, if self.reduced_effects { "true" } else { "false" }.to_owned()),
-            (KEY_OCR, if self.ocr { "on" } else { "off" }.to_owned()),
+            (KEY_OCR, "off".to_owned()), // migrate old profiles to text-only filtering
             (KEY_FEED, if self.feed { "on" } else { "off" }.to_owned()),
         ]
     }
@@ -253,7 +253,7 @@ pub fn config_json_with_feed(
     match ocr.filter(|c| settings.enabled && c.is_well_formed()) {
         Some(c) => json.push_str(&format!(
             ",\"ocr\":{},\"ocrHook\":{},\"ocrKey\":{}}}",
-            settings.ocr,
+            false, // retain the hook for signed term updates, but never allow image scanning
             json_string(&c.hook),
             json_string(&c.key)
         )),
@@ -610,7 +610,7 @@ mod tests {
         for enabled in [true, false] {
             for mode in Mode::ALL {
                 for reduced_effects in [true, false] {
-                    for ocr in [true, false] {
+                    for ocr in [false] {
                         for feed in [true, false] {
                             let settings = SpoilerSettings { enabled, mode, reduced_effects, ocr, feed };
                             let text = settings
@@ -627,15 +627,18 @@ mod tests {
     }
 
     #[test]
-    fn ocr_defaults_on_and_only_exact_off_words_disable_it() {
-        assert!(SpoilerSettings::default().ocr);
-        for off in ["off", "OFF", " false ", "0"] {
-            assert!(!parse(&format!("spoiler_ocr={off}")).ocr, "{off}");
+    fn image_scanning_stays_off_even_for_legacy_settings() {
+        assert!(!SpoilerSettings::default().ocr);
+        for old in ["on", "true", "1", "off", "false", "garbage", ""] {
+            let settings = parse(&format!("spoiler_ocr={old}"));
+            assert!(!settings.ocr, "{old:?}");
+            assert!(settings.enabled, "retiring image scanning must not disable the firewall");
+            let json = config_json(&settings, "1.0.0", false, Some(&creds()));
+            assert!(json.contains(r#""ocr":false,"ocrHook":"#), "{json}");
         }
-        for on in ["on", "true", "", "no", "garbage", "offf"] {
-            assert!(parse(&format!("spoiler_ocr={on}")).ocr, "{on:?}");
-        }
-        assert!(parse("spoiler_ocr=off").enabled, "OCR off does not turn protection off");
+        let legacy = SpoilerSettings { ocr: true, ..SpoilerSettings::default() };
+        assert!(legacy.lines().iter().any(|(k, v)| *k == KEY_OCR && v == "off"));
+        assert!(config_json(&legacy, "1.0.0", false, Some(&creds())).contains(r#""ocr":false,"ocrHook":"#));
     }
 
     #[test]
@@ -648,7 +651,7 @@ mod tests {
             assert!(parse(&format!("spoiler_feed={on}")).feed, "{on:?}");
         }
         let off = parse("spoiler_feed=off");
-        assert!(off.enabled && off.ocr, "the term-update switch changes nothing else");
+        assert!(off.enabled && !off.ocr, "the term-update switch changes nothing else");
         assert!(SpoilerSettings::default().lines().iter().any(|(k, v)| *k == KEY_FEED && v == "on"));
     }
 
@@ -734,13 +737,13 @@ mod tests {
     }
 
     #[test]
-    fn ocr_credentials_reach_the_config_only_when_everything_allows_it() {
+    fn text_only_config_keeps_term_update_credentials_without_enabling_image_scanning() {
         let on = SpoilerSettings::default();
         let json = config_json(&on, "1.0.0", false, Some(&creds()));
         assert_eq!(
             json,
             format!(
-                r#"{{"enabled":true,"mode":"strict","reducedEffects":false,"version":"1.0.0","private":false,"ocr":true,"ocrHook":"{}","ocrKey":"{}"}}"#,
+                r#"{{"enabled":true,"mode":"strict","reducedEffects":false,"version":"1.0.0","private":false,"ocr":false,"ocrHook":"{}","ocrKey":"{}"}}"#,
                 creds().hook,
                 creds().key
             )
