@@ -1,6 +1,6 @@
 # Limitations and security assessment
 
-Spoiler Firewall for GTA VI (unofficial). Status as of 2026-11-17, before launch on 2026-11-19.
+Spoiler Firewall for GTA VI (unofficial). Original test figures are historical; Bowser's image scanning was retired on 2026-11-21.
 This document is kept honest: every number below comes from a test in this repository, and every
 "not verified" means exactly that.
 
@@ -35,20 +35,14 @@ they measure robustness to *forms* of spoilers, not knowledge of story content.
    doesn't").
 4. **Ciphers** (ROT13, reversed, Morse, base64): franchise/entity names are decoded; fully ciphered
    messages with ciphered cues are mostly missed.
-5. **Images.** Text in images is read by OCR:
-   - Chrome: opt-in (needs the `offscreen` permission); English, Spanish, French, German,
-     Portuguese, Italian, Russian. Warm latency ~0.4–0.7 s/image on an unloaded machine, more under load.
-   - Bowser: on by default via Windows.Media.Ocr; only languages with an installed Windows OCR
-     pack; WebP/AVIF need the Windows codecs; animated images are not read (`skipped`): on high-risk hosts
-     they stay covered ("Couldn't check image") in Strict and Lockdown, released only in Balanced.
-   - Bowser compares images on X and YouTube thumbnails against fingerprints from the official Rockstar
-     media gallery. This can recognise reposted screenshots with no readable text. New gameplay scenes,
-     heavily edited images and clips without a matching poster still depend on text or context. The
-     standalone Chrome extension uses metadata and optional OCR.
-6. **Video.** Titles, descriptions, captions, thumbnails (via OCR) and surrounding text are
-   inspected where available. The YouTube watch player uses the active video's metadata, with its
-   recommendations checked individually. Frames and audio are not scanned. Covered videos are paused and muted.
-   Local audio transcription was investigated and not shipped (model size and CPU cost).
+5. **Images.** Bowser does not inspect image pixels, perform OCR or compare visual fingerprints.
+   Only a post's written words, image alt text and surrounding context can cause a picture to be hidden.
+   A photo-only spoiler with neutral text may be shown. The separate Chrome extension still supports
+   optional on-device OCR, subject to its permissions and language limitations.
+6. **Video.** The firewall examines accessible titles, descriptions, written captions, comments and
+   live chat, not video frames, audio or the image pixels of thumbnails. The YouTube watch player
+   is judged by its metadata; recommendations are judged individually. A covered video is paused and muted.
+   Transcripts not exposed in the page are not fetched or transcribed.
 
 ## Known rendering/exposure limits
 
@@ -67,9 +61,7 @@ they measure robustness to *forms* of spoilers, not knowledge of story content.
   suppressed while protection is on; suggestions, History, panels, palette and tab cards are masked
   by the same engine. Not covered: the native (non-HTML) fallback UI, native "recently closed"/jump
   lists, history titles recorded before this feature, bookmark edit forms.
-- **Profile pictures are never checked:** on high-risk sites the images each adapter lists as profile pictures (`avatars`
-  in engine/adapters.js) are not quarantined or read by OCR, so they show in a GTA context too. A spoiler image used as
-  someone's profile picture shows unless the post it sits in is covered for its words or other media.
+- **Profile pictures and other image pixels are not inspected in Bowser.** Profile pictures are excluded from the media-context rules, but a covered post can still cover the attached picture.
 - **Tabs open before install (Chrome)** are unprotected until reloaded (no `scripting` permission).
 - **Bowser, script registration failure:** if the per-tab script cannot be registered (asynchronously reported), it is
   retried once and then the tab shows Bowser's protective page instead of the web page; it is not verified live.
@@ -88,10 +80,9 @@ they measure robustness to *forms* of spoilers, not knowledge of story content.
 - **Chrome permissions:** `storage`, `alarms` (feed schedule); optional `offscreen` (OCR). Content
   scripts on all sites are inherent to the purpose. No remote code; vendored libraries are
   SHA-pinned by `build/validate.mjs`.
-- **Bowser:** the engine runs in the page's main world. Native OCR uses a pull model through
-  `ExecuteScript` with a per-tab random hook name and key: no WebMessage channel is opened, the
-  login handler is untouched, OCR text is served only to the same high-risk site group that served
-  the image, and OCR results are memory-only (never written to disk or logged).
+- **Bowser:** the engine runs in the page's main world. It does not inspect or transmit image bodies.
+  The per-tab hook and random credentials remain only for live signed term updates, without a WebMessage
+  channel and without changing the login handler.
 - **Fail-safe behaviour:** classification errors and budget overruns end in a covered state;
   engine start failures show a page cover on hot or high-risk pages and a visible notice elsewhere;
   nothing is revealed by a timer.
