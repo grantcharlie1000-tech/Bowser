@@ -76,7 +76,7 @@ const GROUP_ICONS: Readonly<Record<string, IconName>> = {
   profiles: 'person', startup: 'enter', search: 'search', searchField: 'address-bar', searchScopes: 'grid',
   downloads: 'folder-download', defaultBrowser: 'globe',
   theme: 'droplet', layout: 'sidebar', toolbar: 'customize', text: 'zoom-in', bookmarksBar: 'bookmark', window: 'window', panels: 'app-tile',
-  tabBar: 'tab-switch', newTabs: 'plus', groups: 'tab-group', startPage: 'home', startWidgets: 'app-tile', closing: 'close', pinned: 'pin', selecting: 'volume',
+  tabBar: 'tab-switch', newTabs: 'plus', groups: 'tab-group', startLook: 'image', startPage: 'home', startWidgets: 'app-tile', closing: 'close', pinned: 'pin', selecting: 'volume',
   blocking: 'block', history: 'clock', siteData: 'cookie', security: 'lock', spoilers: 'eye',
   passwords: 'key',
   address: 'address-bar', suggestions: 'search', bookmarks: 'bookmark', translate: 'translate', capture: 'capture', reader: 'reader', pageTools: 'pip', feeds: 'bell',
@@ -1716,7 +1716,6 @@ export function startSettingsPage(root: HTMLElement): void {
       for (const node of areaNodes.values()) node.hidden = true;
       laterNode.hidden = true;
       empty.hidden = true;
-      nav.hidden = true;
     } else {
       for (const id of [...parks.keys()]) {
         const node = movedNode(id);

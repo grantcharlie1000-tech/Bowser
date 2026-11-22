@@ -27,6 +27,10 @@ export type WidgetBg = typeof WIDGET_BGS[number];
 export const WIDGET_KINDS = ['topsites', 'bookmarks', 'notes', 'date', 'privacy', 'webpage'] as const;
 export type WidgetKind = typeof WIDGET_KINDS[number];
 export const BOOKMARK_VIEWS = ['list', 'tiles'] as const;
+/** `start_wallpaper`: the window's glass, a picture the page draws, or the user's own picture. */
+export const WALLPAPERS = ['none', 'aurora', 'dusk', 'ocean', 'forest', 'blossom', 'sand', 'graphite', 'midnight', 'custom'] as const;
+export type Wallpaper = typeof WALLPAPERS[number];
+export const MAX_WALL_DIM = 80;
 export type BookmarkView = typeof BOOKMARK_VIEWS[number];
 
 export const MIN_COLUMNS = 1;
@@ -51,6 +55,11 @@ const MAX_FAVS = 80;
 const MAX_URI = 40 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 const PNG_PREFIX = 'data:image/png;base64,';
+/** `<size>-<modified>` of the picture file, or empty. */
+const WALL_STAMP_RE = /^(?:[0-9]{1,12}-[0-9]{1,40})?$/;
+const MAX_WALL_PART = 150 * 1024;
+/** 1.5 MiB of JPEG is about 2 MiB of base64: 14 parts. */
+const MAX_WALL_PARTS = 16;
 const JPEG_PREFIX = 'data:image/jpeg;base64,';
 
 /** The settings the settings page edits and the start page obeys (the `start` object of its snapshot). */
@@ -72,10 +81,17 @@ export interface StartSettings {
   widgetDrag: boolean;
   /** `start_dials`: the speed dials on a new tab (default off: the tab is blank). */
   dials: boolean;
+  /** `start_search`: a search box on the page. */
+  search: boolean;
+  /** `start_clock`: the time and date above it. */
+  clock: boolean;
+  wallpaper: Wallpaper;
+  /** `start_wallpaper_dim`: how much the picture is darkened (or, on a light picture, lightened), 0 to 80. */
+  wallpaperDim: number;
 }
 
 export const START_SETTINGS_KEYS = ['groupReopen', 'titles', 'addButton', 'columns', 'thumbSize', 'dragReorder', 'homepage', 'startup',
-  'startupPages', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag', 'dials'] as const;
+  'startupPages', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag', 'dials', 'search', 'clock', 'wallpaper', 'wallpaperDim'] as const;
 
 type Rec = Record<string, unknown>;
 const isRecord = (v: unknown): v is Rec => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -119,10 +135,12 @@ export function parseStartSettings(v: unknown): StartSettings | null {
   if (!Array.isArray(v.startupPages) || v.startupPages.length > MAX_STARTUP_PAGES || !v.startupPages.every((p) => typeof p === 'string' && isWebAddress(p))) return null;
   if (!isBool(v.widgets) || !isInt(v.widgetColumns, MIN_WIDGET_COLUMNS, MAX_WIDGET_COLUMNS) || !oneOf(v.widgetHeight, WIDGET_HEIGHTS)) return null;
   if (!oneOf(v.widgetBg, WIDGET_BGS) || typeof v.widgetColor !== 'string' || !COLOR_RE.test(v.widgetColor) || !isBool(v.widgetDrag) || !isBool(v.dials)) return null;
+  if (!isBool(v.search) || !isBool(v.clock) || !oneOf(v.wallpaper, WALLPAPERS) || !isInt(v.wallpaperDim, 0, MAX_WALL_DIM)) return null;
   return {
     groupReopen: v.groupReopen, titles: v.titles, addButton: v.addButton, columns: v.columns, thumbSize: v.thumbSize, dragReorder: v.dragReorder,
     homepage: v.homepage, startup: v.startup, startupPages: [...(v.startupPages as string[])], widgets: v.widgets, widgetColumns: v.widgetColumns,
     widgetHeight: v.widgetHeight, widgetBg: v.widgetBg, widgetColor: v.widgetColor, widgetDrag: v.widgetDrag, dials: v.dials,
+    search: v.search, clock: v.clock, wallpaper: v.wallpaper, wallpaperDim: v.wallpaperDim,
   };
 }
 
@@ -146,6 +164,10 @@ export function startSaveLines(s: StartSettings): string[] | null {
     `start_widget_color=${s.widgetColor}`,
     `start_widget_drag=${s.widgetDrag}`,
     `start_dials=${s.dials}`,
+    `start_search=${s.search}`,
+    `start_clock=${s.clock}`,
+    `start_wallpaper=${s.wallpaper}`,
+    `start_wallpaper_dim=${s.wallpaperDim}`,
   ];
 }
 
@@ -165,6 +187,10 @@ export interface DisplaySettings {
   widgetDrag: boolean;
   /** Off (the default), the page shows no speed dials: a blank tab, or only the widgets. */
   dials: boolean;
+  search: boolean;
+  clock: boolean;
+  wallpaper: Wallpaper;
+  wallDim: number;
 }
 export interface GroupTab { id: number; title: string; n: number }
 export interface Crumb { id: number; title: string }
@@ -193,10 +219,16 @@ export interface StartSnapshot {
   folders: FolderRef[];
   widgets: Widget[];
   favs: Record<string, string>;
+  /** The stamp of the user's background picture (its bytes follow in `wall` messages), or empty. */
+  wall: string;
   ack: 'none' | 'failed';
   error: string;
 }
-export type StartMessage = { kind: 'page'; snap: StartSnapshot } | { kind: 'thumbs'; thumbs: Record<string, string> };
+export interface WallPart { stamp: string; part: number; parts: number; data: string }
+export type StartMessage =
+  | { kind: 'page'; snap: StartSnapshot }
+  | { kind: 'thumbs'; thumbs: Record<string, string> }
+  | ({ kind: 'wall' } & WallPart);
 
 const isPng = (v: unknown): v is string => isStr(v, MAX_URI) && v.startsWith(PNG_PREFIX) && BASE64_RE.test(v.slice(PNG_PREFIX.length));
 const isJpeg = (v: unknown): v is string => isStr(v, 160 * 1024) && v.startsWith(JPEG_PREFIX) && BASE64_RE.test(v.slice(JPEG_PREFIX.length));
@@ -213,13 +245,15 @@ function list<T>(v: unknown, max: number, one: (item: unknown) => T | null): T[]
 }
 
 function parseDisplay(v: unknown): DisplaySettings | null {
-  if (!isRecord(v) || !exactKeys(v, ['columns', 'thumbSize', 'titles', 'addButton', 'dragReorder', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag', 'dials'])) return null;
+  if (!isRecord(v) || !exactKeys(v, ['columns', 'thumbSize', 'titles', 'addButton', 'dragReorder', 'widgets', 'widgetColumns', 'widgetHeight', 'widgetBg', 'widgetColor', 'widgetDrag', 'dials', 'search', 'clock', 'wallpaper', 'wallDim'])) return null;
   if (!isInt(v.columns, MIN_COLUMNS, MAX_COLUMNS) || !isInt(v.thumbSize, MIN_THUMB_SIZE, MAX_THUMB_SIZE) || !oneOf(v.titles, TITLE_MODES)) return null;
   if (!isBool(v.addButton) || !isBool(v.dragReorder) || !isBool(v.widgets) || !isInt(v.widgetColumns, MIN_WIDGET_COLUMNS, MAX_WIDGET_COLUMNS)) return null;
   if (!oneOf(v.widgetHeight, WIDGET_HEIGHTS) || !oneOf(v.widgetBg, WIDGET_BGS) || typeof v.widgetColor !== 'string' || !COLOR_RE.test(v.widgetColor) || !isBool(v.widgetDrag) || !isBool(v.dials)) return null;
+  if (!isBool(v.search) || !isBool(v.clock) || !oneOf(v.wallpaper, WALLPAPERS) || !isInt(v.wallDim, 0, MAX_WALL_DIM)) return null;
   return {
     columns: v.columns, thumbSize: v.thumbSize, titles: v.titles, addButton: v.addButton, dragReorder: v.dragReorder, widgets: v.widgets,
     widgetColumns: v.widgetColumns, widgetHeight: v.widgetHeight, widgetBg: v.widgetBg, widgetColor: v.widgetColor, widgetDrag: v.widgetDrag, dials: v.dials,
+    search: v.search, clock: v.clock, wallpaper: v.wallpaper, wallDim: v.wallDim,
   };
 }
 
@@ -253,7 +287,8 @@ function parseWidget(v: unknown): Widget | null {
 }
 
 function parsePage(d: Rec): StartSnapshot | null {
-  if (!exactKeys(d, ['kind', 'guest', 'settings', 'groups', 'group', 'folder', 'path', 'dials', 'more', 'pickable', 'folders', 'widgets', 'favs', 'ack', 'error'])) return null;
+  if (!exactKeys(d, ['kind', 'guest', 'settings', 'groups', 'group', 'folder', 'path', 'dials', 'more', 'pickable', 'folders', 'widgets', 'favs', 'wall', 'ack', 'error'])) return null;
+  if (typeof d.wall !== 'string' || !WALL_STAMP_RE.test(d.wall)) return null;
   if (!isBool(d.guest) || !isBool(d.more) || !isInt(d.group, 0, Number.MAX_SAFE_INTEGER) || !isInt(d.folder, 0, Number.MAX_SAFE_INTEGER)) return null;
   if (!(d.ack === 'none' || d.ack === 'failed') || !isStr(d.error, 200) || (d.ack === 'none') !== (d.error === '')) return null;
   const settings = parseDisplay(d.settings);
@@ -276,7 +311,7 @@ function parsePage(d: Rec): StartSnapshot | null {
   if (groups.length === 0 ? d.group !== 0 || d.folder !== 0 || path.length !== 0 || dials.length !== 0 : path.length === 0 || path[path.length - 1]!.id !== d.folder || path[0]!.id !== d.group) return null;
   return {
     guest: d.guest, settings, groups, group: d.group, folder: d.folder, path, dials, more: d.more, pickable, folders, widgets,
-    favs: { ...(d.favs as Record<string, string>) }, ack: d.ack, error: d.error,
+    favs: { ...(d.favs as Record<string, string>) }, wall: d.wall as string, ack: d.ack, error: d.error,
   };
 }
 
@@ -292,6 +327,11 @@ export function parseStartMessage(d: unknown): StartMessage | null {
     const entries = Object.entries(d.thumbs);
     if (entries.length > 100 || !entries.every(([id, uri]) => /^[1-9][0-9]{0,15}$/.test(id) && isJpeg(uri))) return null;
     return { kind: 'thumbs', thumbs: Object.fromEntries(entries) as Record<string, string> };
+  }
+  if (d.kind === 'wall') {
+    if (!exactKeys(d, ['kind', 'stamp', 'part', 'parts', 'data']) || typeof d.stamp !== 'string' || d.stamp === '' || !WALL_STAMP_RE.test(d.stamp)) return null;
+    if (!isInt(d.parts, 1, MAX_WALL_PARTS) || !isInt(d.part, 0, d.parts - 1) || !isStr(d.data, MAX_WALL_PART) || !/^[A-Za-z0-9+/]*={0,2}$/.test(d.data)) return null;
+    return { kind: 'wall', stamp: d.stamp, part: d.part, parts: d.parts, data: d.data };
   }
   return null;
 }
@@ -367,13 +407,82 @@ export function dateParts(now: Date, locale?: string): { weekday: string; day: s
 
 /** The label of a widget kind in the add menu and a card's heading. */
 export const WIDGET_LABELS: Readonly<Record<WidgetKind, string>> = {
-  topsites: 'Top sites',
+  topsites: 'Most visited',
   bookmarks: 'Bookmarks',
-  notes: 'Sticky note',
-  date: 'Date',
-  privacy: 'Privacy statistics',
-  webpage: 'Webpage',
+  notes: 'Note',
+  date: 'Clock',
+  privacy: 'Protection',
+  webpage: 'Web page',
 };
+
+/** One line for each kind in the add menu. */
+export const WIDGET_HINTS: Readonly<Record<WidgetKind, string>> = {
+  topsites: 'The sites you open most',
+  bookmarks: 'A bookmark folder',
+  notes: 'A note that saves as you type',
+  date: 'The time and the date',
+  privacy: 'Trackers and ads blocked',
+  webpage: 'Any page, live in a card',
+};
+
+/** The big clock: the time in the person's own 12 or 24 hour style, and the date as words. */
+export function clockParts(now: Date, locale?: string): { time: string; date: string } {
+  const time = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(now);
+  const date = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(now);
+  return { time, date };
+}
+
+// ---- backgrounds ----
+
+export type WallTone = 'dark' | 'light';
+export interface WallArt { label: string; tone: WallTone; art: string }
+/**
+ * The pictures the page draws itself: layered gradients, no files and no network. `tone` is what the
+ * picture is mostly like, so the text over it can be the colour that reads.
+ */
+export const WALL_ART: Readonly<Record<Exclude<Wallpaper, 'none' | 'custom'>, WallArt>> = {
+  aurora: { label: 'Aurora', tone: 'dark', art: 'radial-gradient(120% 90% at 15% 10%, #1fb6a6 0%, transparent 55%), radial-gradient(90% 80% at 85% 20%, #6d4bd8 0%, transparent 60%), radial-gradient(120% 100% at 60% 100%, #0c4f6e 0%, transparent 70%), linear-gradient(160deg, #0b1324 0%, #121a33 100%)' },
+  dusk: { label: 'Dusk', tone: 'dark', art: 'radial-gradient(110% 80% at 80% 100%, #ff8a4c 0%, transparent 55%), radial-gradient(100% 90% at 10% 90%, #d1477a 0%, transparent 60%), radial-gradient(120% 100% at 50% 0%, #3b2a6e 0%, transparent 70%), linear-gradient(180deg, #1d1838 0%, #48244f 100%)' },
+  ocean: { label: 'Ocean', tone: 'dark', art: 'radial-gradient(100% 80% at 20% 0%, #2f86d6 0%, transparent 60%), radial-gradient(90% 90% at 90% 80%, #0fb3c4 0%, transparent 55%), linear-gradient(170deg, #0a2a52 0%, #06172e 100%)' },
+  forest: { label: 'Forest', tone: 'dark', art: 'radial-gradient(110% 90% at 80% 10%, #6fb36b 0%, transparent 55%), radial-gradient(100% 80% at 10% 100%, #1f6b55 0%, transparent 60%), linear-gradient(165deg, #12301f 0%, #0b1d16 100%)' },
+  blossom: { label: 'Blossom', tone: 'light', art: 'radial-gradient(100% 80% at 10% 0%, #ffd6e7 0%, transparent 60%), radial-gradient(90% 90% at 100% 30%, #e3d4ff 0%, transparent 60%), radial-gradient(110% 90% at 40% 100%, #ffe7d1 0%, transparent 65%), linear-gradient(160deg, #fdf3f7 0%, #f3ecfb 100%)' },
+  sand: { label: 'Sand', tone: 'light', art: 'radial-gradient(110% 90% at 90% 0%, #f6d7a8 0%, transparent 60%), radial-gradient(100% 80% at 0% 100%, #e9c9a6 0%, transparent 60%), linear-gradient(170deg, #fbf4ea 0%, #f2e6d6 100%)' },
+  graphite: { label: 'Graphite', tone: 'dark', art: 'radial-gradient(100% 80% at 20% 0%, #4a5160 0%, transparent 60%), radial-gradient(90% 80% at 100% 100%, #2b3140 0%, transparent 60%), linear-gradient(170deg, #22262e 0%, #15181d 100%)' },
+  midnight: { label: 'Midnight', tone: 'dark', art: 'radial-gradient(80% 60% at 70% 20%, #3a3f9e 0%, transparent 60%), radial-gradient(70% 70% at 10% 80%, #5a2a86 0%, transparent 60%), linear-gradient(180deg, #070a1a 0%, #0d1030 100%)' },
+};
+
+/** The ink and glass over a background of `tone` (set as CSS custom properties, like `textOn`). */
+export function wallInk(tone: WallTone): Readonly<Record<string, string>> {
+  return tone === 'dark'
+    ? {
+      '--sp-ink': '#ffffff', '--sp-ink-2': 'rgba(255,255,255,0.78)', '--sp-glass': 'rgba(18,20,26,0.38)', '--sp-glass-hover': 'rgba(255,255,255,0.16)',
+      '--sp-glass-edge': 'rgba(255,255,255,0.14)', '--sp-field': 'rgba(255,255,255,0.94)', '--sp-field-ink': '#1b1f26', '--sp-field-ink-2': '#5b6270', '--sp-dim-colour': '#000000',
+    }
+    : {
+      '--sp-ink': '#14181d', '--sp-ink-2': 'rgba(20,24,29,0.72)', '--sp-glass': 'rgba(255,255,255,0.52)', '--sp-glass-hover': 'rgba(255,255,255,0.8)',
+      '--sp-glass-edge': 'rgba(20,24,29,0.1)', '--sp-field': 'rgba(255,255,255,0.96)', '--sp-field-ink': '#1b1f26', '--sp-field-ink-2': '#5b6270', '--sp-dim-colour': '#ffffff',
+    };
+}
+
+/** The mean luminance (0 to 1) of RGBA pixels: a picture above 0.6 takes dark text. */
+export function toneOf(rgba: ArrayLike<number>): WallTone {
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i + 3 < rgba.length; i += 4) {
+    sum += (0.2126 * rgba[i]! + 0.7152 * rgba[i + 1]! + 0.0722 * rgba[i + 2]!) / 255;
+    n += 1;
+  }
+  return n > 0 && sum / n > 0.6 ? 'light' : 'dark';
+}
+
+/** The four dim steps the Customise panel offers, and the step a saved value is nearest to. */
+export const DIM_STEPS: ReadonlyArray<readonly [number, string]> = [[0, 'Off'], [20, 'Low'], [40, 'Medium'], [60, 'High']];
+export function dimStep(value: number): number {
+  return DIM_STEPS.reduce((best, [step]) => (Math.abs(step - value) < Math.abs(best - value) ? step : best), DIM_STEPS[0]![0]);
+}
+
+/** Size names for the five tile widths. */
+export const SIZE_LABELS: readonly string[] = ['XS', 'S', 'M', 'L', 'XL'];
 
 /** What the sticky note's save button says once it has saved. */
 export const NOTE_SAVED = 'Saved to Notes';

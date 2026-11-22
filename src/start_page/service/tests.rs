@@ -283,7 +283,7 @@ fn display_settings_change_the_snapshot_the_page_draws_from() {
         ..StartSettings::default()
     };
     let page = json(&paths, &tuned, shown);
-    assert!(page.contains(r##""settings":{"columns":4,"thumbSize":5,"titles":"auto","addButton":false,"dragReorder":false,"widgets":true,"widgetColumns":3,"widgetHeight":"tall","widgetBg":"custom","widgetColor":"#336699","widgetDrag":false,"dials":false}"##), "{page}");
+    assert!(page.contains(r##""settings":{"columns":4,"thumbSize":5,"titles":"auto","addButton":false,"dragReorder":false,"widgets":true,"widgetColumns":3,"widgetHeight":"tall","widgetBg":"custom","widgetColor":"#336699","widgetDrag":false,"dials":false,"search":true,"clock":true,"wallpaper":"none","wallDim":20}"##), "{page}");
     let plain = json(&paths, &StartSettings::default(), shown);
     assert!(plain.contains(r#""columns":6,"thumbSize":3,"titles":"always","addButton":true,"dragReorder":true,"widgets":false,"#), "{plain}");
     assert!(plain.contains(r#""widgets":[]"#), "widgets off sends none: {plain}");
@@ -587,5 +587,47 @@ fn a_speed_dial_edit_keeps_every_bookmark_when_one_line_is_malformed() {
         assert!(after.items().contains(item), "{} kept", item.title);
     }
     assert!(after.items().iter().any(|i| i.id == group && i.title == "New group"));
+    let _ = fs::remove_dir_all(&paths.dir);
+}
+
+#[test]
+fn the_first_site_added_without_a_group_makes_one_and_later_sites_join_it() {
+    let paths = temp("default-group");
+    let mut requested = None;
+    apply(&paths, &mut requested, Action::Add { folder: 0, title: String::new(), url: "https://one.example/".into() }).unwrap();
+    let loaded = load(&paths);
+    assert_eq!(loaded.config.groups.len(), 1, "one group, made for the person");
+    let group = loaded.config.groups[0];
+    assert_eq!(requested, Some(group));
+    let mut requested = None;
+    apply(&paths, &mut requested, Action::Add { folder: 0, title: "Two".into(), url: "https://two.example/".into() }).unwrap();
+    let loaded = load(&paths);
+    assert_eq!(loaded.config.groups, vec![group], "no second group");
+    assert_eq!(loaded.store.children(Some(group)).len(), 2);
+    assert!(json(&paths, &StartSettings { dials: true, ..StartSettings::default() }, None).contains("two.example"));
+    let _ = fs::remove_dir_all(&paths.dir);
+}
+
+#[test]
+fn a_custom_wallpaper_follows_the_page_in_parts_and_clearing_it_resets_the_setting() {
+    let paths = temp("wallpaper");
+    let settings = StartSettings { wallpaper: "custom".into(), ..StartSettings::default() };
+    let none = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    assert!(none.json.contains(r#""wall":"""#), "no picture yet");
+    let mut jpeg = vec![0xFF, 0xD8];
+    jpeg.resize(400 * 1024, 7);
+    set_wallpaper(&paths, &jpeg).unwrap();
+    assert!(!none.inputs_current(Some(&paths), true), "the new picture rebuilds the page");
+    let built = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    assert!(!built.json.contains(r#""wall":"""#));
+    let parts: Vec<_> = built.thumbs.iter().filter(|m| m.contains(r#""kind":"wall""#)).collect();
+    assert!(parts.len() >= 3, "{}", parts.len());
+    assert!(parts.iter().all(|m| m.len() < 200 * 1024));
+    let plain = page_with(Some(&paths), false, &StartSettings::default(), None, Ack::None, |_| None);
+    assert!(plain.thumbs.iter().all(|m| !m.contains(r#""kind":"wall""#)), "only sent while chosen");
+    assert!(set_wallpaper(&paths, b"not a jpeg").is_err());
+    let effect = apply(&paths, &mut None, Action::WallpaperClear).unwrap();
+    assert_eq!(effect, Effect::Set { key: "start_wallpaper".into(), value: "none".into() });
+    assert!(!paths.dir.join(model::WALLPAPER_FILE).exists());
     let _ = fs::remove_dir_all(&paths.dir);
 }

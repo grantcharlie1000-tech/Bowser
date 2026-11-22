@@ -49,7 +49,7 @@ fn world() -> World {
 
 fn json_of(w: &World, view: &DialView, ack: Ack, favicon: impl Fn(&str) -> Option<Vec<u8>>) -> String {
     snapshot_json_with(
-        &Snapshot { guest: false, settings: &w.settings, view, store: &w.store, config: &w.config, widgets: &w.widgets, top: &w.top, privacy: Some(&w.privacy), ack },
+        &Snapshot { guest: false, settings: &w.settings, view, store: &w.store, config: &w.config, widgets: &w.widgets, top: &w.top, privacy: Some(&w.privacy), wall: "", ack },
         favicon,
     )
 }
@@ -71,7 +71,7 @@ fn the_snapshot_carries_groups_dials_settings_widgets_and_stays_text() {
     assert!(json.contains(r#""kind":"date""#), "{json}");
     // Page-controlled text is escaped, never raw markup.
     assert!(!json.contains('<'), "{json}");
-    assert!(json.ends_with(r#""favs":{},"ack":"none","error":""}}"#), "{json}");
+    assert!(json.ends_with(r#""favs":{},"wall":"","ack":"none","error":""}}"#), "{json}");
 }
 
 #[test]
@@ -256,4 +256,37 @@ fn start_page_messages_match_committed_fixture() {
         let committed = std::fs::read_to_string(path).expect("committed start page fixture");
         assert_eq!(committed.replace("\r\n", "\n"), content);
     }
+}
+
+#[test]
+fn page_commands_for_search_settings_and_wallpaper_are_checked() {
+    let f = |a: &str, text: Option<&str>| PanelFields { a: a.to_owned(), text: text.map(str::to_owned), ..Default::default() };
+    assert_eq!(map_command(&f("search", Some("  rust book "))), Some(Action::Search("rust book".into())));
+    assert_eq!(map_command(&f("search", Some("   "))), None);
+    assert_eq!(map_command(&f("search", None)), None);
+    assert_eq!(map_command(&f("set", Some("start_search=false"))), Some(Action::Set { key: "start_search".into(), value: "false".into() }));
+    assert_eq!(map_command(&f("set", Some("start_wallpaper=ocean"))), Some(Action::Set { key: "start_wallpaper".into(), value: "ocean".into() }));
+    assert_eq!(map_command(&f("set", Some("start_wallpaper=../x"))), None, "only the known pictures");
+    assert_eq!(map_command(&f("set", Some("start_wallpaper_dim=81"))), None);
+    assert_eq!(map_command(&f("set", Some("homepage=https://evil.example/"))), None, "not a page setting");
+    assert_eq!(map_command(&f("set", Some("startup=homepage"))), None);
+    assert_eq!(map_command(&f("set", Some("start_thumb_size"))), None);
+    assert_eq!(map_command(&f("wallpaper", None)), Some(Action::Wallpaper));
+    assert_eq!(map_command(&f("wallpaper", Some("x"))), None);
+    assert_eq!(map_command(&f("wallclear", None)), Some(Action::WallpaperClear));
+}
+
+#[test]
+fn a_wallpaper_is_split_into_parts_that_join_back() {
+    let jpeg: Vec<u8> = (0..500_000u32).map(|n| (n % 251) as u8).collect();
+    let parts = wallpaper_messages("12-34", &jpeg);
+    assert!(parts.len() > 1);
+    let mut joined = String::new();
+    for (i, part) in parts.iter().enumerate() {
+        assert!(part.starts_with(r#"{"v":1,"t":"snap","p":"startpage","d":{"kind":"wall","stamp":"12-34","#), "{}", &part[..80]);
+        assert!(part.contains(&format!(r#""part":{i},"parts":{}"#, parts.len())));
+        let data = part.split(r#""data":""#).nth(1).unwrap().trim_end_matches("\"}}");
+        joined.push_str(data);
+    }
+    assert_eq!(joined, crate::chrome_host::protocol::base64_encode(&jpeg));
 }

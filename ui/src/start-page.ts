@@ -11,14 +11,15 @@ import { sendPanel, type PanelFields } from './protocol';
 import { el, icon, type IconName } from './dom';
 import { iconButton, textButton } from './panels/kit';
 import { tileLetter } from './panels/kit-logic';
-import { selectField, type SelectField } from './panels/select';
+import { selectField } from './panels/select';
 import { tileTone } from './history-page-logic';
 import { onSpoilerConfig, activeSpoilerMode } from './spoiler-config'; // --- spoiler guard ---
 import { guardTitle, hostOnly } from './spoiler-guard'; // --- spoiler guard --- titles that came from pages (top sites, bookmarks, dials)
 import {
-  MAX_NOTE, MAX_TITLE, MAX_URL, NOTE_SAVED, WIDGET_KINDS, WIDGET_LABELS, blockedText, columnsFor, dateParts, dialCountText, dropBefore, isWebAddress,
-  normaliseAddress, textOn, tileWidth, titleState, widgetClasses,
-  type BookmarkView, type Dial, type GroupTab, type StartMessage, type StartSnapshot, type Widget, type WidgetKind,
+  DIM_STEPS, MAX_NOTE, MAX_TITLE, MAX_URL, NOTE_SAVED, SIZE_LABELS, WALL_ART, WIDGET_BGS, WIDGET_HINTS, WIDGET_KINDS, WIDGET_LABELS, blockedText, clockParts,
+  columnsFor, dialCountText, dimStep, dropBefore, isWebAddress, normaliseAddress, textOn, tileWidth, titleState, toneOf, wallInk, widgetClasses,
+  type BookmarkView, type Dial, type GroupTab, type StartMessage, type StartSnapshot, type TitleMode, type WallTone, type Wallpaper, type Widget,
+  type WidgetBg, type WidgetKind,
 } from './start-page-logic';
 
 const NOTE_DEBOUNCE_MS = 450;
@@ -31,6 +32,11 @@ function cmd(fields: PanelFields): boolean {
   return sendPanel('spage', fields);
 }
 
+/** Saves one start page setting from the Customise panel (Rust checks the key and value again). */
+function setting(key: string, value: string | number | boolean): boolean {
+  return cmd({ a: 'set', text: `${key}=${String(value)}` });
+}
+
 interface DialNode {
   readonly root: HTMLLIElement;
   readonly open: HTMLButtonElement;
@@ -41,13 +47,15 @@ interface DialNode {
 
 interface WidgetNode {
   readonly root: HTMLElement;
-  readonly body: HTMLElement;
   readonly id: number;
 }
 
+const TITLE_CHOICES: ReadonlyArray<readonly [TitleMode, string]> = [['always', 'Always'], ['auto', 'If no image'], ['never', 'Never']];
+const STYLE_CHOICES: ReadonlyArray<readonly [WidgetBg, string]> = [['translucent', 'Glass'], ['solid', 'Solid'], ['transparent', 'Clear']];
+
 /**
- * Builds the page once. `show` applies a `page` or `thumbs` message; `hidden` records that the host took
- * the page away (the next show comes back settled, with the entrance only for a tab it has not shown).
+ * Builds the page once. `show` applies a `page`, `thumbs` or `wall` message; `hidden` records that the
+ * host took the page away (the next show comes back settled, with the entrance only for a tab it has not shown).
  */
 export function buildStartPage(): {
   readonly root: HTMLElement;
@@ -62,6 +70,7 @@ export function buildStartPage(): {
   let entered = false;
   let toastTimer = 0;
   let noteSaveTimer = 0;
+  let clockTimer = 0;
   /** Widget frames and note editors outlive snapshots, so a refresh never reloads a page or loses a caret. */
   const frames = new Map<number, { url: string; node: HTMLIFrameElement }>();
   /** Spoiler guard: web page widgets the user chose to load (widget id to address) while protection is on. The start page is
@@ -75,27 +84,63 @@ export function buildStartPage(): {
   let modalReturn: HTMLElement | null = null;
   let drag: { kind: 'dial' | 'widget'; id: number; node: HTMLElement; startX: number; startY: number; pointer: number; active: boolean; target: HTMLElement | null; after: boolean; into: boolean } | null = null;
   let suppressClick = false;
+  /** The user's background picture: the parts of the version being received, and the one shown. */
+  let wallParts: { stamp: string; parts: string[] } | null = null;
+  let wallImage: { stamp: string; uri: string; tone: WallTone } | null = null;
 
   // ---- skeleton ----
+  const backdrop = el('div', 'sp-backdrop');
+  backdrop.setAttribute('aria-hidden', 'true');
   const column = el('div', 'sp-column');
   const heading = el('h1', 'sp-sr');
   heading.textContent = 'Start page';
+
+  const hero = el('header', 'sp-top');
+  const clock = el('div', 'sp-clock');
+  const clockTime = el('p', 'sp-clock-time');
+  const clockDate = el('p', 'sp-clock-date');
+  clock.append(clockTime, clockDate);
+  const search = el('form', 'sp-find');
+  search.setAttribute('role', 'search');
+  const searchGlyph = el('span', 'sp-find-glyph');
+  searchGlyph.setAttribute('aria-hidden', 'true');
+  searchGlyph.append(icon('search', { size: 18 }));
+  const searchInput = el('input', 'sp-find-input');
+  searchInput.type = 'search';
+  searchInput.placeholder = 'Search the web or type an address';
+  searchInput.maxLength = MAX_URL;
+  searchInput.autocomplete = 'off';
+  searchInput.spellcheck = false;
+  searchInput.setAttribute('aria-label', 'Search the web or type an address');
+  const searchGo = el('button', 'sp-find-go');
+  searchGo.type = 'submit';
+  searchGo.setAttribute('aria-label', 'Search');
+  searchGo.append(icon('arrow-right', { size: 16 }));
+  search.append(searchGlyph, searchInput, searchGo);
+  search.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = searchInput.value.trim();
+    if (text === '') return;
+    if (cmd({ a: 'search', text })) searchInput.value = '';
+  });
+  hero.append(clock, search);
+
   const groupBar = el('div', 'sp-groups');
   const tablist = el('div', 'sp-tabs');
   tablist.setAttribute('role', 'tablist');
   tablist.setAttribute('aria-label', 'Speed dial groups');
-  const addGroup = iconButton('plus', 'Add a group', () => openGroupForm(), 'sp-add-group');
   const groupTools = el('div', 'sp-group-tools');
-  groupBar.append(tablist, addGroup, groupTools);
+  groupBar.append(tablist, groupTools);
   const crumbs = el('nav', 'sp-crumbs');
   crumbs.setAttribute('aria-label', 'Folder');
   const grid = el('ul', 'sp-grid');
   grid.setAttribute('role', 'list');
-  const empty = el('div', 'sp-empty');
+  grid.setAttribute('aria-label', 'Speed dials');
   const dialsSection = el('section', 'sp-dials');
-  dialsSection.append(groupBar, crumbs, grid, empty);
+  dialsSection.setAttribute('aria-label', 'Speed dials');
+  dialsSection.append(groupBar, crumbs, grid);
   const widgetsSection = el('section', 'sp-widgets');
-  widgetsSection.setAttribute('aria-label', 'Dashboard');
+  widgetsSection.setAttribute('aria-label', 'Widgets');
   const widgetGrid = el('div', 'sp-widget-grid');
   const widgetBar = el('div', 'sp-widget-bar');
   const addWidget = textButton('Add widget', () => openWidgetMenu(addWidget), { icon: 'plus', subtle: true });
@@ -105,8 +150,21 @@ export function buildStartPage(): {
   const toast = el('p', 'sp-toast');
   toast.setAttribute('role', 'status');
   toast.hidden = true;
-  column.append(heading, dialsSection, widgetsSection);
-  root.append(column, toast);
+  column.append(heading, hero, dialsSection, widgetsSection);
+
+  const customise = el('button', 'sp-customise');
+  customise.type = 'button';
+  customise.setAttribute('aria-label', 'Customise this page');
+  customise.setAttribute('data-tip', 'Customise this page');
+  customise.setAttribute('aria-expanded', 'false');
+  customise.append(icon('edit', { size: 16 }));
+  const drawer = el('aside', 'sp-drawer');
+  drawer.id = 'sp-drawer';
+  drawer.setAttribute('aria-label', 'Customise');
+  drawer.hidden = true;
+  customise.setAttribute('aria-controls', drawer.id);
+  customise.addEventListener('click', () => (drawer.hidden ? openDrawer() : closeDrawer()));
+  root.append(backdrop, column, customise, drawer, toast);
 
   // ---- helpers ----
   const say = (text: string): void => {
@@ -118,14 +176,16 @@ export function buildStartPage(): {
 
   const favOf = (host: string): string => snap?.favs[host] ?? '';
 
-  /** The tile face: the chosen image, the site's cached icon, or a letter on a tone. */
+  /** The tile face: the chosen image, the site's cached icon on a chip, or a letter on a tone. */
   function paintFace(face: HTMLElement, dial: { kind: 'link' | 'folder'; title: string; host: string; id?: number; thumb?: boolean }): void {
     face.replaceChildren();
     face.removeAttribute('data-tone');
     face.classList.remove('has-image', 'has-icon', 'is-folder', 'is-letter');
     if (dial.kind === 'folder') {
       face.classList.add('is-folder');
-      face.append(icon('folder', { size: 32 }));
+      const chip = el('span', 'sp-chip');
+      chip.append(icon('folder', { size: 20 }));
+      face.append(chip);
       return;
     }
     const chosen = dial.thumb && dial.id !== undefined ? thumbs.get(dial.id) : undefined;
@@ -140,19 +200,23 @@ export function buildStartPage(): {
     }
     const fav = favOf(dial.host);
     if (fav) {
+      const chip = el('span', 'sp-chip');
       const img = el('img', 'sp-fav');
       img.alt = '';
       img.draggable = false;
       img.src = fav;
+      chip.append(img);
       face.classList.add('has-icon');
-      face.append(img);
+      face.append(chip);
       return;
     }
     face.classList.add('is-letter');
     face.dataset.tone = String(tileTone(dial.host || dial.title));
+    const chip = el('span', 'sp-chip');
     const letter = el('span', 'sp-letter');
     letter.textContent = tileLetter(guardTitle(dial.title) || dial.host);
-    face.append(letter);
+    chip.append(letter);
+    face.append(chip);
   }
 
   // ---- dialogs (one at a time, inside the page) ----
@@ -217,10 +281,11 @@ export function buildStartPage(): {
   }
 
   function openDialForm(existing: Dial | null): void {
-    if (!snap || snap.folder === 0) return;
+    if (!snap || snap.guest) return;
+    // 0: no group yet. Rust makes one for the first site, so the person never has to.
     const folder = snap.folder;
     const isFolderEdit = existing?.kind === 'folder';
-    openModal(existing ? (isFolderEdit ? 'Rename folder' : 'Edit site') : 'Add a site', (body, close) => {
+    openModal(existing ? (isFolderEdit ? 'Rename folder' : 'Edit site') : 'Add site', (body, close) => {
       const form = body.closest('form');
       const name = field('Name', existing?.title ?? '', 'Optional');
       const address = field('Address', existing?.url ?? '', 'example.com', MAX_URL);
@@ -250,61 +315,6 @@ export function buildStartPage(): {
         return close();
       });
       return isFolderEdit ? name.input : address.input;
-    });
-  }
-
-  function openFolderForm(): void {
-    if (!snap || snap.folder === 0) return;
-    const folder = snap.folder;
-    openModal('New folder', (body, close) => {
-      const form = body.closest('form');
-      const name = field('Name', '');
-      body.append(name.root);
-      form?.append(actions(close, 'Create'));
-      form?.addEventListener('submit', (event) => {
-        event.preventDefault();
-        const title = name.input.value.trim();
-        if (title === '') return;
-        cmd({ a: 'addfolder', parent: folder, text: title });
-        close();
-      });
-      return name.input;
-    });
-  }
-
-  function openGroupForm(): void {
-    if (!snap || snap.guest) return;
-    const choices = snap.pickable;
-    openModal('Add a group', (body, close) => {
-      const form = body.closest('form');
-      const name = field('Name', '', 'New group');
-      body.append(name.root);
-      let picked: SelectField<string> | null = null;
-      if (choices.length > 0) {
-        const wrap = el('div', 'sp-field');
-        const label = el('span', 'sp-field-label');
-        label.textContent = 'Or use a bookmark folder';
-        picked = selectField<string>({
-          options: choices.map((c) => ({ value: String(c.id), label: c.path })),
-          value: null,
-          label: 'Use a bookmark folder',
-          placeholder: 'Choose a folder',
-          onChange: () => {},
-        });
-        wrap.append(label, picked.root);
-        body.append(wrap);
-      }
-      form?.append(actions(close, 'Add'));
-      form?.addEventListener('submit', (event) => {
-        event.preventDefault();
-        const folderId = picked?.get();
-        const title = name.input.value.trim();
-        if (title !== '') cmd({ a: 'addgroup', text: title });
-        else if (folderId) cmd({ a: 'flaggroup', id: Number(folderId) });
-        else return;
-        close();
-      });
-      return name.input;
     });
   }
 
@@ -360,7 +370,7 @@ export function buildStartPage(): {
   function onMenuAway(event: Event): void {
     if (menu && event.target instanceof Node && !menu.contains(event.target)) closeMenu();
   }
-  function openMenu(anchor: HTMLElement, label: string, items: ReadonlyArray<{ label: string; icon: IconName; run: () => void; disabled?: boolean }>): void {
+  function openMenu(anchor: HTMLElement, label: string, items: ReadonlyArray<{ label: string; hint?: string; icon: IconName; run: () => void; disabled?: boolean }>): void {
     closeMenu();
     const box = el('div', 'bw-overlay bw-menu sp-menu bw-enter is-down');
     box.setAttribute('role', 'menu');
@@ -370,9 +380,19 @@ export function buildStartPage(): {
       button.type = 'button';
       button.setAttribute('role', 'menuitem');
       button.disabled = item.disabled === true;
-      button.append(icon(item.icon));
-      const text = el('span', 'bw-menu-label');
-      text.textContent = item.label;
+      const glyph = el('span', 'sp-menu-glyph');
+      glyph.append(icon(item.icon));
+      button.append(glyph);
+      const text = el('span', 'bw-menu-label sp-menu-text');
+      const name = el('span', 'sp-menu-name');
+      name.textContent = item.label;
+      text.append(name);
+      if (item.hint) {
+        const hint = el('span', 'sp-menu-hint');
+        hint.textContent = item.hint;
+        text.append(hint);
+        button.classList.add('has-hint');
+      }
       button.append(text);
       button.addEventListener('click', () => {
         closeMenu();
@@ -395,10 +415,14 @@ export function buildStartPage(): {
       }
     });
     const rect = anchor.getBoundingClientRect();
-    const host = anchor.closest('.sp-page') ?? root;
-    box.style.setProperty('--sp-menu-x', `${Math.max(8, Math.round(rect.left))}px`);
-    box.style.setProperty('--sp-menu-y', `${Math.round(rect.bottom + 4)}px`);
-    host.append(box);
+    root.append(box);
+    // Below the anchor, or above it when the list would run off the bottom of the window.
+    const size = box.getBoundingClientRect();
+    const below = rect.bottom + 4;
+    const above = rect.top - size.height - 4;
+    const y = below + size.height > window.innerHeight - 8 && above > 8 ? above : below;
+    box.style.setProperty('--sp-menu-x', `${Math.max(8, Math.min(Math.round(rect.left), window.innerWidth - size.width - 8))}px`);
+    box.style.setProperty('--sp-menu-y', `${Math.round(y)}px`);
     menu = box;
     document.addEventListener('pointerdown', onMenuAway, true);
     box.querySelector<HTMLElement>('button:not(:disabled)')?.focus();
@@ -407,6 +431,7 @@ export function buildStartPage(): {
   function openWidgetMenu(anchor: HTMLElement): void {
     openMenu(anchor, 'Add a widget', WIDGET_KINDS.map((kind) => ({
       label: WIDGET_LABELS[kind],
+      hint: WIDGET_HINTS[kind],
       icon: widgetIcon(kind),
       run: () => { cmd({ a: 'wadd', text: kind }); },
     })));
@@ -518,8 +543,13 @@ export function buildStartPage(): {
       askRemove(node.dial);
       return;
     }
+    gridKey(event, node.open);
+  }
+
+  /** Arrow keys, Home and End move focus across the tiles, by row and column. */
+  function gridKey(event: KeyboardEvent, from: HTMLElement): void {
     const opens = Array.from(grid.querySelectorAll<HTMLElement>('.sp-open'));
-    const index = opens.indexOf(node.open);
+    const index = opens.indexOf(from);
     const cols = Number.parseInt(grid.style.getPropertyValue('--sp-cols'), 10) || 1;
     let next = -1;
     switch (event.key) {
@@ -631,7 +661,7 @@ export function buildStartPage(): {
     }
   }
 
-  // ---- group tabs ----
+  // ---- group tabs (only once there is more than one group: one group is just "your speed dials") ----
   function paintGroups(s: StartSnapshot): void {
     const tabs: HTMLElement[] = [];
     s.groups.forEach((group, index) => {
@@ -667,7 +697,6 @@ export function buildStartPage(): {
       tabs.push(tab);
     });
     tablist.replaceChildren(...tabs);
-    addGroup.hidden = s.guest;
     groupTools.replaceChildren();
     const current = s.groups.findIndex((g) => g.id === s.group);
     if (current >= 0 && !s.guest) {
@@ -675,7 +704,7 @@ export function buildStartPage(): {
       const more = iconButton('more-horizontal', `Group options for ${group.title}`, () => openGroupMenu(more, group, current, s.groups.length), 'sp-group-more');
       groupTools.append(more);
     }
-    groupBar.hidden = s.groups.length === 0 && s.guest;
+    groupBar.hidden = s.groups.length < 2;
   }
 
   function paintCrumbs(s: StartSnapshot): void {
@@ -707,26 +736,9 @@ export function buildStartPage(): {
     crumbs.replaceChildren(...parts);
   }
 
-  function paintEmpty(s: StartSnapshot): void {
-    empty.replaceChildren();
-    const noGroups = s.groups.length === 0;
-    empty.hidden = !(noGroups || (s.dials.length === 0 && !s.settings.addButton));
-    if (empty.hidden) return;
-    const text = el('p', 'sp-empty-text');
-    if (s.guest) {
-      text.textContent = 'Speed dials are not kept in a guest window.';
-      empty.append(text);
-    } else if (noGroups) {
-      text.textContent = 'Pin the sites you open most. A group is a bookmark folder, so what you add here is in Bookmarks too.';
-      empty.append(text, textButton('Add a group', () => openGroupForm(), { icon: 'plus', primary: true }));
-    } else {
-      text.textContent = 'Nothing here yet.';
-      empty.append(text, textButton('Add a site', () => openDialForm(null), { icon: 'plus' }));
-    }
-  }
-
   function paintGrid(s: StartSnapshot): void {
-    const editable = !s.guest && s.groups.length > 0;
+    // With no group yet the add tile is still offered: the first site makes the group.
+    const editable = !s.guest;
     const nodes: HTMLElement[] = [];
     const seen = new Set<number>();
     for (const dial of s.dials) {
@@ -737,46 +749,25 @@ export function buildStartPage(): {
       nodes.push(node.root);
     }
     for (const id of Array.from(dialNodes.keys())) if (!seen.has(id)) dialNodes.delete(id);
-    if (editable) {
-      if (s.settings.addButton) {
-        const add = el('li', 'sp-dial sp-add');
-        add.setAttribute('role', 'listitem');
-        const open = el('button', 'sp-open');
-        open.type = 'button';
-        open.setAttribute('aria-label', 'Add a site');
-        const face = el('span', 'sp-face is-add');
-        face.setAttribute('aria-hidden', 'true');
-        face.append(icon('plus', { size: 24 }));
-        const title = el('span', 'sp-title');
-        title.textContent = 'Add a site';
-        add.dataset.labels = s.settings.titles === 'never' ? 'hide' : 'show';
-        open.append(face, title);
-        open.addEventListener('click', () => openDialForm(null));
-        open.addEventListener('keydown', (event) => {
-          const opens = Array.from(grid.querySelectorAll<HTMLElement>('.sp-open'));
-          const index = opens.indexOf(open);
-          if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') { event.preventDefault(); opens[Math.max(0, index - 1)]?.focus(); }
-        });
-        add.append(open);
-        nodes.push(add);
-      }
-      if (s.dials.length > 0 || s.settings.addButton) {
-        const folder = el('li', 'sp-dial sp-add sp-add-folder');
-        folder.setAttribute('role', 'listitem');
-        const open = el('button', 'sp-open');
-        open.type = 'button';
-        open.setAttribute('aria-label', 'New folder');
-        const face = el('span', 'sp-face is-add');
-        face.setAttribute('aria-hidden', 'true');
-        face.append(icon('folder', { size: 24 }));
-        const title = el('span', 'sp-title');
-        title.textContent = 'New folder';
-        folder.dataset.labels = s.settings.titles === 'never' ? 'hide' : 'show';
-        open.append(face, title);
-        open.addEventListener('click', () => openFolderForm());
-        folder.append(open);
-        nodes.push(folder);
-      }
+    if (editable && s.settings.addButton) {
+      const add = el('li', 'sp-dial sp-add');
+      add.setAttribute('role', 'listitem');
+      const open = el('button', 'sp-open');
+      open.type = 'button';
+      open.setAttribute('aria-label', 'Add site');
+      const face = el('span', 'sp-face is-add');
+      face.setAttribute('aria-hidden', 'true');
+      const chip = el('span', 'sp-chip');
+      chip.append(icon('plus', { size: 20 }));
+      face.append(chip);
+      const title = el('span', 'sp-title');
+      title.textContent = 'Add site';
+      add.dataset.labels = s.settings.titles === 'never' ? 'hide' : 'show';
+      open.append(face, title);
+      open.addEventListener('click', () => openDialForm(null));
+      open.addEventListener('keydown', (event) => gridKey(event, open));
+      add.append(open);
+      nodes.push(add);
     }
     grid.replaceChildren(...nodes);
     grid.hidden = nodes.length === 0;
@@ -802,13 +793,6 @@ export function buildStartPage(): {
   // ---- widgets ----
   const widgetNodes = new Map<number, WidgetNode>();
 
-  function widgetCard(id: number): WidgetNode {
-    const root2 = el('section', 'sp-widget');
-    root2.dataset.id = String(id);
-    const body = el('div', 'sp-widget-body');
-    return { root: root2, body, id };
-  }
-
   function paintWidgets(s: StartSnapshot): void {
     widgetsSection.hidden = !s.settings.widgets;
     if (!s.settings.widgets) return;
@@ -819,8 +803,13 @@ export function buildStartPage(): {
     const cards: HTMLElement[] = [];
     const seen = new Set<number>();
     for (const widget of s.widgets) {
-      const node = widgetNodes.get(widget.id) ?? widgetCard(widget.id);
-      widgetNodes.set(widget.id, node);
+      let node = widgetNodes.get(widget.id);
+      if (!node) {
+        const card = el('section', 'sp-widget');
+        card.dataset.id = String(widget.id);
+        node = { root: card, id: widget.id };
+        widgetNodes.set(widget.id, node);
+      }
       seen.add(widget.id);
       paintWidget(node, widget, s);
       cards.push(node.root);
@@ -837,24 +826,28 @@ export function buildStartPage(): {
     widgetGrid.hidden = cards.length === 0;
     addWidget.hidden = s.guest || s.widgets.length >= 12;
     widgetBar.hidden = addWidget.hidden;
-    if (s.widgets.length === 0 && !s.guest) {
-      const none = el('p', 'sp-widget-empty');
-      none.textContent = 'Add a widget to put top sites, a sticky note or a web page under your speed dials.';
-      widgetGrid.replaceChildren(none);
-      widgetGrid.hidden = false;
-    }
+  }
+
+  /** What a card is called: its kind, or for a web page its site and for bookmarks its folder. */
+  function widgetName(widget: Widget, s: StartSnapshot): string {
+    if (widget.kind === 'webpage' && widget.url !== '') return hostOnly(widget.url);
+    if (widget.kind === 'bookmarks' && widget.folder !== 0) return s.folders.find((f) => f.id === widget.folder)?.title ?? WIDGET_LABELS.bookmarks;
+    return WIDGET_LABELS[widget.kind];
   }
 
   function widgetHead(widget: Widget, s: StartSnapshot): HTMLElement {
     const head = el('header', 'sp-widget-head');
     const title = el('h2', 'sp-widget-title');
-    title.append(icon(widgetIcon(widget.kind), { size: 14 }));
-    const label = el('span');
-    label.textContent = WIDGET_LABELS[widget.kind];
-    title.append(label);
+    const glyph = el('span', 'sp-widget-glyph');
+    glyph.append(icon(widgetIcon(widget.kind), { size: 14 }));
+    const label = el('span', 'sp-widget-name');
+    label.textContent = widgetName(widget, s);
+    label.dir = 'auto';
+    title.append(glyph, label);
     const tools = el('div', 'sp-widget-tools');
+    const kindLabel = WIDGET_LABELS[widget.kind];
     if (!s.guest && (widget.kind === 'bookmarks' || widget.kind === 'webpage')) {
-      const gear = iconButton('gear', `${WIDGET_LABELS[widget.kind]} settings`, () => {
+      const gear = iconButton('gear', `${kindLabel} settings`, () => {
         configuring = configuring === widget.id ? null : widget.id;
         paintWidgets(s);
         layout();
@@ -862,14 +855,10 @@ export function buildStartPage(): {
       gear.setAttribute('aria-pressed', String(configuring === widget.id));
       tools.append(gear);
     }
-    if (!s.guest) {
-      const remove = iconButton('close', `Remove ${WIDGET_LABELS[widget.kind]}`, () => { cmd({ a: 'wremove', id: widget.id }); }, 'sp-widget-tool');
-      tools.append(remove);
-    }
     if (s.settings.widgetDrag && !s.guest) {
-      const grip = el('button', 'bw-icon-btn sp-grip');
+      const grip = el('button', 'bw-icon-btn sp-widget-tool sp-grip');
       grip.type = 'button';
-      grip.setAttribute('aria-label', `Move ${WIDGET_LABELS[widget.kind]}. Press Alt and an arrow key.`);
+      grip.setAttribute('aria-label', `Move ${kindLabel}. Press Alt and an arrow key.`);
       grip.setAttribute('data-tip', 'Drag to rearrange');
       grip.append(icon('grip'));
       grip.addEventListener('pointerdown', (event) => beginDrag(event, 'widget', widget.id, widgetNodes.get(widget.id)!.root));
@@ -886,7 +875,11 @@ export function buildStartPage(): {
         cmd(before === null ? { a: 'wmove', id: widget.id } : { a: 'wmove', id: widget.id, before });
         window.setTimeout(() => widgetNodes.get(widget.id)?.root.querySelector<HTMLElement>('.sp-grip')?.focus({ preventScroll: true }), 60);
       });
-      tools.prepend(grip);
+      tools.append(grip);
+    }
+    if (!s.guest) {
+      const remove = iconButton('close', `Remove ${kindLabel}`, () => { cmd({ a: 'wremove', id: widget.id }); }, 'sp-widget-tool');
+      tools.append(remove);
     }
     head.append(title, tools);
     return head;
@@ -894,26 +887,30 @@ export function buildStartPage(): {
 
   function paintWidget(node: WidgetNode, widget: Widget, s: StartSnapshot): void {
     node.root.dataset.kind = widget.kind;
-    const body = el('div', 'sp-widget-body');
+    node.root.classList.toggle('is-configuring', configuring === widget.id);
+    const body = el('div', 'sp-widget-body bw-scroll');
     const open = (url: string, event?: MouseEvent): void => { cmd(event?.ctrlKey || event?.shiftKey ? { a: 'openurl', url, on: true } : { a: 'openurl', url }); };
     switch (widget.kind) {
       case 'topsites': {
-        if (widget.sites.length === 0) body.append(note('Sites you visit often will appear here.'));
-        const list = el('ul', 'sp-list');
+        if (widget.sites.length === 0) {
+          body.append(emptyNote('clock', 'Sites you visit often will appear here.'));
+          break;
+        }
+        const list = el('ul', 'sp-icons');
         for (const site of widget.sites) {
           const item = el('li');
-          const button = el('button', 'sp-row');
+          const button = el('button', 'sp-icon-link');
           button.type = 'button';
-          const face = el('span', 'sp-row-face');
+          const face = el('span', 'sp-face sp-icon-face');
+          face.setAttribute('aria-hidden', 'true');
           paintFace(face, { kind: 'link', title: site.title, host: site.host });
-          const text = el('span', 'sp-row-text');
-          const name = el('span', 'sp-row-title');
-          name.textContent = site.title.trim() === '' ? site.host : guardTitle(site.title);
+          const name = el('span', 'sp-icon-name');
+          const title = site.title.trim() === '' ? site.host : guardTitle(site.title);
+          name.textContent = title;
           name.dir = 'auto';
-          const meta = el('span', 'sp-row-meta');
-          meta.textContent = site.host;
-          text.append(name, meta);
-          button.append(face, text);
+          button.setAttribute('aria-label', `${title}, ${site.host}`);
+          button.setAttribute('data-tip', site.host);
+          button.append(face, name);
           button.addEventListener('click', (event) => open(site.url, event));
           item.append(button);
           list.append(item);
@@ -923,19 +920,21 @@ export function buildStartPage(): {
       }
       case 'bookmarks': {
         if (configuring === widget.id && !s.guest) body.append(bookmarksConfig(widget, s));
-        if (widget.links.length === 0) body.append(note('No bookmarks in this folder.'));
-        const list = el('ul', widget.view === 'tiles' ? 'sp-tiles' : 'sp-list');
+        if (widget.links.length === 0) body.append(emptyNote('bookmark', 'No bookmarks in this folder.'));
+        const tiles = widget.view === 'tiles';
+        const list = el('ul', tiles ? 'sp-icons' : 'sp-list');
         for (const link of widget.links) {
           const item = el('li');
-          const button = el('button', widget.view === 'tiles' ? 'sp-mini' : 'sp-row');
+          const button = el('button', tiles ? 'sp-icon-link' : 'sp-row');
           button.type = 'button';
-          const face = el('span', widget.view === 'tiles' ? 'sp-mini-face sp-face' : 'sp-row-face');
+          const face = el('span', tiles ? 'sp-face sp-icon-face' : 'sp-face sp-row-face');
+          face.setAttribute('aria-hidden', 'true');
           // Tiles show a chosen image when the bookmark has one; the list is titles and favicons.
-          paintFace(face, widget.view === 'tiles' ? { kind: 'link', title: link.title, host: link.host, id: link.id, thumb: link.thumb } : { kind: 'link', title: link.title, host: link.host });
-          const name = el('span', widget.view === 'tiles' ? 'sp-mini-title' : 'sp-row-title');
+          paintFace(face, tiles ? { kind: 'link', title: link.title, host: link.host, id: link.id, thumb: link.thumb } : { kind: 'link', title: link.title, host: link.host });
+          const name = el('span', tiles ? 'sp-icon-name' : 'sp-row-title');
           name.textContent = guardTitle(link.title);
           name.dir = 'auto';
-          if (widget.view === 'tiles') button.append(face, name);
+          if (tiles) button.append(face, name);
           else {
             const text = el('span', 'sp-row-text');
             const meta = el('span', 'sp-row-meta');
@@ -946,7 +945,7 @@ export function buildStartPage(): {
           button.setAttribute('aria-label', `${guardTitle(link.title)}, ${link.host}`);
           button.addEventListener('click', (event) => open(link.url, event));
           item.append(button);
-          if (configuring === widget.id && !s.guest && widget.view === 'tiles') {
+          if (configuring === widget.id && !s.guest && tiles) {
             // With the settings strip open, a tile can be given a picture of your own (or go back to its icon).
             const tools = el('div', 'sp-mini-tools');
             tools.append(iconButton('image', `Choose an image for ${link.title}`, () => { cmd({ a: 'thumb', id: link.id }); }, 'sp-tool'));
@@ -955,7 +954,7 @@ export function buildStartPage(): {
           }
           list.append(item);
         }
-        body.append(list);
+        if (widget.links.length > 0) body.append(list);
         break;
       }
       case 'notes': {
@@ -963,8 +962,8 @@ export function buildStartPage(): {
         if (!area) {
           area = el('textarea', 'sp-note');
           area.maxLength = MAX_NOTE;
-          area.placeholder = 'Write a note';
-          area.setAttribute('aria-label', 'Sticky note');
+          area.placeholder = 'Write something…';
+          area.setAttribute('aria-label', 'Note');
           area.spellcheck = true;
           editors.set(widget.id, area);
           const edited = area;
@@ -994,36 +993,47 @@ export function buildStartPage(): {
           savedNotes.add(widget.id);
           status.textContent = NOTE_SAVED;
         }, { icon: 'notes', subtle: true });
+        save.classList.add('sp-note-save');
         save.disabled = s.guest;
         foot.append(status, save);
         body.append(area, foot);
+        body.classList.add('is-note');
         break;
       }
       case 'date': {
-        const parts = dateParts(new Date());
-        const day = el('p', 'sp-date-day');
-        day.textContent = parts.day;
-        const line = el('p', 'sp-date-line');
-        line.textContent = parts.weekday;
-        const month = el('p', 'sp-date-month');
-        month.textContent = `${parts.month} ${parts.year}`;
-        body.append(day, line, month);
-        body.classList.add('is-date');
+        const time = el('p', 'sp-wclock-time');
+        const day = el('p', 'sp-wclock-date');
+        body.append(time, day);
+        body.classList.add('is-clock');
+        paintClock(body);
         break;
       }
       case 'privacy': {
+        const lead = el('div', 'sp-stat-lead');
+        const badge = el('span', 'sp-stat-badge');
+        badge.setAttribute('aria-hidden', 'true');
+        badge.append(icon('shield-check', { size: 20 }));
+        const figure = el('div', 'sp-stat-figure');
         const big = el('p', 'sp-stat');
         big.textContent = widget.today.toLocaleString('en-GB');
         const caption = el('p', 'sp-stat-caption');
-        caption.textContent = 'blocked today';
-        const total = el('p', 'sp-stat-line');
-        total.textContent = `${blockedText(widget.total)} in all`;
-        body.append(big, caption, total);
-        if (widget.topHost !== '') {
-          const top = el('p', 'sp-stat-line');
-          top.textContent = `Most from ${widget.topHost} (${widget.topCount.toLocaleString('en-GB')})`;
-          body.append(top);
-        }
+        caption.textContent = widget.today === 1 ? 'request blocked today' : 'requests blocked today';
+        figure.append(big, caption);
+        lead.append(badge, figure);
+        const facts = el('dl', 'sp-facts');
+        const fact = (name: string, value: string): void => {
+          const wrap = el('div', 'sp-fact');
+          const dt = el('dt');
+          dt.textContent = name;
+          const dd = el('dd');
+          dd.textContent = value;
+          wrap.append(dt, dd);
+          facts.append(wrap);
+        };
+        fact('All time', blockedText(widget.total).replace(/ requests? blocked$/, ''));
+        if (widget.topHost !== '') fact('Most blocked', `${widget.topHost} (${widget.topCount.toLocaleString('en-GB')})`);
+        body.append(lead, facts);
+        body.classList.add('is-stats');
         break;
       }
       case 'webpage': {
@@ -1032,7 +1042,7 @@ export function buildStartPage(): {
         }
         if (widget.url === '') {
           frames.delete(widget.id);
-          body.append(note('Enter the address of a web page to show here.'));
+          body.classList.add('is-setup');
           break;
         }
         if (activeSpoilerMode() !== 'off' && approvedFrames.get(widget.id) !== widget.url) {
@@ -1063,6 +1073,7 @@ export function buildStartPage(): {
           entry = { url: widget.url, node: frame };
           frames.set(widget.id, entry);
         }
+        body.classList.add('is-frame');
         body.append(entry.node);
         break;
       }
@@ -1070,10 +1081,15 @@ export function buildStartPage(): {
     node.root.replaceChildren(widgetHead(widget, s), body);
   }
 
-  function note(text: string): HTMLElement {
+  function emptyNote(glyph: IconName, text: string): HTMLElement {
+    const wrap = el('div', 'sp-widget-empty');
+    const mark = el('span', 'sp-empty-glyph');
+    mark.setAttribute('aria-hidden', 'true');
+    mark.append(icon(glyph, { size: 18 }));
     const p = el('p', 'sp-widget-note');
     p.textContent = text;
-    return p;
+    wrap.append(mark, p);
+    return wrap;
   }
 
   function bookmarksConfig(widget: Extract<Widget, { kind: 'bookmarks' }>, s: StartSnapshot): HTMLElement {
@@ -1086,39 +1102,38 @@ export function buildStartPage(): {
       placeholder: 'Folder',
       onChange: (value) => { cmd({ a: 'wfolder', id: widget.id, parent: Number(value) }); },
     });
-    const views: ReadonlyArray<[BookmarkView, string]> = [['list', 'Titles and icons'], ['tiles', 'Tiles']];
-    const seg = el('div', 'bw-segmented sp-seg');
-    seg.setAttribute('role', 'radiogroup');
-    seg.setAttribute('aria-label', 'Show bookmarks as');
-    for (const [value, label] of views) {
-      const button = el('button');
-      button.type = 'button';
-      button.setAttribute('role', 'radio');
-      button.setAttribute('aria-checked', String(widget.view === value));
-      button.textContent = label;
-      button.addEventListener('click', () => { if (widget.view !== value) cmd({ a: 'wview', id: widget.id, text: value }); });
-      seg.append(button);
-    }
+    const views: ReadonlyArray<[BookmarkView, string]> = [['list', 'List'], ['tiles', 'Tiles']];
+    const seg = segmented('Show bookmarks as', views, widget.view, (value) => { if (widget.view !== value) cmd({ a: 'wview', id: widget.id, text: value }); });
     strip.append(picker.root, seg);
     return strip;
   }
 
   function webpageConfig(widget: Extract<Widget, { kind: 'webpage' }>): HTMLElement {
     const form = el('form', 'sp-config sp-url-form');
+    if (widget.url === '') {
+      const mark = el('span', 'sp-empty-glyph');
+      mark.setAttribute('aria-hidden', 'true');
+      mark.append(icon('globe', { size: 20 }));
+      const lead = el('p', 'sp-widget-note');
+      lead.textContent = 'Show any page in this card.';
+      form.append(mark, lead);
+    }
+    const row = el('div', 'sp-url-row');
     const input = el('input', 'bw-input');
     input.type = 'text';
     input.value = widget.url;
-    input.placeholder = 'https://example.com';
+    input.placeholder = 'example.com';
     input.maxLength = 2048;
     input.autocomplete = 'off';
     input.spellcheck = false;
     input.setAttribute('aria-label', 'Web page address');
     const go = textButton('Show', () => {}, { primary: true });
     go.type = 'submit';
+    row.append(input, go);
     const error = el('p', 'sp-error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
-    form.append(input, go, error);
+    form.append(row, error);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       const text = input.value.trim();
@@ -1139,19 +1154,281 @@ export function buildStartPage(): {
     return form;
   }
 
+  /** A segmented control (`role=radiogroup`) that reports the chosen value. */
+  function segmented<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, value: T | null, onPick: (value: T) => void, disabled = false): HTMLElement {
+    const seg = el('div', 'bw-segmented sp-seg');
+    seg.setAttribute('role', 'radiogroup');
+    seg.setAttribute('aria-label', label);
+    for (const [key, text] of options) {
+      const button = el('button');
+      button.type = 'button';
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', String(value === key));
+      button.dataset.value = key;
+      button.textContent = text;
+      button.disabled = disabled;
+      button.addEventListener('click', () => onPick(key));
+      seg.append(button);
+    }
+    return seg;
+  }
+
+  // ---- the clock (the page's own and every clock widget), redrawn on each new minute ----
+  function paintClock(only?: HTMLElement): void {
+    const now = clockParts(new Date());
+    const targets = only ? [only] : [clock, ...Array.from(widgetGrid.querySelectorAll<HTMLElement>('.is-clock'))];
+    for (const target of targets) {
+      const time = target.querySelector<HTMLElement>('.sp-clock-time, .sp-wclock-time');
+      const date = target.querySelector<HTMLElement>('.sp-clock-date, .sp-wclock-date');
+      if (time && time.textContent !== now.time) time.textContent = now.time;
+      if (date && date.textContent !== now.date) date.textContent = now.date;
+    }
+  }
+  function tick(): void {
+    clearTimeout(clockTimer);
+    paintClock();
+    clockTimer = window.setTimeout(tick, 60_000 - (Date.now() % 60_000) + 50);
+  }
+
+  // ---- the background ----
+  const INK_KEYS = Object.keys(wallInk('dark'));
+  function paintWallpaper(s: StartSnapshot): void {
+    const chosen: Wallpaper = s.settings.wallpaper;
+    let art = 'none';
+    let tone: WallTone | null = null;
+    if (chosen === 'custom') {
+      if (wallImage && wallImage.stamp === s.wall && s.wall !== '') {
+        art = `url("${wallImage.uri}")`;
+        tone = wallImage.tone;
+      }
+    } else if (chosen !== 'none') {
+      art = WALL_ART[chosen].art;
+      tone = WALL_ART[chosen].tone;
+    }
+    root.dataset.wall = tone ? chosen : 'none';
+    root.classList.toggle('has-wall', tone !== null);
+    backdrop.style.setProperty('--sp-wall-art', art);
+    if (tone) for (const [key, value] of Object.entries(wallInk(tone))) root.style.setProperty(key, value);
+    else for (const key of INK_KEYS) root.style.removeProperty(key);
+    root.style.setProperty('--sp-dim', String((tone ? s.settings.wallDim : 0) / 100));
+  }
+
+  function takeWallPart(part: Extract<StartMessage, { kind: 'wall' }>): void {
+    if (wallImage?.stamp === part.stamp) return;
+    if (!wallParts || wallParts.stamp !== part.stamp || wallParts.parts.length !== part.parts) {
+      wallParts = { stamp: part.stamp, parts: new Array<string>(part.parts).fill('') };
+    }
+    wallParts.parts[part.part] = part.data;
+    if (wallParts.parts.some((p) => p === '')) return;
+    const stamp = wallParts.stamp;
+    const uri = `data:image/jpeg;base64,${wallParts.parts.join('')}`;
+    wallParts = null;
+    const done = (tone: WallTone): void => {
+      wallImage = { stamp, uri, tone };
+      if (snap) {
+        paintWallpaper(snap);
+        if (!drawer.hidden) paintDrawer(snap);
+      }
+    };
+    if (typeof Image !== 'function') { done('dark'); return; }
+    // Whether the picture is mostly light or dark decides the colour of the text over it.
+    const probe = new Image();
+    probe.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 24;
+        canvas.height = 16;
+        const g = canvas.getContext('2d');
+        if (!g) { done('dark'); return; }
+        g.drawImage(probe, 0, 0, 24, 16);
+        done(toneOf(g.getImageData(0, 0, 24, 16).data));
+      } catch {
+        done('dark');
+      }
+    };
+    probe.onerror = () => done('dark');
+    probe.src = uri;
+  }
+
+  // ---- the Customise panel ----
+  let drawerReturn: HTMLElement | null = null;
+  function openDrawer(): void {
+    if (!snap) return;
+    closeMenu();
+    drawerReturn = document.activeElement instanceof HTMLElement ? document.activeElement : customise;
+    drawer.hidden = false;
+    root.classList.add('is-customising');
+    customise.setAttribute('aria-expanded', 'true');
+    paintDrawer(snap);
+    drawer.querySelector<HTMLElement>('.sp-drawer-close')?.focus({ preventScroll: true });
+  }
+  function closeDrawer(restore = true): void {
+    if (drawer.hidden) return;
+    drawer.hidden = true;
+    root.classList.remove('is-customising');
+    customise.setAttribute('aria-expanded', 'false');
+    if (restore && drawerReturn?.isConnected) drawerReturn.focus({ preventScroll: true });
+    drawerReturn = null;
+  }
+
+  function switchRow(label: string, on: boolean, onChange: (on: boolean) => void, key: string): HTMLElement {
+    const row = el('div', 'sp-drawer-row');
+    const text = el('span', 'sp-drawer-label');
+    text.id = `sp-dl-${key}`;
+    text.textContent = label;
+    const toggle = el('button', 'bw-toggle');
+    toggle.type = 'button';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-checked', String(on));
+    toggle.setAttribute('aria-labelledby', text.id);
+    toggle.dataset.ctl = key;
+    toggle.addEventListener('click', () => onChange(!on));
+    row.append(text, toggle);
+    return row;
+  }
+
+  function choiceRow(label: string, key: string, control: HTMLElement): HTMLElement {
+    const row = el('div', 'sp-drawer-row is-stacked');
+    const text = el('span', 'sp-drawer-label');
+    text.textContent = label;
+    control.dataset.ctl = key;
+    row.append(text, control);
+    return row;
+  }
+
+  function drawerSection(title: string, ...children: HTMLElement[]): HTMLElement {
+    const section = el('section', 'sp-drawer-section');
+    const h = el('h3', 'sp-drawer-h');
+    h.textContent = title;
+    section.append(h, ...children);
+    return section;
+  }
+
+  function swatch(value: Wallpaper, label: string, checked: boolean, paint: (art: HTMLElement) => void, onPick: () => void): HTMLElement {
+    const button = el('button', 'sp-swatch');
+    button.type = 'button';
+    button.setAttribute('role', 'radio');
+    button.setAttribute('aria-checked', String(checked));
+    button.setAttribute('aria-label', label);
+    button.dataset.value = value;
+    const art = el('span', 'sp-swatch-art');
+    art.setAttribute('aria-hidden', 'true');
+    paint(art);
+    const name = el('span', 'sp-swatch-name');
+    name.textContent = label;
+    button.append(art, name);
+    button.addEventListener('click', onPick);
+    return button;
+  }
+
+  function paintDrawer(s: StartSnapshot): void {
+    const focused = document.activeElement instanceof HTMLElement && drawer.contains(document.activeElement)
+      ? (document.activeElement.closest<HTMLElement>('[data-ctl]')?.dataset.ctl ?? '') : '';
+    const st = s.settings;
+    const head = el('header', 'sp-drawer-head');
+    const title = el('h2', 'sp-drawer-title');
+    title.textContent = 'Customise';
+    const close = iconButton('close', 'Close', () => closeDrawer(), 'sp-drawer-close');
+    close.dataset.ctl = 'close';
+    head.append(title, close);
+
+    // Background
+    const swatches = el('div', 'sp-swatches');
+    swatches.setAttribute('role', 'radiogroup');
+    swatches.setAttribute('aria-label', 'Background');
+    swatches.dataset.ctl = 'wallpaper';
+    swatches.append(swatch('none', 'Glass', st.wallpaper === 'none', (art) => { art.classList.add('is-glass'); }, () => { setting('start_wallpaper', 'none'); }));
+    for (const [key, entry] of Object.entries(WALL_ART) as Array<[Exclude<Wallpaper, 'none' | 'custom'>, (typeof WALL_ART)[keyof typeof WALL_ART]]>) {
+      swatches.append(swatch(key, entry.label, st.wallpaper === key, (art) => { art.style.setProperty('--sp-swatch-art', entry.art); }, () => { setting('start_wallpaper', key); }));
+    }
+    const hasPicture = s.wall !== '';
+    swatches.append(swatch('custom', 'Your picture', st.wallpaper === 'custom', (art) => {
+      if (wallImage && wallImage.stamp === s.wall && hasPicture) art.style.setProperty('--sp-swatch-art', `url("${wallImage.uri}")`);
+      else {
+        art.classList.add('is-upload');
+        art.append(icon('image', { size: 18 }));
+      }
+    }, () => { if (hasPicture) setting('start_wallpaper', 'custom'); else cmd({ a: 'wallpaper' }); }));
+    const pictureTools = el('div', 'sp-drawer-actions');
+    const upload = textButton(hasPicture ? 'Change picture' : 'Upload a picture', () => { cmd({ a: 'wallpaper' }); }, { icon: 'image', subtle: true });
+    upload.dataset.ctl = 'upload';
+    pictureTools.append(upload);
+    if (hasPicture) {
+      const removePicture = textButton('Remove', () => { cmd({ a: 'wallclear' }); }, { icon: 'trash', subtle: true });
+      removePicture.dataset.ctl = 'wallclear';
+      pictureTools.append(removePicture);
+    }
+    const background = drawerSection('Background', swatches, pictureTools);
+    if (st.wallpaper !== 'none') {
+      background.append(choiceRow('Dim the picture', 'dim', segmented('Dim the picture', DIM_STEPS.map(([n, label]) => [String(n), label] as const), String(dimStep(st.wallDim)), (value) => { setting('start_wallpaper_dim', value); })));
+    }
+
+    // What the page shows
+    const show = drawerSection('Show',
+      switchRow('Clock', st.clock, (on) => { setting('start_clock', on); }, 'clock'),
+      switchRow('Search box', st.search, (on) => { setting('start_search', on); }, 'search'),
+      switchRow('Speed dials', st.dials, (on) => { setting('start_dials', on); }, 'dials'),
+      switchRow('Widgets', st.widgets, (on) => { setting('start_widgets', on); }, 'widgets'),
+    );
+
+    const dials = drawerSection('Speed dials',
+      choiceRow('Tile size', 'size', segmented('Tile size', SIZE_LABELS.map((label, i) => [String(i + 1), label] as const), String(st.thumbSize), (value) => { setting('start_thumb_size', value); }, !st.dials)),
+      choiceRow('Site names', 'titles', segmented('Site names', TITLE_CHOICES, st.titles, (value) => { setting('start_titles', value); }, !st.dials)),
+      switchRow('Add site tile', st.addButton, (on) => { setting('start_add_button', on); }, 'addButton'),
+    );
+    dials.classList.toggle('is-off', !st.dials);
+
+    const addOne = textButton('Add widget', () => openWidgetMenu(addOne), { icon: 'plus', subtle: true });
+    addOne.dataset.ctl = 'addwidget';
+    addOne.disabled = s.widgets.length >= 12;
+    const widgetsPart = drawerSection('Widgets',
+      choiceRow('Card style', 'style', segmented('Card style', STYLE_CHOICES, (WIDGET_BGS as readonly WidgetBg[]).includes(st.widgetBg) && st.widgetBg !== 'custom' ? st.widgetBg : null, (value) => { setting('start_widget_bg', value); }, !st.widgets)),
+      choiceRow('Columns', 'wcols', segmented('Columns', (['1', '2', '3', '4'] as const).map((n) => [n, n] as const), String(st.widgetColumns), (value) => { setting('start_widget_columns', value); }, !st.widgets)),
+      choiceRow('Height', 'wheight', segmented('Height', [['regular', 'Regular'], ['tall', 'Tall']] as const, st.widgetHeight, (value) => { setting('start_widget_height', value); }, !st.widgets)),
+    );
+    if (st.widgets) {
+      const actions = el('div', 'sp-drawer-actions');
+      actions.append(addOne);
+      widgetsPart.append(actions);
+    }
+    widgetsPart.classList.toggle('is-off', !st.widgets);
+
+    const body = el('div', 'sp-drawer-body bw-scroll');
+    body.append(background, show, dials, widgetsPart);
+    const foot = el('footer', 'sp-drawer-foot');
+    const more = textButton('All start page settings', () => { cmd({ a: 'settings' }); }, { icon: 'settings', subtle: true });
+    more.dataset.ctl = 'more';
+    foot.append(more);
+    const scroll = drawer.querySelector('.sp-drawer-body')?.scrollTop ?? 0;
+    drawer.replaceChildren(head, body, foot);
+    body.scrollTop = scroll;
+    if (focused) {
+      const target = drawer.querySelector<HTMLElement>(`[data-ctl="${focused}"]`);
+      const inner = target?.matches('button') ? target : target?.querySelector<HTMLElement>('[aria-checked="true"], button');
+      inner?.focus({ preventScroll: true });
+    }
+  }
+
   // ---- applying a message ----
   function render(s: StartSnapshot): void {
     snap = s;
     root.classList.toggle('is-guest', s.guest);
     root.classList.toggle('has-widgets', s.settings.widgets);
-    // Speed dials are opt-in (Settings > Start page): off, a new tab is blank apart from the widgets.
-    dialsSection.hidden = !s.settings.dials;
+    clock.hidden = !s.settings.clock;
+    search.hidden = !s.settings.search;
+    hero.hidden = !s.settings.clock && !s.settings.search;
+    // Speed dials are opt-in (Settings > Start page): off, a new tab shows no tiles.
+    dialsSection.hidden = !s.settings.dials || (s.guest && s.dials.length === 0);
+    customise.hidden = s.guest;
+    if (s.guest) closeDrawer(false);
+    paintWallpaper(s);
     paintGroups(s);
     paintCrumbs(s);
     paintGrid(s);
-    paintEmpty(s);
     paintWidgets(s);
+    paintClock();
     layout();
+    if (!drawer.hidden) paintDrawer(s);
     if (s.ack === 'failed') say(s.error);
   }
 
@@ -1169,18 +1446,25 @@ export function buildStartPage(): {
   observer.observe(column);
 
   root.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && menu) {
-      closeMenu();
+    if (event.key !== 'Escape') return;
+    if (menu) closeMenu();
+    else if (!drawer.hidden && !modal) {
+      event.preventDefault();
+      closeDrawer();
     }
   });
   window.addEventListener('focus', () => {
-    // The date is read here and at midnight: a page left open overnight shows today.
-    if (snap && widgetNodes.size > 0) paintWidgets(snap);
+    // A page left open overnight shows today.
+    if (snap) paintClock();
   });
 
   return {
     root,
     show(msg: StartMessage): void {
+      if (msg.kind === 'wall') {
+        takeWallPart(msg);
+        return;
+      }
       if (msg.kind === 'thumbs') {
         for (const [id, uri] of Object.entries(msg.thumbs)) thumbs.set(Number(id), uri);
         if (snap) {
@@ -1197,11 +1481,13 @@ export function buildStartPage(): {
       const keep = new Set(msg.snap.dials.filter((d) => d.thumb).map((d) => d.id));
       for (const widget of msg.snap.widgets) if (widget.kind === 'bookmarks') for (const link of widget.links) if (link.thumb) keep.add(link.id);
       for (const id of Array.from(thumbs.keys())) if (!keep.has(id)) thumbs.delete(id);
+      if (msg.snap.wall === '') { wallImage = null; wallParts = null; }
       render(msg.snap);
       if (!entered) {
         // The page comes up with the short shared enter (a fade, reduced motion included) whenever a
         // blank tab shows it, not on every snapshot.
         entered = true;
+        tick();
         column.classList.remove('bw-enter');
         void column.offsetWidth;
         column.classList.add('bw-enter');
@@ -1210,6 +1496,8 @@ export function buildStartPage(): {
     hidden(): void {
       closeMenu();
       closeModal(false);
+      closeDrawer(false);
+      clearTimeout(clockTimer);
       entered = false;
     },
   };

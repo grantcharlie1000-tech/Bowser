@@ -1,22 +1,18 @@
 /*
- * Surface: START PAGE (?view=split over a blank new tab, the speed dials and the dashboard widgets).
+ * Surface: START PAGE (?view=split over a blank new tab: the clock, the search box, the speed dials,
+ * the widgets and the Customise panel).
  * Owner: start page.
  * Built by ui/src/start-page.ts; words and decisions in ui/src/start-page-logic.ts. Spec:
  * docs/design/start-page.md. The host is the split view's one HTML host (split.css), shown over the new
  * tab; this file only adds what the page itself draws, scoped under #app.split-view.is-start.
  *
- * Tokens only: the page takes the theme's window, island, hairline and accent tokens, so it follows
- * light/dark and the user's accent like every surface. Motion is the shared enter (a short fade) and
- * transform/translate while a tile is dragged; nothing waits for an animation and reduced motion falls
- * back to the base layer's short fade. The one dynamic colour is the widget background the user picks
- * (--sp-widget-custom, set from TS through CSSOM, and --sp-widget-custom-fg, the text that reads on it).
+ * Tokens only. With no background picture the page is the window's glass and reads the theme's tokens.
+ * With one, start-page.ts sets the page's own ink and glass (--sp-ink, --sp-glass, ...) for the
+ * picture's tone, and the picture itself (--sp-wall-art), through CSSOM; every rule here reads those
+ * names, so the same rules serve both. Motion is the shared enter, transform while a tile is dragged or
+ * lifted, and the panel's slide; reduced motion falls back to the base layer's short fade.
  */
 
-/* See-through, like the chrome behind the tabs: the window's glass shows through (the host's default
- * background is transparent, and the overlay draws only the page's edge over it). */
-/* The host's state is always `solid` (shared with the bookmarks bar and the private landing), which
- * paints body.solid in the window colour; the start page leaves its body clear too. Without glass the
- * window itself is that colour, so it still reads the same. */
 body:has(> #app.split-view.is-start) {
   background: transparent;
 }
@@ -29,23 +25,39 @@ body:has(> #app.split-view.is-start) {
 }
 
 #app.split-view.is-start .sp-page {
+  /* The page's ink and materials. start-page.ts overrides them inline over a background picture. */
+  --sp-ink: var(--bw-text);
+  --sp-ink-2: var(--bw-text-2);
+  --sp-glass: color-mix(in srgb, var(--bw-text) 7%, transparent);
+  --sp-glass-hover: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --sp-glass-edge: color-mix(in srgb, var(--bw-text) 10%, transparent);
+  --sp-field: color-mix(in srgb, var(--bw-text) 7%, var(--bw-window-opaque));
+  --sp-field-ink: var(--bw-text);
+  --sp-field-ink-2: var(--bw-text-2);
+  --sp-dim-colour: transparent;
+  --sp-blur: none;
+  position: relative;
   box-sizing: border-box;
   width: 100%;
   min-height: 100%;
-  padding: max(24px, 8vh) var(--bw-space-6) var(--bw-space-6);
+  padding: 0 var(--bw-space-6) calc(var(--bw-space-6) * 4);
+  color: var(--sp-ink);
+}
+
+:root[data-scheme="light"] #app.split-view.is-start .sp-page {
+  --sp-glass: color-mix(in srgb, var(--bw-on-glyph) 62%, transparent);
+  --sp-glass-hover: color-mix(in srgb, var(--bw-on-glyph) 88%, transparent);
+  --sp-glass-edge: color-mix(in srgb, var(--bw-text) 9%, transparent);
+  --sp-field: var(--bw-on-glyph);
+}
+
+#app.split-view.is-start .sp-page.has-wall {
+  --sp-blur: blur(18px) saturate(1.3);
 }
 
 /* The hidden attribute wins over every display this file sets. */
 #app.split-view.is-start .sp-page [hidden] {
-  display: none;
-}
-
-#app.split-view.is-start .sp-column {
-  display: flex;
-  flex-direction: column;
-  gap: var(--bw-space-6);
-  width: min(1180px, 100%);
-  margin: 0 auto;
+  display: none !important;
 }
 
 #app.split-view.is-start .sp-sr {
@@ -57,16 +69,157 @@ body:has(> #app.split-view.is-start) {
   white-space: nowrap;
 }
 
-/* ---- Groups ---- */
+/* ---- Background ---- */
+#app.split-view.is-start .sp-backdrop {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  background-image: var(--sp-wall-art, none);
+  background-position: center;
+  background-size: cover;
+  pointer-events: none;
+}
+
+#app.split-view.is-start .sp-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--sp-dim-colour);
+  opacity: var(--sp-dim, 0);
+}
+
+#app.split-view.is-start .sp-column {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--bw-space-6) + var(--bw-space-4));
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding-top: clamp(32px, 13vh, 150px);
+}
+
+/* ---- Clock and search ---- */
+#app.split-view.is-start .sp-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--bw-space-6);
+}
+
+#app.split-view.is-start .sp-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--bw-space-1);
+  text-align: center;
+}
+
+#app.split-view.is-start .sp-clock-time {
+  margin: 0;
+  color: var(--sp-ink);
+  font-size: calc(68px * var(--bw-font-scale));
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+#app.split-view.is-start .sp-clock-date {
+  margin: 0;
+  color: var(--sp-ink-2);
+  font-size: calc(15px * var(--bw-font-scale));
+  line-height: calc(22px * var(--bw-font-scale));
+}
+
+#app.split-view.is-start .has-wall .sp-clock-time,
+#app.split-view.is-start .has-wall .sp-clock-date,
+#app.split-view.is-start .has-wall .sp-title {
+  text-shadow: 0 1px 12px color-mix(in srgb, var(--sp-dim-colour) 45%, transparent);
+}
+
+#app.split-view.is-start .sp-find {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  box-sizing: border-box;
+  width: min(600px, 100%);
+  height: 50px;
+  padding: 0 var(--bw-space-1_5) 0 var(--bw-space-4);
+  border: 1px solid var(--sp-glass-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--sp-field);
+  box-shadow: var(--bw-sh-flyout);
+  color: var(--sp-field-ink);
+  transition: border-color var(--bw-dur-fast) var(--bw-ease-fade), background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-find:focus-within {
+  border-color: var(--bw-focus);
+  box-shadow: var(--bw-sh-flyout), 0 0 0 1px var(--bw-focus);
+}
+
+#app.split-view.is-start .sp-find-glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--sp-field-ink-2);
+}
+
+#app.split-view.is-start .sp-find-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--sp-field-ink);
+  font: inherit;
+  font-size: calc(15px * var(--bw-font-scale));
+}
+
+#app.split-view.is-start .sp-find-input::placeholder {
+  color: var(--sp-field-ink-2);
+}
+
+#app.split-view.is-start .sp-find-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+#app.split-view.is-start .sp-find-go {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sp-field-ink-2);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-find-go:hover,
+#app.split-view.is-start .sp-find:focus-within .sp-find-go {
+  background: var(--bw-accent);
+  color: var(--bw-on-accent);
+}
+
+#app.split-view.is-start .sp-find-go:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 2px;
+}
+
+/* ---- Groups (shown only once there are two or more) ---- */
 #app.split-view.is-start .sp-dials {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--bw-space-4);
-}
-
-/* Speed dials off (the default, `start_dials`): the display above must not beat [hidden]. */
-#app.split-view.is-start .sp-dials[hidden] {
-  display: none;
 }
 
 #app.split-view.is-start .sp-groups {
@@ -74,53 +227,64 @@ body:has(> #app.split-view.is-start) {
   align-items: center;
   justify-content: center;
   gap: var(--bw-space-1);
-  min-height: 32px;
+  max-width: 100%;
 }
 
 #app.split-view.is-start .sp-tabs {
   display: flex;
   align-items: center;
-  flex: 0 1 auto;
-  gap: var(--bw-space-1);
+  gap: var(--bw-space-0_5);
   min-width: 0;
+  padding: 3px;
   overflow-x: auto;
+  border: 1px solid var(--sp-glass-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--sp-glass);
+  backdrop-filter: var(--sp-blur);
   scrollbar-width: none;
 }
 
 #app.split-view.is-start .sp-tab {
   flex: none;
-  max-width: 220px;
+  max-width: 200px;
   height: 28px;
   margin: 0;
-  padding: 0 var(--bw-space-3);
+  padding: 0 var(--bw-space-4);
   overflow: hidden;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--bw-r-pill);
   background: transparent;
-  color: var(--bw-text-dim);
+  color: var(--sp-ink-2);
   font: inherit;
   font-size: var(--bw-text-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: default;
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
 #app.split-view.is-start .sp-tab:hover {
-  background: var(--bw-island-hover);
-  color: var(--bw-text);
+  color: var(--sp-ink);
 }
 
 #app.split-view.is-start .sp-tab[aria-selected="true"] {
-  border-color: var(--bw-island-edge);
-  background: var(--bw-island-active);
-  color: var(--bw-text);
+  background: var(--sp-glass-hover);
+  color: var(--sp-ink);
   font-weight: var(--bw-weight-strong);
+}
+
+#app.split-view.is-start .sp-tab:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
 }
 
 #app.split-view.is-start .sp-group-tools {
   display: flex;
   flex: none;
+}
+
+#app.split-view.is-start .sp-group-tools .bw-icon-btn,
+#app.split-view.is-start .sp-crumbs .bw-icon-btn {
+  color: var(--sp-ink-2);
 }
 
 /* ---- Folder path ---- */
@@ -130,7 +294,7 @@ body:has(> #app.split-view.is-start) {
   justify-content: center;
   gap: var(--bw-space-1);
   min-height: 28px;
-  color: var(--bw-text-2);
+  color: var(--sp-ink-2);
   font-size: var(--bw-text-caption);
 }
 
@@ -142,28 +306,29 @@ body:has(> #app.split-view.is-start) {
   border: 0;
   border-radius: var(--bw-r-control);
   background: transparent;
-  color: var(--bw-text-2);
+  color: var(--sp-ink-2);
   font: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 #app.split-view.is-start .sp-crumb:hover:not([aria-current]) {
-  background: var(--bw-island-hover);
-  color: var(--bw-text);
+  background: var(--sp-glass-hover);
+  color: var(--sp-ink);
 }
 
 #app.split-view.is-start .sp-crumb[aria-current] {
-  color: var(--bw-text);
+  color: var(--sp-ink);
   font-weight: var(--bw-weight-strong);
 }
 
-/* ---- Dials ---- */
+/* ---- Speed dials ---- */
 #app.split-view.is-start .sp-grid {
   display: grid;
   grid-template-columns: repeat(var(--sp-cols, 6), var(--sp-tile, 148px));
   justify-content: center;
-  gap: var(--bw-space-4) var(--bw-space-4);
+  gap: 20px var(--bw-space-4);
+  width: 100%;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -177,16 +342,16 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-open {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--bw-space-2);
   width: 100%;
   margin: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--bw-text);
+  color: var(--sp-ink);
   font: inherit;
   text-align: center;
-  cursor: default;
 }
 
 #app.split-view.is-start .sp-open:focus-visible {
@@ -207,16 +372,43 @@ body:has(> #app.split-view.is-start) {
   width: 100%;
   aspect-ratio: 16 / 10;
   overflow: hidden;
-  border: 1px solid var(--bw-island-edge);
-  border-radius: var(--bw-r-island);
-  background: var(--bw-island);
-  color: var(--bw-text-2);
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), border-color var(--bw-dur-fast) var(--bw-ease-fade);
+  border: 1px solid var(--sp-glass-edge);
+  border-radius: 14px;
+  background: var(--sp-glass);
+  backdrop-filter: var(--sp-blur);
+  color: var(--sp-ink-2);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), border-color var(--bw-dur-fast) var(--bw-ease-fade), transform var(--bw-dur-base) var(--bw-ease-out);
 }
 
 #app.split-view.is-start .sp-open:hover .sp-face {
-  border-color: var(--bw-pill-edge);
-  background: var(--bw-island-hover);
+  background: var(--sp-glass-hover);
+  transform: translateY(-2px);
+}
+
+#app.split-view.is-start .sp-open:active .sp-face {
+  transform: translateY(0) scale(0.98);
+}
+
+/* The round chip in the middle of a tile: the site's icon, its letter, a folder, or the plus. */
+#app.split-view.is-start .sp-chip {
+  display: grid;
+  place-items: center;
+  width: clamp(30px, calc(var(--sp-tile, 148px) * 0.3), 60px);
+  height: clamp(30px, calc(var(--sp-tile, 148px) * 0.3), 60px);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--sp-ink) 12%, transparent);
+  color: var(--sp-ink);
+}
+
+#app.split-view.is-start .sp-face.has-icon .sp-chip {
+  background: color-mix(in srgb, var(--bw-on-glyph) 92%, transparent);
+  box-shadow: var(--bw-sh-tip);
+}
+
+#app.split-view.is-start .sp-fav {
+  width: 56%;
+  height: 56%;
+  object-fit: contain;
 }
 
 #app.split-view.is-start .sp-thumb {
@@ -225,14 +417,9 @@ body:has(> #app.split-view.is-start) {
   object-fit: cover;
 }
 
-#app.split-view.is-start .sp-fav {
-  width: clamp(24px, calc(var(--sp-tile, 148px) * 0.26), 56px);
-  height: clamp(24px, calc(var(--sp-tile, 148px) * 0.26), 56px);
-  object-fit: contain;
-}
-
-#app.split-view.is-start .sp-face[data-tone] {
-  background: color-mix(in srgb, var(--sp-tone, var(--bw-glyph-fill)) 24%, transparent);
+#app.split-view.is-start .sp-face[data-tone] .sp-chip {
+  background: var(--sp-tone, var(--bw-glyph-fill));
+  color: var(--bw-on-glyph);
 }
 
 #app.split-view.is-start .sp-face[data-tone="0"] { --sp-tone: var(--bw-group-0); }
@@ -245,38 +432,35 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-face[data-tone="7"] { --sp-tone: var(--bw-group-7); }
 
 #app.split-view.is-start .sp-letter {
-  color: var(--bw-text);
-  font-size: clamp(20px, calc(var(--sp-tile, 148px) * 0.24), 44px);
+  color: inherit;
+  font-size: clamp(14px, calc(var(--sp-tile, 148px) * 0.13), 26px);
   font-weight: var(--bw-weight-strong);
   line-height: 1;
 }
 
-#app.split-view.is-start .sp-face.is-folder,
-#app.split-view.is-start .sp-face.is-add {
-  color: var(--bw-text-2);
-}
-
 #app.split-view.is-start .sp-add .sp-face {
-  border-style: dashed;
+  border: 1.5px dashed color-mix(in srgb, var(--sp-ink) 28%, transparent);
   background: transparent;
+  backdrop-filter: none;
 }
 
 #app.split-view.is-start .sp-add .sp-open:hover .sp-face {
-  background: var(--bw-island-hover);
-  color: var(--bw-text);
+  border-color: color-mix(in srgb, var(--sp-ink) 50%, transparent);
+  background: var(--sp-glass);
 }
 
 #app.split-view.is-start .sp-title {
-  display: -webkit-box;
-  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
-  color: var(--bw-text);
+  color: var(--sp-ink);
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
-  overflow-wrap: anywhere;
   text-overflow: ellipsis;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: nowrap;
+}
+
+#app.split-view.is-start .sp-add .sp-title {
+  color: var(--sp-ink-2);
 }
 
 /* Titles: always, never, or only when needed (on hover and focus for a tile that shows an image). */
@@ -302,9 +486,10 @@ body:has(> #app.split-view.is-start) {
   gap: var(--bw-space-0_5);
   padding: var(--bw-space-0_5);
   border: 1px solid var(--bw-hairline);
-  border-radius: var(--bw-r-control);
+  border-radius: var(--bw-r-island);
   background: var(--bw-overlay);
   box-shadow: var(--bw-sh-tip);
+  color: var(--bw-text);
   opacity: 0;
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
 }
@@ -320,28 +505,9 @@ body:has(> #app.split-view.is-start) {
 
 #app.split-view.is-start .sp-more {
   grid-column: 1 / -1;
-  color: var(--bw-text-2);
+  color: var(--sp-ink-2);
   font-size: var(--bw-text-caption);
   text-align: center;
-}
-
-#app.split-view.is-start .sp-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--bw-space-3);
-  padding: var(--bw-space-6) 0;
-  color: var(--bw-text-2);
-  text-align: center;
-}
-
-#app.split-view.is-start .sp-empty-text,
-#app.split-view.is-start .sp-widget-note,
-#app.split-view.is-start .sp-widget-empty,
-#app.split-view.is-start .sp-confirm {
-  max-width: 420px;
-  margin: 0;
-  color: var(--bw-text-2);
 }
 
 /* ---- Dragging a dial or a widget ---- */
@@ -364,6 +530,7 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-widget.is-drop-after::after {
   content: "";
   position: absolute;
+  z-index: 2;
   top: 0;
   bottom: 0;
   width: 3px;
@@ -390,7 +557,7 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-widgets {
   display: flex;
   flex-direction: column;
-  gap: var(--bw-space-3);
+  gap: var(--bw-space-4);
 }
 
 #app.split-view.is-start .sp-widget-grid {
@@ -399,71 +566,95 @@ body:has(> #app.split-view.is-start) {
   gap: var(--bw-space-4);
 }
 
+#app.split-view.is-start .sp-page {
+  /* The card material, by the Widget background setting. */
+  --sp-card: var(--sp-glass);
+  --sp-card-edge: var(--sp-glass-edge);
+  --sp-card-ink: var(--sp-ink);
+  --sp-card-ink-2: var(--sp-ink-2);
+  --sp-card-blur: var(--sp-blur);
+  --sp-wh: 224px;
+}
+
+#app.split-view.is-start .sp-page.is-tall {
+  --sp-wh: 392px;
+}
+
+#app.split-view.is-start .sp-page.is-bg-solid {
+  --sp-card: var(--bw-card);
+  --sp-card-edge: var(--bw-card-edge);
+  --sp-card-ink: var(--bw-text);
+  --sp-card-ink-2: var(--bw-text-2);
+  --sp-card-blur: none;
+}
+
+#app.split-view.is-start .sp-page.is-bg-transparent {
+  --sp-card: transparent;
+  --sp-card-edge: transparent;
+  --sp-card-blur: none;
+}
+
+#app.split-view.is-start .sp-page.is-bg-custom {
+  --sp-card: var(--sp-widget-custom);
+  --sp-card-edge: color-mix(in srgb, var(--sp-widget-custom-fg) 14%, transparent);
+  --sp-card-ink: var(--sp-widget-custom-fg);
+  --sp-card-ink-2: color-mix(in srgb, var(--sp-widget-custom-fg) 78%, var(--sp-widget-custom));
+  --sp-card-blur: none;
+}
+
 #app.split-view.is-start .sp-widget {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--bw-space-2);
-  box-sizing: border-box;
+  height: var(--sp-wh);
   min-width: 0;
-  padding: var(--bw-space-3);
   overflow: hidden;
-  border: 1px solid var(--bw-island-edge);
-  border-radius: var(--bw-r-island);
-  color: var(--bw-text);
+  border: 1px solid var(--sp-card-edge);
+  border-radius: 18px;
+  background: var(--sp-card);
+  backdrop-filter: var(--sp-card-blur);
+  color: var(--sp-card-ink);
 }
 
-#app.split-view.is-start .is-regular .sp-widget {
-  height: 208px;
-}
-
-#app.split-view.is-start .is-tall .sp-widget {
-  height: 384px;
-}
-
-#app.split-view.is-start .is-bg-solid .sp-widget {
-  border-color: var(--bw-hairline);
-  background: var(--bw-overlay);
-}
-
-#app.split-view.is-start .is-bg-translucent .sp-widget {
-  background: var(--bw-island);
-}
-
-#app.split-view.is-start .is-bg-transparent .sp-widget {
-  border-color: var(--bw-hairline);
-  background: transparent;
-}
-
-#app.split-view.is-start .is-bg-custom .sp-widget {
-  border-color: transparent;
-  background: var(--sp-widget-custom);
-  color: var(--sp-widget-custom-fg);
-  --bw-text: var(--sp-widget-custom-fg);
-  --bw-text-2: color-mix(in srgb, var(--sp-widget-custom-fg) 78%, transparent);
+/* A note is a little warmer than the other cards. */
+#app.split-view.is-start .sp-widget[data-kind="notes"] {
+  background: color-mix(in srgb, var(--bw-warning) 16%, var(--sp-card));
 }
 
 #app.split-view.is-start .sp-widget-head {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: var(--bw-space-1);
-  min-height: 24px;
+  justify-content: space-between;
+  gap: var(--bw-space-2);
+  height: 44px;
+  padding: 0 var(--bw-space-2) 0 var(--bw-space-4);
 }
 
 #app.split-view.is-start .sp-widget-title {
   display: flex;
-  flex: 1 1 auto;
   align-items: center;
   gap: var(--bw-space-2);
   min-width: 0;
   margin: 0;
-  color: var(--bw-text-2);
+  color: var(--sp-card-ink-2);
   font-size: var(--bw-text-caption);
   font-weight: var(--bw-weight-strong);
-  line-height: var(--bw-leading-caption);
 }
 
-#app.split-view.is-start .sp-widget-title > span {
+#app.split-view.is-start .sp-widget-glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--sp-card-ink) 10%, transparent);
+  color: var(--sp-card-ink);
+}
+
+#app.split-view.is-start .sp-widget-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -472,19 +663,19 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-widget-tools {
   display: flex;
   flex: none;
-}
-
-#app.split-view.is-start .sp-widget-tool,
-#app.split-view.is-start .sp-grip {
+  gap: var(--bw-space-0_5);
   opacity: 0;
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-#app.split-view.is-start .sp-widget:hover .sp-widget-tool,
-#app.split-view.is-start .sp-widget:hover .sp-grip,
-#app.split-view.is-start .sp-widget:focus-within .sp-widget-tool,
-#app.split-view.is-start .sp-widget:focus-within .sp-grip {
+#app.split-view.is-start .sp-widget:hover .sp-widget-tools,
+#app.split-view.is-start .sp-widget:focus-within .sp-widget-tools,
+#app.split-view.is-start .sp-widget.is-configuring .sp-widget-tools {
   opacity: 1;
+}
+
+#app.split-view.is-start .sp-widget-tool {
+  color: var(--sp-card-ink-2);
 }
 
 #app.split-view.is-start .sp-grip {
@@ -495,11 +686,9 @@ body:has(> #app.split-view.is-start) {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: var(--bw-space-2);
   min-height: 0;
-  overflow-x: hidden;
+  padding: 0 var(--bw-space-4) var(--bw-space-4);
   overflow-y: auto;
-  scrollbar-width: thin;
 }
 
 #app.split-view.is-start .sp-widget-bar {
@@ -507,78 +696,178 @@ body:has(> #app.split-view.is-start) {
   justify-content: center;
 }
 
-#app.split-view.is-start .sp-list,
-#app.split-view.is-start .sp-tiles {
+#app.split-view.is-start .sp-add-widget {
+  border: 1px solid var(--sp-glass-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--sp-glass);
+  backdrop-filter: var(--sp-blur);
+  color: var(--sp-ink);
+}
+
+#app.split-view.is-start .sp-add-widget:hover {
+  background: var(--sp-glass-hover);
+}
+
+#app.split-view.is-start .sp-widget-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-2);
+  text-align: center;
+}
+
+#app.split-view.is-start .sp-empty-glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--sp-card-ink) 9%, transparent);
+  color: var(--sp-card-ink);
+}
+
+#app.split-view.is-start .sp-widget-note,
+#app.split-view.is-start .sp-confirm {
+  max-width: 420px;
+  margin: 0;
+  color: var(--sp-card-ink-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+#app.split-view.is-start .sp-confirm {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+}
+
+/* Most visited and bookmark tiles: round icons with their names. */
+#app.split-view.is-start .sp-icons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: var(--bw-space-1);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-#app.split-view.is-start .sp-tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
-  gap: var(--bw-space-2);
+#app.split-view.is-start .sp-icons > li {
+  position: relative;
+  min-width: 0;
 }
 
-#app.split-view.is-start .sp-row,
-#app.split-view.is-start .sp-mini {
+#app.split-view.is-start .sp-icon-link {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--bw-space-2);
+  gap: var(--bw-space-1_5);
   width: 100%;
   margin: 0;
-  padding: var(--bw-space-1) var(--bw-space-2);
+  padding: var(--bw-space-2) var(--bw-space-1);
   border: 0;
-  border-radius: var(--bw-r-row);
+  border-radius: 12px;
   background: transparent;
-  color: inherit;
+  color: var(--sp-card-ink);
   font: inherit;
-  text-align: left;
-  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-#app.split-view.is-start .sp-row:hover,
-#app.split-view.is-start .sp-mini:hover {
-  background: var(--bw-island-hover);
+#app.split-view.is-start .sp-icon-link:hover {
+  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
 }
 
-#app.split-view.is-start .sp-row:focus-visible,
-#app.split-view.is-start .sp-mini:focus-visible {
+#app.split-view.is-start .sp-icon-link:focus-visible,
+#app.split-view.is-start .sp-row:focus-visible {
   outline: 2px solid var(--bw-focus);
   outline-offset: -2px;
 }
 
+#app.split-view.is-start .sp-icon-face,
 #app.split-view.is-start .sp-row-face {
-  display: grid;
+  --sp-tile: 136px;
   flex: none;
-  place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 42px;
+  height: 42px;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+#app.split-view.is-start .sp-icon-face .sp-chip,
+#app.split-view.is-start .sp-row-face .sp-chip {
+  width: 100%;
+  height: 100%;
+}
+
+#app.split-view.is-start .sp-icon-face.has-image {
+  border-radius: 12px;
+}
+
+#app.split-view.is-start .sp-row-face {
+  --sp-tile: 96px;
+  width: 30px;
+  height: 30px;
+}
+
+#app.split-view.is-start .sp-open:hover .sp-icon-face,
+#app.split-view.is-start .sp-icon-link:hover .sp-face,
+#app.split-view.is-start .sp-row:hover .sp-face {
+  background: transparent;
+  transform: none;
+}
+
+#app.split-view.is-start .sp-icon-name {
+  max-width: 100%;
   overflow: hidden;
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#app.split-view.is-start .sp-mini-tools {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  padding: 2px;
   border-radius: var(--bw-r-control);
+  background: var(--bw-overlay);
+  color: var(--bw-text);
 }
 
-#app.split-view.is-start .sp-row-face .sp-fav {
-  width: 16px;
-  height: 16px;
+#app.split-view.is-start .sp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-#app.split-view.is-start .sp-row-face .sp-letter {
-  font-size: 12px;
+#app.split-view.is-start .sp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  width: 100%;
+  margin: 0;
+  padding: var(--bw-space-1_5) var(--bw-space-2);
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sp-card-ink);
+  font: inherit;
+  text-align: start;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-#app.split-view.is-start .sp-row-face.is-letter[data-tone] {
-  background: color-mix(in srgb, var(--sp-tone, var(--bw-glyph-fill)) 24%, transparent);
+#app.split-view.is-start .sp-row:hover {
+  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
 }
-
-#app.split-view.is-start .sp-row-face[data-tone="0"] { --sp-tone: var(--bw-group-0); }
-#app.split-view.is-start .sp-row-face[data-tone="1"] { --sp-tone: var(--bw-group-1); }
-#app.split-view.is-start .sp-row-face[data-tone="2"] { --sp-tone: var(--bw-group-2); }
-#app.split-view.is-start .sp-row-face[data-tone="3"] { --sp-tone: var(--bw-group-3); }
-#app.split-view.is-start .sp-row-face[data-tone="4"] { --sp-tone: var(--bw-group-4); }
-#app.split-view.is-start .sp-row-face[data-tone="5"] { --sp-tone: var(--bw-group-5); }
-#app.split-view.is-start .sp-row-face[data-tone="6"] { --sp-tone: var(--bw-group-6); }
-#app.split-view.is-start .sp-row-face[data-tone="7"] { --sp-tone: var(--bw-group-7); }
 
 #app.split-view.is-start .sp-row-text {
   display: flex;
@@ -587,140 +876,194 @@ body:has(> #app.split-view.is-start) {
 }
 
 #app.split-view.is-start .sp-row-title,
-#app.split-view.is-start .sp-row-meta,
-#app.split-view.is-start .sp-mini-title {
+#app.split-view.is-start .sp-row-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+#app.split-view.is-start .sp-row-title {
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+}
+
 #app.split-view.is-start .sp-row-meta {
-  color: var(--bw-text-2);
+  color: var(--sp-card-ink-2);
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
 }
 
-#app.split-view.is-start .sp-tiles > li {
-  position: relative;
-}
-
-#app.split-view.is-start .sp-mini-tools {
-  position: absolute;
-  top: var(--bw-space-0_5);
-  right: var(--bw-space-0_5);
-  display: flex;
-  gap: var(--bw-space-0_5);
-  padding: var(--bw-space-0_5);
-  border: 1px solid var(--bw-hairline);
-  border-radius: var(--bw-r-control);
-  background: var(--bw-overlay);
-  box-shadow: var(--bw-sh-tip);
-}
-
-#app.split-view.is-start .sp-mini {
-  flex-direction: column;
-  padding: var(--bw-space-2);
-  text-align: center;
-}
-
-#app.split-view.is-start .sp-mini-face {
-  width: 56px;
-  aspect-ratio: 16 / 10;
-  border-radius: var(--bw-r-control);
-}
-
-#app.split-view.is-start .sp-mini-face .sp-fav {
-  width: 20px;
-  height: 20px;
-}
-
-/* The letter sits at the favicon's size here; the speed dial's letter scale is for 148px tiles. */
-#app.split-view.is-start .sp-mini-face .sp-letter {
-  font-size: var(--bw-text-body);
-}
-
-#app.split-view.is-start .sp-mini-title {
-  max-width: 100%;
-  font-size: var(--bw-text-caption);
-}
-
+/* Widget settings strips (bookmarks folder and look, web page address). */
 #app.split-view.is-start .sp-config {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--bw-space-2);
+  margin-bottom: var(--bw-space-3);
+  color: var(--bw-text);
 }
 
-#app.split-view.is-start .sp-config .bw-input {
+#app.split-view.is-start .sp-config .bw-select {
   flex: 1 1 140px;
+}
+
+#app.split-view.is-start .sp-url-form {
+  flex-direction: column;
+  align-items: stretch;
+  margin: 0;
+}
+
+#app.split-view.is-start .sp-widget-body.is-setup .sp-url-form {
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+#app.split-view.is-start .sp-url-row {
+  display: flex;
+  gap: var(--bw-space-2);
+  width: min(360px, 100%);
+}
+
+#app.split-view.is-start .sp-url-row .bw-input {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
+/* Note */
+#app.split-view.is-start .sp-widget-body.is-note {
+  padding-bottom: var(--bw-space-2);
+}
+
 #app.split-view.is-start .sp-note {
-  box-sizing: border-box;
   flex: 1 1 auto;
-  width: 100%;
-  min-height: 64px;
-  padding: var(--bw-space-2);
-  border: 1px solid var(--bw-island-edge);
-  border-radius: var(--bw-r-control);
-  background: var(--bw-fill);
-  color: var(--bw-text);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--sp-card-ink);
   font: inherit;
+  font-size: var(--bw-text-body);
+  line-height: calc(22px * var(--bw-font-scale));
   resize: none;
 }
 
-#app.split-view.is-start .sp-note:focus {
-  border-color: var(--bw-accent);
-  outline: none;
+#app.split-view.is-start .sp-note::placeholder {
+  color: var(--sp-card-ink-2);
 }
 
 #app.split-view.is-start .sp-note-foot {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   gap: var(--bw-space-2);
+  min-height: 32px;
 }
 
 #app.split-view.is-start .sp-note-status {
-  color: var(--bw-text-2);
+  color: var(--sp-card-ink-2);
   font-size: var(--bw-text-caption);
 }
 
-/* The largest type in Bowser is the private page's 28/36 title; the widgets' figures use it too. */
-#app.split-view.is-start .sp-date-day {
+#app.split-view.is-start .sp-note-save {
+  color: var(--sp-card-ink);
+}
+
+/* Clock */
+#app.split-view.is-start .sp-widget-body.is-clock {
+  justify-content: center;
+  gap: var(--bw-space-1);
+  padding: 0 var(--bw-space-6) var(--bw-space-6);
+}
+
+#app.split-view.is-start .sp-wclock-time {
   margin: 0;
-  font-size: var(--bw-text-display);
-  font-weight: var(--bw-weight-strong);
-  line-height: var(--bw-leading-display);
-  letter-spacing: -0.01em;
+  font-size: calc(48px * var(--bw-font-scale));
+  font-weight: 300;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
 }
 
-#app.split-view.is-start .sp-date-line {
+#app.split-view.is-start .sp-wclock-date {
   margin: 0;
-  font-size: var(--bw-text-subtitle);
-  line-height: var(--bw-leading-subtitle);
+  color: var(--sp-card-ink-2);
+  font-size: var(--bw-text-body);
 }
 
-#app.split-view.is-start .sp-date-month {
-  margin: 0;
-  color: var(--bw-text-2);
+/* Protection */
+#app.split-view.is-start .sp-widget-body.is-stats {
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+}
+
+#app.split-view.is-start .sp-stat-lead {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  margin-top: var(--bw-space-1);
+}
+
+#app.split-view.is-start .sp-stat-badge {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bw-accent) 24%, transparent);
+  color: var(--sp-card-ink);
 }
 
 #app.split-view.is-start .sp-stat {
   margin: 0;
-  font-size: var(--bw-text-display);
+  font-size: calc(34px * var(--bw-font-scale));
   font-weight: var(--bw-weight-strong);
-  line-height: var(--bw-leading-display);
-  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
+  line-height: 1.05;
 }
 
-#app.split-view.is-start .sp-stat-caption,
-#app.split-view.is-start .sp-stat-line {
+#app.split-view.is-start .sp-stat-caption {
   margin: 0;
-  color: var(--bw-text-2);
+  color: var(--sp-card-ink-2);
+  font-size: var(--bw-text-caption);
+}
+
+#app.split-view.is-start .sp-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--bw-space-2);
+  margin: 0;
+}
+
+#app.split-view.is-start .sp-fact {
+  min-width: 0;
+  padding: var(--bw-space-2) var(--bw-space-3);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--sp-card-ink) 7%, transparent);
+}
+
+#app.split-view.is-start .sp-fact dt {
+  color: var(--sp-card-ink-2);
+  font-size: var(--bw-text-caption);
+}
+
+#app.split-view.is-start .sp-fact dd {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--bw-text-body);
+  font-weight: var(--bw-weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Web page: the page fills the card under its header. */
+#app.split-view.is-start .sp-widget-body.is-frame {
+  padding: 0 var(--bw-space-1_5) var(--bw-space-1_5);
 }
 
 #app.split-view.is-start .sp-frame {
@@ -728,8 +1071,241 @@ body:has(> #app.split-view.is-start) {
   width: 100%;
   min-height: 0;
   border: 0;
-  border-radius: var(--bw-r-control);
+  border-radius: 12px;
   background: #ffffff;
+}
+
+/* Spoiler guard: a web page widget waits for a click while protection is on. */
+#app.split-view.is-start .sp-frame-paused {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-2);
+  padding: var(--bw-space-3);
+  text-align: center;
+}
+
+/* ---- Customise ---- */
+#app.split-view.is-start .sp-customise {
+  position: fixed;
+  z-index: 5;
+  right: 20px;
+  bottom: 20px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--sp-glass-edge);
+  border-radius: 50%;
+  background: var(--sp-glass);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--bw-sh-flyout);
+  color: var(--sp-ink);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), transform var(--bw-dur-base) var(--bw-ease-out);
+}
+
+#app.split-view.is-start .sp-customise:hover {
+  background: var(--sp-glass-hover);
+  transform: scale(1.06);
+}
+
+#app.split-view.is-start .sp-customise[aria-expanded="true"] {
+  background: var(--bw-accent);
+  color: var(--bw-on-accent);
+}
+
+#app.split-view.is-start .sp-customise:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 2px;
+}
+
+#app.split-view.is-start .sp-drawer {
+  position: fixed;
+  z-index: 6;
+  top: var(--bw-space-3);
+  right: var(--bw-space-3);
+  bottom: var(--bw-space-3);
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100% - 2 * var(--bw-space-3)));
+  overflow: hidden;
+  border: 1px solid var(--bw-hairline);
+  border-radius: 16px;
+  background: var(--bw-overlay);
+  backdrop-filter: blur(24px);
+  box-shadow: var(--bw-sh-dialog);
+  color: var(--bw-text);
+}
+
+#app.split-view.is-start .is-customising .sp-customise {
+  right: calc(min(360px, 100% - 2 * var(--bw-space-3)) + var(--bw-space-3) * 2);
+}
+
+#app.split-view.is-start .sp-drawer-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--bw-space-4) var(--bw-space-3) var(--bw-space-2) 20px;
+}
+
+#app.split-view.is-start .sp-drawer-title {
+  margin: 0;
+  font-size: calc(16px * var(--bw-font-scale));
+  font-weight: var(--bw-weight-strong);
+}
+
+#app.split-view.is-start .sp-drawer-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  min-height: 0;
+  padding: 0 20px var(--bw-space-4);
+  overflow-y: auto;
+}
+
+#app.split-view.is-start .sp-drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-1);
+  padding-bottom: var(--bw-space-3);
+  border-bottom: 1px solid var(--bw-hairline);
+}
+
+#app.split-view.is-start .sp-drawer-section:last-child {
+  border-bottom: 0;
+}
+
+#app.split-view.is-start .sp-drawer-section.is-off .sp-drawer-row.is-stacked {
+  opacity: 0.5;
+}
+
+#app.split-view.is-start .sp-drawer-h {
+  margin: var(--bw-space-3) 0 var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+#app.split-view.is-start .sp-drawer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+  min-height: 36px;
+}
+
+#app.split-view.is-start .sp-drawer-row.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--bw-space-1_5);
+  padding: var(--bw-space-1) 0;
+}
+
+#app.split-view.is-start .sp-drawer-label {
+  font-size: var(--bw-text-body);
+}
+
+#app.split-view.is-start .sp-drawer-row .bw-segmented {
+  display: flex;
+}
+
+#app.split-view.is-start .sp-drawer-row .bw-segmented > button {
+  flex: 1 1 0;
+}
+
+#app.split-view.is-start .sp-drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-2);
+  margin-top: var(--bw-space-2);
+}
+
+#app.split-view.is-start .sp-drawer-foot {
+  flex: none;
+  padding: var(--bw-space-3) var(--bw-space-4);
+  border-top: 1px solid var(--bw-hairline);
+}
+
+#app.split-view.is-start .sp-swatches {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--bw-space-2) var(--bw-space-2);
+}
+
+#app.split-view.is-start .sp-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--bw-space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--bw-text-2);
+  font: inherit;
+}
+
+#app.split-view.is-start .sp-swatch-art {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--bw-hairline);
+  border-radius: 10px;
+  background-color: var(--bw-fill);
+  background-image: var(--sp-swatch-art, none);
+  background-position: center;
+  background-size: cover;
+  transition: border-color var(--bw-dur-fast) var(--bw-ease-fade), transform var(--bw-dur-base) var(--bw-ease-out);
+}
+
+#app.split-view.is-start .sp-swatch:hover .sp-swatch-art {
+  transform: scale(1.04);
+}
+
+#app.split-view.is-start .sp-swatch-art.is-glass {
+  background-color: color-mix(in srgb, var(--bw-text) 6%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--bw-text) 14%, transparent), transparent 60%);
+}
+
+#app.split-view.is-start .sp-swatch-art.is-upload {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--bw-text) 30%, transparent);
+  background-color: transparent;
+  color: var(--bw-text-2);
+}
+
+#app.split-view.is-start .sp-swatch[aria-checked="true"] .sp-swatch-art {
+  border-color: var(--bw-accent);
+  box-shadow: 0 0 0 2px var(--bw-accent);
+}
+
+#app.split-view.is-start .sp-swatch[aria-checked="true"] {
+  color: var(--bw-text);
+}
+
+#app.split-view.is-start .sp-swatch:focus-visible {
+  outline: none;
+}
+
+#app.split-view.is-start .sp-swatch:focus-visible .sp-swatch-art {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 3px;
+}
+
+#app.split-view.is-start .sp-swatch-name {
+  overflow: hidden;
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Menus, dialogs, messages ---- */
@@ -738,6 +1314,29 @@ body:has(> #app.split-view.is-start) {
   z-index: var(--bw-z-menu);
   top: var(--sp-menu-y, 0);
   left: var(--sp-menu-x, 0);
+  min-width: 220px;
+}
+
+#app.split-view.is-start .sp-menu .bw-menu-item.has-hint {
+  height: auto;
+  padding-block: var(--bw-space-1_5);
+}
+
+#app.split-view.is-start .sp-menu-glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+}
+
+#app.split-view.is-start .sp-menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#app.split-view.is-start .sp-menu-hint {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
 }
 
 #app.split-view.is-start .sp-scrim {
@@ -753,6 +1352,7 @@ body:has(> #app.split-view.is-start) {
   box-sizing: border-box;
   width: min(420px, calc(100% - 2 * var(--bw-space-4)));
   min-width: 0;
+  color: var(--bw-text);
 }
 
 #app.split-view.is-start .sp-dialog-body {
@@ -786,7 +1386,7 @@ body:has(> #app.split-view.is-start) {
   height: 6px;
   margin-right: var(--bw-space-1_5);
   border-radius: 50%;
-  background: var(--bw-private);
+  background: var(--bw-danger);
 }
 
 #app.split-view.is-start .sp-toast {
@@ -801,6 +1401,7 @@ body:has(> #app.split-view.is-start) {
   border-radius: var(--bw-r-overlay);
   background: var(--bw-overlay);
   box-shadow: var(--bw-sh-flyout);
+  color: var(--bw-text);
   translate: -50% 0;
 }
 
@@ -812,16 +1413,23 @@ body:has(> #app.split-view.is-start) {
   #app.split-view.is-start .sp-widget-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  #app.split-view.is-start .sp-clock-time {
+    font-size: calc(52px * var(--bw-font-scale));
+  }
 }
 
-/* Spoiler guard: a web page widget waits for a click while protection is on. */
-#app.split-view.is-start .sp-frame-paused {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: var(--bw-space-2);
-  padding: var(--bw-space-3);
-  border-radius: var(--bw-r-control);
+#app.split-view.is-start .sp-url-row .bw-input {
+  height: 34px;
+  padding-inline: var(--bw-space-3);
+  border: 1px solid var(--sp-card-edge);
+  border-radius: var(--bw-r-pill);
+  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
+  color: var(--sp-card-ink);
+}
+
+#app.split-view.is-start .sp-url-row .bw-button {
+  height: 34px;
+  padding-inline: var(--bw-space-4);
+  border-radius: var(--bw-r-pill);
 }

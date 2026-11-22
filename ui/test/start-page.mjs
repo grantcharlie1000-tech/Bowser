@@ -84,13 +84,16 @@ test('the start settings object: strict parse, and the save lines are the keys R
   const s = {
     groupReopen: 'last', titles: 'always', addButton: true, columns: 6, thumbSize: 3, dragReorder: true, homepage: '', startup: 'start_page',
     startupPages: [], widgets: false, widgetColumns: 2, widgetHeight: 'regular', widgetBg: 'translucent', widgetColor: '#1f2933', widgetDrag: true, dials: false,
+    search: true, clock: true, wallpaper: 'none', wallpaperDim: 20,
   };
   assert.deepEqual(logic.parseStartSettings(s), s);
-  assert.equal(logic.startSaveLines(s).length, 16);
+  assert.equal(logic.startSaveLines(s).length, 20);
+  assert.ok(logic.startSaveLines({ ...s, wallpaper: 'aurora', wallpaperDim: 40 }).includes('start_wallpaper=aurora'));
+  assert.ok(logic.startSaveLines({ ...s, wallpaper: 'aurora', wallpaperDim: 40 }).includes('start_wallpaper_dim=40'));
   assert.ok(logic.startSaveLines(s).includes('start_dials=false'), 'a new tab is blank by default');
   assert.ok(logic.startSaveLines(s).includes('startup_pages='));
   assert.ok(logic.startSaveLines({ ...s, startupPages: ['https://a.example/', 'https://b.example/'] }).includes('startup_pages=https://a.example/ https://b.example/'));
-  for (const bad of [{ ...s, columns: 13 }, { ...s, homepage: 'ftp://x' }, { ...s, startup: 'x' }, { ...s, extra: 1 }]) {
+  for (const bad of [{ ...s, columns: 13 }, { ...s, homepage: 'ftp://x' }, { ...s, startup: 'x' }, { ...s, extra: 1 }, { ...s, wallpaper: 'url(x)' }, { ...s, wallpaperDim: 81 }, { ...s, search: 'yes' }]) {
     assert.equal(logic.parseStartSettings(bad), null);
     assert.equal(logic.startSaveLines(bad), null);
   }
@@ -306,7 +309,7 @@ test('maximum columns, the five sizes and drag are display settings: they change
   assert.equal(grid.style.getPropertyValue('--sp-cols'), '3', 'the page is 900 wide in the fake document: 3 columns of 232 fit');
   show(withSettings(fixture.page, { columns: 12, thumbSize: 1 }));
   assert.equal(grid.style.getPropertyValue('--sp-tile'), '96px');
-  assert.equal(grid.style.getPropertyValue('--sp-cols'), '5', 'never more columns than tiles (3 dials, the add tile and the folder tile): a short row stays centred');
+  assert.equal(grid.style.getPropertyValue('--sp-cols'), '4', 'never more columns than tiles (3 dials and the add tile): a short row stays centred');
   show(withSettings(fixture.page, { columns: 2, thumbSize: 1 }));
   assert.equal(grid.style.getPropertyValue('--sp-cols'), '2');
   // With enough dials the width limits it (900px, tiles of 96px: 8), and the setting caps it.
@@ -335,11 +338,24 @@ test('the add button shows or hides with its setting, and with no group there is
   assert.equal(root.querySelector('.sp-add:not(.sp-add-folder)'), null);
   show(fixture.page);
   assert.ok(root.querySelector('.sp-add:not(.sp-add-folder)'));
-  show(fixture.empty);
-  const empty = root.querySelector('.sp-empty');
-  assert.equal(empty.hidden, false);
-  assert.match(empty.textContent, /Add a group/);
+  // No group yet: no explanation and no "add a group", just the add tile. The first site makes the group (Rust).
+  const empty = withSettings(fixture.empty, { dials: true });
+  show(empty);
+  assert.equal(root.querySelector('.sp-empty'), null);
+  assert.equal(root.querySelector('.sp-add-group'), null);
+  assert.equal(root.querySelector('.sp-add-folder'), null, 'no new folder tile');
+  assert.equal(root.querySelector('.sp-groups').hidden, true);
   assert.equal(dials().length, 0);
+  clear();
+  root.querySelector('.sp-add .sp-open').click();
+  const form = root.querySelector('form.sp-dialog');
+  form.querySelectorAll('input')[0].value = 'example.com';
+  form.dispatch('submit');
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'add', parent: 0, url: 'https://example.com' });
+  show(fixture.page);
+  assert.equal(root.querySelector('.sp-groups').hidden, false, 'two groups: the group bar shows');
+  show({ ...fixture.page, d: { ...fixture.page.d, groups: fixture.page.d.groups.slice(0, 1) } });
+  assert.equal(root.querySelector('.sp-groups').hidden, true, 'one group is just "the speed dials"');
   show(fixture.page);
 });
 
@@ -432,19 +448,12 @@ test('edit, choose an image, use the site icon again, and remove (which says it 
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'remove', id: 3 });
 });
 
-test('group menu and the add-group form send their own commands', () => {
+test('the group menu sends its own commands', () => {
   show(fixture.page);
   clear();
-  root.querySelector('.sp-add-group').click();
-  const form = root.querySelector('form.sp-dialog');
-  form.querySelector('input').value = 'News';
-  form.dispatch('submit');
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'addgroup', text: 'News' });
-  assert.ok(form.querySelector('.bw-select'), 'an existing bookmark folder can be used instead');
-
   root.querySelector('.sp-group-more').click();
   const items = root.querySelectorAll('.sp-menu .bw-menu-item');
-  assert.deepEqual(items.map((i) => i.querySelector('.bw-menu-label').textContent), ['Rename', 'Move left', 'Move right', 'Remove from start page']);
+  assert.deepEqual(items.map((i) => i.querySelector('.sp-menu-name').textContent), ['Rename', 'Move left', 'Move right', 'Remove from start page']);
   assert.equal(items[1].disabled, true, 'the first group cannot move left');
   items[2].click();
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'movegroup', id: 1 }, 'moving the first of two right sends it to the end');
@@ -577,12 +586,14 @@ test('widgets: each kind draws, and the dashboard follows its settings', () => {
   const cards = root.querySelectorAll('.sp-widget');
   assert.deepEqual(cards.map((c) => c.dataset.kind), ['date', 'topsites', 'privacy', 'bookmarks', 'notes', 'webpage']);
   const card = (kind) => root.querySelector(`.sp-widget[data-kind="${kind}"]`);
-  assert.match(card('date').querySelector('.sp-date-day').textContent, /^\d{1,2}$/);
-  assert.equal(card('topsites').querySelector('.sp-row-title').textContent, 'Docs.rs');
+  assert.match(card('date').querySelector('.sp-wclock-time').textContent, /\d{1,2}.\d{2}/);
+  assert.equal(card('topsites').querySelector('.sp-icon-name').textContent, 'Docs.rs');
   assert.equal(card('privacy').querySelector('.sp-stat').textContent, '7');
-  assert.match(card('privacy').textContent, /1,234 requests blocked in all/);
-  assert.match(card('privacy').textContent, /Most from tracker\.example \(99\)/);
-  assert.equal(card('bookmarks').querySelectorAll('.sp-mini').length, 2, 'tiles view');
+  assert.match(card('privacy').textContent, /All time1,234/);
+  assert.match(card('privacy').textContent, /Most blockedtracker\.example \(99\)/);
+  assert.equal(card('bookmarks').querySelectorAll('.sp-icon-link').length, 2, 'tiles view');
+  assert.equal(card('bookmarks').querySelector('.sp-widget-name').textContent, 'Work', 'named after its folder');
+  assert.equal(card('webpage').querySelector('.sp-widget-name').textContent, 'widget.example', 'named after its site');
   assert.equal(card('notes').querySelector('textarea').value, 'buy milk\nand <script>', 'text stays text');
   // Settings: off sends no widgets and hides the dashboard.
   show(withSettings(fixture.page, { widgets: false }, { widgets: [] }));
@@ -636,18 +647,18 @@ test('widgets: the sticky note saves as it is typed and goes to Notes on request
 
   // Remove and add.
   clear();
-  card('date').querySelector('.sp-widget-tool').click();
+  card('date').querySelectorAll('.sp-widget-tool').at(-1).click();
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wremove', id: 1 });
   root.querySelector('.sp-add-widget').click();
   const items = root.querySelectorAll('.sp-menu .bw-menu-item');
-  assert.deepEqual(items.map((i) => i.querySelector('.bw-menu-label').textContent), ['Top sites', 'Bookmarks', 'Sticky note', 'Date', 'Privacy statistics', 'Webpage']);
+  assert.deepEqual(items.map((i) => i.querySelector('.sp-menu-name').textContent), ['Most visited', 'Bookmarks', 'Note', 'Clock', 'Protection', 'Web page']);
   items[5].click();
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wadd', text: 'webpage' });
   // Clicking a top site opens it here or in a new tab, by address.
   clear();
-  card('topsites').querySelector('.sp-row').click();
+  card('topsites').querySelector('.sp-icon-link').click();
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'openurl', url: 'https://docs.rs/' });
-  card('topsites').querySelector('.sp-row').click({ ctrlKey: true });
+  card('topsites').querySelector('.sp-icon-link').click({ ctrlKey: true });
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'openurl', url: 'https://docs.rs/', on: true });
 });
 
@@ -658,7 +669,7 @@ test('widgets: the bookmarks widget picks a folder and a look, and shows titles 
   const strip = card().querySelector('.sp-config');
   assert.ok(strip.querySelector('.bw-select'), 'the folder picker');
   const radios = strip.querySelectorAll('[role="radio"]');
-  assert.deepEqual(radios.map((r) => r.textContent), ['Titles and icons', 'Tiles']);
+  assert.deepEqual(radios.map((r) => r.textContent), ['List', 'Tiles']);
   // With the strip open a tile can be given a picture of your own.
   const tools = card().querySelectorAll('.sp-mini-tools');
   assert.equal(tools.length, 2);
@@ -672,7 +683,7 @@ test('widgets: the bookmarks widget picks a folder and a look, and shows titles 
   radios[1].click();
   assert.equal(sent.length, 1, 'the look already chosen sends nothing');
   clear();
-  card().querySelector('.sp-mini').click();
+  card().querySelector('.sp-icon-link').click();
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'openurl', url: 'https://docs.rs/' });
   const listView = { ...fixture.page, d: { ...fixture.page.d, widgets: fixture.page.d.widgets.map((w) => (w.kind === 'bookmarks' ? { ...w, view: 'list' } : w)) } };
   show(listView);
@@ -683,7 +694,7 @@ test('widgets: the bookmarks widget picks a folder and a look, and shows titles 
   const withImage = { ...fixture.page, d: { ...fixture.page.d, widgets: fixture.page.d.widgets.map((w) => (w.kind === 'bookmarks' ? { ...w, links: w.links.map((l) => (l.id === 3 ? { ...l, thumb: true } : l)) } : w)) } };
   show(withImage);
   page.show(logic.parseStartMessage(fixture.thumbs.d));
-  const tiles = card().querySelectorAll('.sp-mini');
+  const tiles = card().querySelectorAll('.sp-icon-link');
   assert.ok(tiles[0].querySelector('img.sp-thumb'), 'the chosen image');
   assert.ok(tiles[1].querySelector('img.sp-fav') || tiles[1].querySelector('.sp-letter'), 'the others keep their icon');
   show(fixture.page);
@@ -754,9 +765,10 @@ test('widgets drag by their handle and move with Alt and the arrows; the setting
 test('guest windows keep nothing: no editing offered', () => {
   const guest = { ...fixture.empty, d: { ...fixture.empty.d, guest: true, settings: { ...fixture.empty.d.settings, widgets: true }, widgets: [] } };
   show(guest);
-  assert.equal(root.querySelector('.sp-add-group').hidden, true);
-  assert.match(root.querySelector('.sp-empty').textContent, /not kept in a guest window/);
+  assert.equal(root.querySelector('.sp-add'), null, 'no add tile');
+  assert.equal(root.querySelector('.sp-dials').hidden, true);
   assert.equal(root.querySelector('.sp-add-widget').hidden, true);
+  assert.equal(root.querySelector('.sp-customise').hidden, true, 'nothing to customise: a guest keeps no settings');
   show(fixture.page);
 });
 
@@ -810,4 +822,94 @@ test('spoiler guard: while protection is on a web page widget is a placeholder u
   assert.ok(button);
   button.click();
   assert.equal(card().querySelector('iframe').src, 'https://widget.example/clock', 'an explicit click loads it');
+});
+
+test('the clock and the search box follow their settings, and a search goes to Rust as typed', () => {
+  show(withSettings(fixture.page, { clock: true, search: true }));
+  assert.equal(root.querySelector('.sp-clock').hidden, false);
+  assert.match(root.querySelector('.sp-clock-time').textContent, /\d{1,2}.\d{2}/);
+  const input = root.querySelector('.sp-find-input');
+  clear();
+  input.value = '  rust borrow checker ';
+  root.querySelector('form.sp-find').dispatch('submit');
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'search', text: 'rust borrow checker' });
+  assert.equal(input.value, '', 'cleared once sent');
+  clear();
+  input.value = '   ';
+  root.querySelector('form.sp-find').dispatch('submit');
+  assert.equal(sent.length, 0, 'nothing to search for');
+  show(withSettings(fixture.page, { clock: false, search: false }));
+  assert.equal(root.querySelector('.sp-clock').hidden, true);
+  assert.equal(root.querySelector('.sp-find').hidden, true);
+  assert.equal(root.querySelector('.sp-top').hidden, true, 'nothing left at the top');
+  show(fixture.page);
+});
+
+test('Customise: the pencil opens a panel whose controls each save one start page setting', () => {
+  show(withSettings(fixture.page, { dials: true, widgets: true }));
+  const pencil = root.querySelector('.sp-customise');
+  assert.equal(pencil.getAttribute('aria-label'), 'Customise this page');
+  pencil.click();
+  const drawer = root.querySelector('.sp-drawer');
+  assert.equal(drawer.hidden, false);
+  assert.equal(pencil.getAttribute('aria-expanded'), 'true');
+  const swatches = drawer.querySelectorAll('.sp-swatch');
+  assert.deepEqual(swatches.map((s) => s.dataset.value), ['none', ...Object.keys(logic.WALL_ART), 'custom']);
+  assert.equal(drawer.querySelector('.sp-swatch[aria-checked="true"]').dataset.value, 'none');
+  clear();
+  drawer.querySelector('.sp-swatch[data-value="ocean"]').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'set', text: 'start_wallpaper=ocean' });
+  // No picture of your own yet: choosing it asks for one.
+  drawer.querySelector('.sp-swatch[data-value="custom"]').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wallpaper' });
+  const toggle = (key) => drawer.querySelector(`.bw-toggle[data-ctl="${key}"]`);
+  toggle('search').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'set', text: 'start_search=false' });
+  toggle('clock').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'set', text: 'start_clock=false' });
+  drawer.querySelector('[data-ctl="size"] [data-value="5"]').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'set', text: 'start_thumb_size=5' });
+  drawer.querySelector('[data-ctl="titles"] [data-value="never"]').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'set', text: 'start_titles=never' });
+  drawer.querySelector('[data-ctl="style"] [data-value="solid"]').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'set', text: 'start_widget_bg=solid' });
+  // A snapshot with the new value repaints the open panel; a picture brings the dim choice.
+  show(withSettings(fixture.page, { dials: true, widgets: true, wallpaper: 'ocean', wallDim: 33 }));
+  assert.equal(drawer.querySelector('.sp-swatch[aria-checked="true"]').dataset.value, 'ocean');
+  assert.equal(drawer.querySelector('[data-ctl="dim"] [aria-checked="true"]').dataset.value, '40', 'the nearest step');
+  drawer.querySelector('[data-ctl="dim"] [data-value="0"]').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'set', text: 'start_wallpaper_dim=0' });
+  drawer.querySelector('[data-ctl="more"]').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'settings' });
+  drawer.querySelector('.sp-drawer-close').click();
+  assert.equal(drawer.hidden, true);
+  assert.equal(pencil.getAttribute('aria-expanded'), 'false');
+  show(fixture.page);
+});
+
+test('backgrounds: a built-in picture sets its art and ink; the user picture arrives in parts and shows when whole', () => {
+  show(withSettings(fixture.page, { wallpaper: 'sand', wallDim: 20 }));
+  const backdrop = root.querySelector('.sp-backdrop');
+  assert.equal(root.dataset.wall, 'sand');
+  assert.ok(root.classList.contains('has-wall'));
+  assert.equal(backdrop.style.getPropertyValue('--sp-wall-art'), logic.WALL_ART.sand.art);
+  assert.equal(root.style.getPropertyValue('--sp-ink'), '#14181d', 'dark text on a light picture');
+  assert.equal(root.style.getPropertyValue('--sp-dim'), '0.2');
+  show(withSettings(fixture.page, { wallpaper: 'none' }));
+  assert.equal(root.dataset.wall, 'none');
+  assert.equal(root.style.getPropertyValue('--sp-ink'), '', 'the theme ink again');
+  // The user's picture: the page waits for every part of the version the snapshot names.
+  const stamp = '12-34';
+  show({ ...withSettings(fixture.page, { wallpaper: 'custom' }), d: { ...withSettings(fixture.page, { wallpaper: 'custom' }).d, wall: stamp } });
+  assert.equal(root.dataset.wall, 'none', 'not until the picture is here');
+  const part = (n, data) => logic.parseStartMessage({ kind: 'wall', stamp, part: n, parts: 2, data });
+  page.show(part(1, 'CDEF'));
+  assert.equal(root.dataset.wall, 'none');
+  page.show(part(0, '/9j/AB'));
+  assert.equal(root.dataset.wall, 'custom');
+  assert.equal(backdrop.style.getPropertyValue('--sp-wall-art'), 'url("data:image/jpeg;base64,/9j/ABCDEF")');
+  assert.equal(logic.parseStartMessage({ kind: 'wall', stamp, part: 2, parts: 2, data: 'AA' }), null, 'a part out of range');
+  assert.equal(logic.parseStartMessage({ kind: 'wall', stamp: 'x"y', part: 0, parts: 1, data: 'AA' }), null);
+  assert.equal(logic.parseStartMessage({ kind: 'wall', stamp, part: 0, parts: 1, data: 'A"A' }), null, 'base64 only');
+  show(fixture.page);
 });

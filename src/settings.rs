@@ -108,6 +108,10 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # start_widget_color=#1f2933\r\n\
     # start_widget_drag=true\r\n\
     # start_dials=false\r\n\
+    # start_search=true\r\n\
+    # start_clock=true\r\n\
+    # start_wallpaper=none\r\n\
+    # start_wallpaper_dim=20\r\n\
     # tabs_new_tab_page=start\r\n\
     # tabs_close_activation=right\r\n\
     # tabs_keep_window=true\r\n\
@@ -1798,6 +1802,10 @@ mod tests {
                 widget_color: "#336699".to_owned(),
                 widget_drag: false,
                 dials: true,
+                search: false,
+                clock: false,
+                wallpaper: "ocean".to_owned(),
+                wallpaper_dim: 40,
             },
             address: crate::address_settings::AddressSettings::default(),
             page_tools: crate::page_tools::PageTools::default(),
@@ -2151,6 +2159,7 @@ foo=1
              start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
              startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\
              start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\nstart_dials=true\r\n\
+             start_search=false\r\nstart_clock=false\r\nstart_wallpaper=ocean\r\nstart_wallpaper_dim=40\r\n\
              spoiler_protection=off\r\nspoiler_mode=balanced\r\nspoiler_reduced_effects=true\r\nspoiler_ocr=off\r\nspoiler_feed=off\r\n".to_owned()
                 // The address bar, search and bookmark options follow, one line each (address_settings.rs).
                 + &crate::address_settings::AddressSettings::default().render_into("", "\r\n")

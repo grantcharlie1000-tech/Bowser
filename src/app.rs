@@ -6978,6 +6978,36 @@ impl App {
         app.borrow().settings.start.clone()
     }
 
+    /// Changes one start page setting from the page's Customise panel (`key` is checked strictly),
+    /// saves `settings.txt` and redraws the start page.
+    pub fn set_start_setting(app: &AppRef, key: &str, value: &str) -> std::result::Result<(), String> {
+        let (changed, hwnd) = {
+            let mut state = app.borrow_mut();
+            let mut next = state.settings.start.clone();
+            next.apply_strict(key, value).ok_or_else(|| "That value is not allowed.".to_owned())?;
+            let changed = next != state.settings.start;
+            state.settings.start = next;
+            (changed, state.hwnd)
+        };
+        if !changed {
+            return Ok(());
+        }
+        Self::try_save_settings(app)?;
+        if !hwnd.is_invalid() {
+            win32::start_ui::settings_changed(hwnd);
+        }
+        Ok(())
+    }
+
+    /// Where Enter would go for `input` typed into the start page's search box: the address it
+    /// names, or a search with the chosen engine. `None` when it is empty or unusable.
+    pub fn input_target(app: &AppRef, input: &str) -> Option<url::Url> {
+        match resolve_input(input, &app.borrow().provider) {
+            Ok(NavigationTarget::Web(url)) | Ok(NavigationTarget::Search { url, .. }) => Some(url),
+            _ => None,
+        }
+    }
+
     /// Whether the launch already decided what the first window shows: an address on the command
     /// line, a benchmark URL, a further window reopened as it was left (`--restore-window`) or a crash
     /// loop's safe restore (every tab asleep, nothing loads). Read before any of them is taken. Tabs

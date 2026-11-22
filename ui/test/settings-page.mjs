@@ -242,7 +242,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=false\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=last_session\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=false\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=last_session\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\nstart_search=true\nstart_clock=true\nstart_wallpaper=none\nstart_wallpaper_dim=20\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -1166,8 +1166,8 @@ test('the Start page section: the snapshot parses, every row exists once and the
   // The start page's own rows sit in Tabs > Start page; the startup rows in General > On startup.
   const ids = logic.ROWS.filter((row) => row.section === 'startpage').map((row) => row.id);
   assert.deepEqual(ids, [
-    'startGroupReopen', 'startTitles', 'startDials', 'startAddButton', 'startColumns', 'startThumbSize', 'startDragReorder',
-    'startWidgets', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
+    'startGroupReopen', 'startTitles', 'startDials', 'startAddButton', 'startColumns', 'startThumbSize', 'startClock', 'startSearch', 'startWallpaper',
+    'startWallpaperDim', 'startDragReorder', 'startWidgets', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
   ]);
   assert.deepEqual(['startHomepage', 'startupMode', 'startupPages'].map((id) => logic.placementOf(id, 'startpage').group.key), ['startup', 'startup', 'startup']);
   for (const row of logic.ROWS.filter((r) => r.section === 'startpage' || r.id.startsWith('startup') || r.id === 'startHomepage')) {
@@ -1178,13 +1178,13 @@ test('the Start page section: the snapshot parses, every row exists once and the
   const text = logic.saveText(logic.draftOf(s));
   const rustKeys = [...read(join(root, 'src', 'start_page.rs')).matchAll(/^    "([a-z_]+)",$/gm)].map((m) => m[1]);
   for (const key of rustKeys) assert.equal(text.split('\n').filter((l) => l.startsWith(`${key}=`)).length, 1, key);
-  assert.ok(rustKeys.length === 16);
+  assert.ok(rustKeys.length === 20);
   // A start object that Rust would never write is refused.
   const { start } = fixture.snap.d;
   for (const bad of [{ ...start, columns: 13 }, { ...start, columns: 0 }, { ...start, thumbSize: 6 }, { ...start, titles: 'sometimes' },
     { ...start, startup: 'restore' }, { ...start, homepage: 'ftp://x.example/' }, { ...start, startupPages: ['not a url'] },
     { ...start, startupPages: Array.from({ length: 9 }, (_, i) => `https://p${i}.example/`) }, { ...start, widgetColor: 'red' },
-    { ...start, widgetColumns: 5 }, { ...start, extra: 1 }, { ...start, widgetDrag: 'yes' }, { ...start, dials: 'no' }]) {
+    { ...start, widgetColumns: 5 }, { ...start, extra: 1 }, { ...start, widgetDrag: 'yes' }, { ...start, dials: 'no' }, { ...start, wallpaper: 'nope' }, { ...start, wallpaperDim: 99 }, { ...start, clock: 1 }]) {
     assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, start: bad }), null, JSON.stringify(bad).slice(0, 100));
   }
   const { widgetDrag: _drop, ...missing } = start;
@@ -1211,6 +1211,22 @@ test('the Start page section: each control saves its own key, and a snapshot mov
   flip('startAddButton', 'start_add_button', 'false');
   flip('startDragReorder', 'start_drag_reorder', 'false');
   flip('startWidgets', 'start_widgets', 'true');
+  flip('startClock', 'start_clock', 'false');
+  flip('startSearch', 'start_search', 'false');
+  // The background: a list of the pictures, and the dim steps wake once there is one.
+  assert.equal(radios('startWallpaperDim').every((b) => b.disabled), true, 'nothing to dim without a picture');
+  row('startWallpaper').querySelector('.bw-select-button').click();
+  sent.length = 0;
+  const walls = row('startWallpaper').querySelectorAll('[role="option"]');
+  assert.deepEqual(walls.map((o) => o.textContent), ['Glass (no picture)', 'Aurora', 'Dusk', 'Ocean', 'Forest', 'Blossom', 'Sand', 'Graphite', 'Midnight', 'Your picture']);
+  walls[3].click();
+  assert.equal(value('start_wallpaper'), 'start_wallpaper=ocean');
+  deliver({ ...fixture.snap, d: { ...dialsOn, start: { ...dialsOn.start, wallpaper: 'ocean' } } });
+  assert.equal(radios('startWallpaperDim').every((b) => b.disabled), false);
+  sent.length = 0;
+  radios('startWallpaperDim')[3].click();
+  assert.equal(value('start_wallpaper_dim'), 'start_wallpaper_dim=60');
+  deliver({ ...fixture.snap, d: dialsOn });
   // The widget rows follow the widgets switch once Bowser answers with it on.
   const widgetsOn = { ...dialsOn, start: { ...dialsOn.start, widgets: true } };
   assert.equal(radios('startWidgetColumns').every((b) => b.disabled), true, 'off while widgets are off');
@@ -1365,12 +1381,12 @@ test('the Start page section: a row that cannot act rests (disabled, dimmed) unt
     assert.doesNotMatch(described(), /sp-f-startDials/, page);
   }
 
-  // The two groups: speed dials, then widgets, each led by its switch, right after New tabs.
+  // The look (clock, search box, background), then speed dials and widgets, each led by its switch, right after New tabs.
   const tabs = logic.AREAS.find((a) => a.key === 'tabs').groups.map((g) => g.key);
-  assert.deepEqual(tabs.slice(tabs.indexOf('newTabs'), tabs.indexOf('newTabs') + 3), ['newTabs', 'startPage', 'startWidgets']);
+  assert.deepEqual(tabs.slice(tabs.indexOf('newTabs'), tabs.indexOf('newTabs') + 4), ['newTabs', 'startLook', 'startPage', 'startWidgets']);
   assert.equal(logic.placementOf('startDials', 'startpage').group.rows[0], 'startDials');
   assert.equal(logic.placementOf('startWidgetBg', 'startpage').group.rows[0], 'startWidgets');
-  assert.equal(logic.anchorGroup('startpage').key, 'startPage', 'bowser://settings/startpage still lands on the speed dials');
+  assert.equal(logic.anchorGroup('startpage').key, 'startLook', 'bowser://settings/startpage lands on the start page group');
   // The labels say what the row is, without the group around it.
   assert.equal(row('startWidgets').querySelector('.sp-label').textContent, 'Widgets', 'not "Dashboard", the Privacy dashboard’s name');
   assert.equal(row('startWidgetBg').querySelector('.sp-label').textContent, 'Widget background');
@@ -2442,7 +2458,7 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(stored.get('bowser.settings.view'), 'simple', 'the choice is remembered');
   assert.equal(app.querySelector('.sp').classList.contains('is-simple'), true);
   assert.equal(app.querySelector('.sp-simple').hidden, false);
-  assert.equal(app.querySelector('.sp-nav').hidden, true);
+  assert.equal(app.querySelector('.sp-nav').hidden, false, 'the sidebar and its sections stay, as in All settings');
   for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, true, area.key);
   // Four titled groups, each holding the very rows All settings draws (moved, not copied).
   const simple = app.querySelector('.sp-simple');
@@ -2487,7 +2503,7 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(rowNode('tracking').hidden, false);
   searchFor('');
   assert.equal(app.querySelector('.sp-simple').hidden, false, 'clearing the search restores Simple');
-  assert.equal(app.querySelector('.sp-nav').hidden, true);
+  assert.equal(app.querySelector('.sp-nav').hidden, false, 'the sidebar stays in Simple');
   app.querySelector('.sp-show-all').click();
   assert.equal(stored.get('bowser.settings.view'), 'all');
   assert.equal(app.querySelector('.sp-simple').hidden, true);

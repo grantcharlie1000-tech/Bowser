@@ -35,6 +35,18 @@ export interface SelectField<T extends string> {
   close(): void;
 }
 
+/**
+ * Scrolls the open list, and only the list, so `row` is in view. `scrollIntoView` also scrolls every
+ * scrolling ancestor (the settings page), and the select closes on any outside scroll, so a list
+ * opened low on a long page closed the moment it opened.
+ */
+function revealRow(list: HTMLElement, row: HTMLElement): void {
+  const top = row.offsetTop;
+  const bottom = top + row.offsetHeight;
+  if (top < list.scrollTop) list.scrollTop = top;
+  else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+}
+
 let sequence = 0;
 const TYPEAHEAD_MS = 700;
 const MAX_LIST_PX = 288;
@@ -83,7 +95,7 @@ export function selectField<T extends string>(config: SelectConfig<T>): SelectFi
     const row = rows[index] as HTMLElement | undefined;
     if (row) {
       button.setAttribute('aria-activedescendant', row.id);
-      if (scroll) row.scrollIntoView({ block: 'nearest' });
+      if (scroll) revealRow(list, row);
     } else button.removeAttribute('aria-activedescendant');
   }
 

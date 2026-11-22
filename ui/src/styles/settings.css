@@ -1480,41 +1480,6 @@
   padding-inline: var(--bw-space-6);
 }
 
-.sp.is-simple {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.sp.is-simple .sp-side {
-  display: grid;
-  grid-template-columns: auto minmax(200px, 460px) auto;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--bw-space-3) var(--bw-space-6);
-  padding: var(--bw-space-3) var(--bw-space-6);
-  border-inline-end: 0;
-  border-bottom: 1px solid var(--sp-card-edge);
-  background: color-mix(in srgb, var(--sp-side) 80%, transparent);
-}
-
-.sp.is-simple .sp-brand { grid-column: 1; grid-row: 1; }
-.sp.is-simple .sp-search { grid-column: 2; grid-row: 1; }
-
-.sp.is-simple .sp-view {
-  grid-column: 3;
-  grid-row: 1;
-  width: 240px;
-}
-
-@media (max-width: 720px) {
-  .sp.is-simple .sp-side { grid-template-columns: auto minmax(0, 1fr); }
-  .sp.is-simple .sp-view { grid-column: 1 / -1; grid-row: 2; width: auto; max-width: 420px; }
-}
-
-.sp.is-simple > .sp-main { grid-row: 2; min-height: 0; }
-.sp.is-simple > .sp-sr,
-.sp.is-simple > .sp-toast { grid-row: 1; grid-column: 1; }
-
 .sp.is-simple .sp-simple > .sp-h {
   position: absolute;
   width: 1px;

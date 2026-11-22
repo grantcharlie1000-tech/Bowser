@@ -1,8 +1,8 @@
 import { el, icon } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
-  GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_CHOICES, WIDGET_BGS, WIDGET_HEIGHTS, normaliseAddress, startupChoice,
-  type GroupReopen, type StartSettings, type StartupChoice, type StartupMode, type TitleMode, type WidgetBg, type WidgetHeight,
+  DIM_STEPS, GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_CHOICES, WALL_ART, WIDGET_BGS, WIDGET_HEIGHTS, dimStep, normaliseAddress, startupChoice,
+  type GroupReopen, type StartSettings, type StartupChoice, type StartupMode, type TitleMode, type Wallpaper, type WidgetBg, type WidgetHeight,
 } from './start-page-logic';
 import type { TabOptionValues } from './tab-options-logic';
 
@@ -35,6 +35,12 @@ export const THUMB_LABELS: readonly string[] = ['Tiny', 'Small', 'Medium', 'Larg
 export const HEIGHT_LABELS: Readonly<Record<WidgetHeight, string>> = { regular: 'Regular', tall: 'Tall' };
 export const BG_LABELS: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Tinted', transparent: 'Clear', custom: 'Custom' };
 export const BG_ARIA: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Semi-transparent', transparent: 'Transparent', custom: 'Custom' };
+
+export const WALLPAPER_OPTIONS: ReadonlyArray<{ value: Wallpaper; label: string }> = [
+  { value: 'none', label: 'Glass (no picture)' },
+  ...(Object.entries(WALL_ART) as Array<[Wallpaper, { label: string }]>).map(([value, art]) => ({ value, label: art.label })),
+  { value: 'custom', label: 'Your picture' },
+];
 
 export function startPageShown(tabOptions: TabOptionValues): boolean {
   return tabOptions.tabs_new_tab_page !== 'blank';
@@ -72,6 +78,33 @@ function away(row: HTMLElement, gone: boolean): void {
 }
 
 export function mountStartSection(host: StartSectionHost): { apply(start: StartSettings, readable: boolean, shown?: boolean): void } {
+  const look = host.card('startpage', 'Start page');
+  const clockOn = host.switchControl((on) => host.change((s) => { s.clock = on; }));
+  const clockRow = host.row(look, 'startClock', clockOn.root).root;
+  const searchOn = host.switchControl((on) => host.change((s) => { s.search = on; }));
+  const searchRow = host.row(look, 'startSearch', searchOn.root).root;
+  const wallHost = el('div', 'sp-select-host');
+  let wallSelect: SelectField<string> | null = null;
+  const paintWall = (value: Wallpaper): void => {
+    if (wallSelect) {
+      wallSelect.set(value);
+      return;
+    }
+    wallSelect = selectField<string>({
+      options: WALLPAPER_OPTIONS,
+      value,
+      label: 'Start page background',
+      placeholder: 'Background',
+      minListWidth: 200,
+      onChange: (next) => host.change((s) => { s.wallpaper = next as Wallpaper; }),
+    });
+    wallSelect.button.setAttribute('aria-labelledby', 'sp-l-startWallpaper');
+    wallHost.replaceChildren(wallSelect.root);
+  };
+  const wallRow = host.row(look, 'startWallpaper', wallHost).root;
+  const dim = host.segmentedControl<string>('Dim background', DIM_STEPS.map(([n, label]) => [String(n), label] as const), (value) => host.change((s) => { s.wallpaperDim = Number(value); }));
+  const dimRow = host.row(look, 'startWallpaperDim', dim.root).root;
+
   const dials = host.card('startpage', 'Dials');
   const dialsOn = host.switchControl((on) => host.change((s) => { s.dials = on; }));
   const dialsRow = host.row(dials, 'startDials', dialsOn.root).root;
@@ -202,6 +235,10 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
 
   return {
     apply(start, readable, shown = true): void {
+      clockOn.set(start.clock);
+      searchOn.set(start.search);
+      paintWall(start.wallpaper);
+      dim.set(String(dimStep(start.wallpaperDim)));
       dialsOn.set(start.dials);
       reopen.set(start.groupReopen);
       titles.set(start.titles);
@@ -219,6 +256,13 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       wcolor.value = start.widgetColor;
       wdrag.set(start.widgetDrag);
       const live = readable && shown;
+      for (const control of [clockOn, searchOn]) control.disable(!live);
+      wallSelect?.button.toggleAttribute('disabled', !live);
+      for (const row of [clockRow, searchRow, wallRow]) rest(row, readable && !shown);
+      const dimLive = live && start.wallpaper !== 'none';
+      dim.disable(!dimLive);
+      rest(dimRow, readable && !dimLive);
+      away(dimRow, readable && !dimLive);
       paintNote(dialsOn.root, dialsNote, readable && !shown);
       paintNote(widgetsOn.root, widgetsNote, readable && !shown);
       for (const control of [dialsOn, widgetsOn]) control.disable(!live);

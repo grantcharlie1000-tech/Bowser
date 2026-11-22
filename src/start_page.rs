@@ -50,6 +50,16 @@ pub const MAX_WIDGETS: usize = 12;
 pub const MAX_NOTE_CHARS: usize = 2000;
 /// Most rows a widget lists.
 pub const MAX_WIDGET_ROWS: usize = 12;
+/// `start_wallpaper_dim`: the darkening laid over a wallpaper, in percent.
+pub const MAX_WALLPAPER_DIM: u8 = 80;
+pub const DEFAULT_WALLPAPER_DIM: u8 = 20;
+/// The picture a user chose for the start page background (re-encoded, in the profile folder).
+pub const WALLPAPER_FILE: &str = "start-wallpaper.jpg";
+/// Largest re-encoded wallpaper kept (and sent to the page, in parts).
+pub const MAX_WALLPAPER_BYTES: usize = 1536 * 1024;
+/// The start page backgrounds: `none` (the window's glass), the built-in pictures drawn by the page,
+/// and `custom` (the user's picture, [`WALLPAPER_FILE`]).
+pub const WALLPAPERS: [&str; 10] = ["none", "aurora", "dusk", "ocean", "forest", "blossom", "sand", "graphite", "midnight", "custom"];
 
 // ----- settings -----
 
@@ -238,6 +248,14 @@ pub struct StartSettings {
     /// `start_dials` (default false): the speed dials (their groups, tiles and "Add a group") on a
     /// new tab. Off, a new tab is blank apart from the widgets, when those are on.
     pub dials: bool,
+    /// `start_search` (default true): a search box on the start page.
+    pub search: bool,
+    /// `start_clock` (default true): the time and date above the search box.
+    pub clock: bool,
+    /// `start_wallpaper`: one of [`WALLPAPERS`] (default none).
+    pub wallpaper: String,
+    /// `start_wallpaper_dim`, 0 to [`MAX_WALLPAPER_DIM`] percent.
+    pub wallpaper_dim: u8,
 }
 
 impl Default for StartSettings {
@@ -259,12 +277,16 @@ impl Default for StartSettings {
             widget_color: "#1f2933".to_owned(),
             widget_drag: true,
             dials: false,
+            search: true,
+            clock: true,
+            wallpaper: "none".to_owned(),
+            wallpaper_dim: DEFAULT_WALLPAPER_DIM,
         }
     }
 }
 
 /// Every key [`StartSettings`] owns, in the order [`StartSettings::pairs`] writes them.
-pub const SETTING_KEYS: [&str; 16] = [
+pub const SETTING_KEYS: [&str; 20] = [
     "start_group_reopen",
     "start_titles",
     "start_add_button",
@@ -281,6 +303,10 @@ pub const SETTING_KEYS: [&str; 16] = [
     "start_widget_color",
     "start_widget_drag",
     "start_dials",
+    "start_search",
+    "start_clock",
+    "start_wallpaper",
+    "start_wallpaper_dim",
 ];
 
 fn flag(value: &str) -> Option<bool> {
@@ -312,6 +338,11 @@ fn parse_color(value: &str) -> Option<String> {
     let value = value.trim().to_ascii_lowercase();
     let hex = value.strip_prefix('#')?;
     (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(value)
+}
+
+fn parse_wallpaper(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    WALLPAPERS.contains(&value.as_str()).then_some(value)
 }
 
 fn parse_pages(value: &str) -> Option<Vec<String>> {
@@ -412,6 +443,26 @@ impl StartSettings {
                     self.widget_drag = on;
                 }
             }
+            "start_search" => {
+                if let Some(on) = flag(value) {
+                    self.search = on;
+                }
+            }
+            "start_clock" => {
+                if let Some(on) = flag(value) {
+                    self.clock = on;
+                }
+            }
+            "start_wallpaper" => {
+                if let Some(wallpaper) = parse_wallpaper(value) {
+                    self.wallpaper = wallpaper;
+                }
+            }
+            "start_wallpaper_dim" => {
+                if let Ok(n) = value.trim().parse::<u8>() {
+                    self.wallpaper_dim = n.min(MAX_WALLPAPER_DIM);
+                }
+            }
             _ => return false,
         }
         true
@@ -437,6 +488,10 @@ impl StartSettings {
             "start_widget_color" => self.widget_color = parse_color(value).filter(|c| c == value)?,
             "start_widget_drag" => self.widget_drag = strict_flag(value)?,
             "start_dials" => self.dials = strict_flag(value)?,
+            "start_search" => self.search = strict_flag(value)?,
+            "start_clock" => self.clock = strict_flag(value)?,
+            "start_wallpaper" => self.wallpaper = parse_wallpaper(value).filter(|w| w == value)?,
+            "start_wallpaper_dim" => self.wallpaper_dim = strict_range(value, 0, MAX_WALLPAPER_DIM)?,
             _ => return None,
         }
         Some(true)
@@ -461,6 +516,10 @@ impl StartSettings {
             ("start_widget_color", self.widget_color.clone()),
             ("start_widget_drag", flag_text(self.widget_drag).to_owned()),
             ("start_dials", flag_text(self.dials).to_owned()),
+            ("start_search", flag_text(self.search).to_owned()),
+            ("start_clock", flag_text(self.clock).to_owned()),
+            ("start_wallpaper", self.wallpaper.clone()),
+            ("start_wallpaper_dim", self.wallpaper_dim.to_string()),
         ]
     }
 

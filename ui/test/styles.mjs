@@ -246,7 +246,6 @@ test('a font-size is a type token or scales with --bw-font-scale, except glyphs 
     ['rail.css', ['.rb-tile', '.rb-emoji', '.rb-count']],
     ['settings.css', ['.sp-avatar', '.sp-profile-swatch']],
     ['sidebar.css', ['.side-workspace-emoji']],
-    ['start.css', ['.sp-letter']],
   ]);
   const seen = new Set();
   for (const name of readdirSync(stylesDir).filter((n) => n.endsWith('.css'))) {

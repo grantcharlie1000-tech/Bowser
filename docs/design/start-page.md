@@ -1,7 +1,8 @@
 # Start page (new tab, speed dials, dashboard widgets, homepage, startup)
 
-Owner: start page. Status: implemented. A blank new tab shows the start page: speed dials (bookmarks you
-pin, in groups) and, if you turn it on, a dashboard of widgets. Settings has a Start page section
+Owner: start page. Status: implemented. A blank new tab shows the start page: a clock and a search box,
+speed dials (bookmarks you pin) and, if you turn it on, a dashboard of widgets, over the window's glass or a
+background picture. A pencil button in the bottom-right corner opens the Customise panel. Settings has a Start page section
 (`bowser://settings/startpage`) with the homepage and what Bowser opens at startup.
 
 ## How it is served
@@ -47,6 +48,32 @@ folder"); removing a group from the page only unflags it, the folder and its sit
   keys move focus. The `start_drag_reorder` setting turns pointer and keyboard moves off.
 - Limits: 24 groups, 120 dials listed per folder, 200 folders offered in pickers.
 
+## Clock, search box, background and the Customise panel
+
+- **Clock** (`start_clock`): the time in the person's 12 or 24 hour style and the date, redrawn on each new
+  minute while the page shows (one timer, stopped when the page is hidden).
+- **Search box** (`start_search`): the page's own search field. Enter sends `{a:"search",text}`; Rust resolves
+  it exactly as the address bar does (`App::input_target`: an address opens, anything else searches with the
+  chosen engine) in the shown tab. The address bar keeps focus on a new tab, as before.
+- **Background** (`start_wallpaper`, `start_wallpaper_dim`): `none` is the window's glass. Eight pictures are
+  drawn by the page itself from layered gradients (`WALL_ART` in `start-page-logic.ts`; no files, no network),
+  each with a tone so the text over it is the colour that reads (`wallInk`). `custom` is the person's own
+  picture: picked with the system open dialog, decoded with WIC, fitted inside 2560 x 1600, re-encoded as a
+  JPEG of at most 1.5 MiB (the quality steps down until it fits) and kept as `start-wallpaper.jpg` in the
+  profile. Its stamp rides in the snapshot (`wall`) and its bytes follow in `wall` messages (base64 parts of
+  150 KiB, after the thumbnails), so the first paint never waits for it; the page measures whether it is light
+  or dark before it picks the ink. `wallclear` deletes the file and sets the background back to `none`. The dim
+  is a black (or, on a light picture, white) layer at 0 to 80%.
+- **Customise panel**: the pencil (bottom right) opens a side panel with the backgrounds, Dim, what the page
+  shows (clock, search box, speed dials, widgets), the speed dial size, site names and Add site tile, the
+  widget card style, columns and height, Add widget, and a link to the full settings. Each control sends one
+  `{a:"set",text:"key=value"}`; Rust accepts only `PAGE_SETTABLE_KEYS` (never the homepage or startup), checks
+  the value strictly, saves `settings.txt` and redraws (`App::set_start_setting`).
+- **No groups to manage.** The first site added on an empty page is sent with `parent: 0`, and Rust makes a
+  group named "Speed dial" for it (later ones join the first group). The group tabs show only once there are two
+  or more groups (folders flagged elsewhere keep working). There is no "add a group" button, no explanation text
+  and no "New folder" tile on the page.
+
 ## Widgets
 
 `start-widgets.txt` lists, orders and configures them (an absent file shows the date, top sites and privacy
@@ -54,11 +81,11 @@ statistics). All widget data is read from the profile: no new network service, n
 
 | Widget | Shows |
 |---|---|
-| Top sites | hosts ranked by how many of their pages are in history (one line per address), newest page linked |
+| Most visited (`topsites`) | hosts ranked by how many of their pages are in history (one line per address), newest page linked |
 | Bookmarks | a folder you choose, as titles and favicons (list) or tiles (favicon, or the image you chose) |
-| Sticky note | a note saved as you type (up to 2000 characters); "Save to Notes" adds it to the Notes panel |
-| Date | the local date, drawn by the page |
-| Privacy statistics | blocked today, blocked in all, and the host blocked most (`privacy-stats.txt`) |
+| Note (`notes`) | a note saved as you type (up to 2000 characters); "Save to Notes" adds it to the Notes panel |
+| Clock (`date`) | the time and the date, drawn by the page |
+| Protection (`privacy`) | blocked today, blocked in all, and the host blocked most (`privacy-stats.txt`) |
 | Webpage | an http(s) address you type, in a sandboxed frame (see Security) |
 
 Settings: show the dashboard, columns 1 to 4 (the window width can lower it), regular or tall, background
@@ -93,6 +120,10 @@ file (a value that does not parse is ignored; numbers are clamped).
 | `start_widget_bg` | `solid`, `translucent`, `transparent`, `custom` | the card fill |
 | `start_widget_color` | `#rrggbb` | the `custom` fill |
 | `start_widget_drag` | bool | widget moves |
+| `start_search` | bool (default true) | the search box |
+| `start_clock` | bool (default true) | the clock |
+| `start_wallpaper` | `none`, `aurora`, `dusk`, `ocean`, `forest`, `blossom`, `sand`, `graphite`, `midnight`, `custom` | the background |
+| `start_wallpaper_dim` | 0 to 80 | how much the background is dimmed |
 
 Startup: the saved tabs come back on every start whatever `startup` says (`App::init_session`), so the
 setting chooses what opens in front of them. `last_session` ("Your tabs") opens nothing more; `homepage`
@@ -151,8 +182,8 @@ then (`App::session_finish`), so the window closed last is the one that comes ba
 ## Not ported
 
 - Vivaldi options with no meaning here are skipped, and nothing was added dead: there is no
-  "open in a new tab with the speed dial group bar" variant, no page-screenshot thumbnails (Bowser takes
-  none), and no search field on the page (the address bar is focused on a new tab, as before).
+  "open in a new tab with the speed dial group bar" variant and no page-screenshot thumbnails (Bowser takes
+  none).
 - The group tab bar reorders groups from its menu (Move left, Move right), not by dragging.
 
 ## Tests

@@ -365,6 +365,10 @@ fn start_snapshot(start: &crate::start_page::StartSettings, out: &mut super::jso
     out.string("widgetColor", &start.widget_color);
     out.bool("widgetDrag", start.widget_drag);
     out.bool("dials", start.dials);
+    out.bool("search", start.search);
+    out.bool("clock", start.clock);
+    out.string("wallpaper", &start.wallpaper);
+    out.uint("wallpaperDim", u64::from(start.wallpaper_dim));
 }
 // --- end start page ---
 
@@ -1102,7 +1106,7 @@ mod tests {
         settings.translate_auto = true;
         let json = snapshot_json(&sample(&settings));
         assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
-        assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true,"dials":false},"workspaceRules":{"##), "{json}");
+        assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true,"dials":false,"search":true,"clock":true,"wallpaper":"none","wallpaperDim":20},"workspaceRules":{"##), "{json}");
         // --- layout (thread T6) --- the Layout block's object closes the snapshot.
         assert!(json.contains(r##"]},"layout":{"tabBarVisible":true,"##), "{json}"); // --- T10 --- after the workspace rules
         // --- window and panels (thread T9) --- the Window object follows the layout.

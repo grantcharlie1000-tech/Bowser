@@ -61,6 +61,8 @@ pub struct Snapshot<'a> {
     pub widgets: &'a WidgetSet,
     pub top: &'a [TopSite],
     pub privacy: Option<&'a PrivacySummary>,
+    /// The custom wallpaper's stamp (its parts follow in `wall` messages), or empty for none.
+    pub wall: &'a str,
     pub ack: Ack,
 }
 
@@ -133,6 +135,10 @@ fn build(s: &Snapshot<'_>, favs: &[(String, String)]) -> String {
             o.string("widgetColor", &settings.widget_color);
             o.bool("widgetDrag", settings.widget_drag);
             o.bool("dials", settings.dials);
+            o.bool("search", settings.search);
+            o.bool("clock", settings.clock);
+            o.string("wallpaper", &settings.wallpaper);
+            o.uint("wallDim", u64::from(settings.wallpaper_dim));
         });
         out.array("groups", |a| {
             for group in &view.groups {
@@ -245,6 +251,7 @@ fn build(s: &Snapshot<'_>, favs: &[(String, String)]) -> String {
                 o.string(host, uri);
             }
         });
+        out.string("wall", s.wall);
         match &s.ack {
             Ack::None => {
                 out.string("ack", "none");
@@ -297,6 +304,46 @@ pub fn thumbs_messages(items: &[(u64, String)]) -> Vec<String> {
     messages
 }
 
+/// Most base64 characters of the wallpaper in one `wall` message.
+pub const WALL_PART_CHARS: usize = 150 * 1024;
+
+/// The custom wallpaper (a JPEG) as `wall` messages: `stamp` names this version of the picture, and
+/// the page joins `parts` slices of its base64 before it shows it.
+pub fn wallpaper_messages(stamp: &str, jpeg: &[u8]) -> Vec<String> {
+    let data = super::protocol::base64_encode(jpeg);
+    let parts = data.len().div_ceil(WALL_PART_CHARS).max(1);
+    (0..parts)
+        .filter_map(|part| {
+            let slice = &data[part * WALL_PART_CHARS..data.len().min((part + 1) * WALL_PART_CHARS)];
+            snap_json("startpage", |out| {
+                out.string("kind", "wall");
+                out.string("stamp", stamp);
+                out.uint("part", part as u64);
+                out.uint("parts", parts as u64);
+                out.string("data", slice);
+            })
+        })
+        .collect()
+}
+
+/// Start page settings the page itself may change (its Customise panel): how it looks, never
+/// the homepage or what opens at startup.
+pub const PAGE_SETTABLE_KEYS: [&str; 13] = [
+    "start_titles",
+    "start_add_button",
+    "start_columns",
+    "start_thumb_size",
+    "start_widgets",
+    "start_widget_columns",
+    "start_widget_height",
+    "start_widget_bg",
+    "start_dials",
+    "start_search",
+    "start_clock",
+    "start_wallpaper",
+    "start_wallpaper_dim",
+];
+
 /// A validated command from the start page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -338,6 +385,14 @@ pub enum Action {
     Settings,
     /// The page wants a fresh snapshot.
     Refresh,
+    /// Search for (or go to) what was typed into the page's search box.
+    Search(String),
+    /// Change one of [`PAGE_SETTABLE_KEYS`] (the value is checked again when it is applied).
+    Set { key: String, value: String },
+    /// Choose a picture for the background (native picker).
+    Wallpaper,
+    /// Forget the chosen background picture.
+    WallpaperClear,
 }
 
 fn narrow(value: u64) -> Option<u32> {
@@ -407,6 +462,18 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "wsavenote" if only(&["id"], &[]) => Action::WidgetSaveNote(narrow(f.id?)?),
         "settings" if only(&[], &[]) => Action::Settings,
         "refresh" if only(&[], &[]) => Action::Refresh,
+        "search" if only(&["text"], &[]) => Action::Search(text(MAX_URL_INPUT).map(str::trim).filter(|t| !t.is_empty())?.to_owned()),
+        "set" if only(&["text"], &[]) => {
+            let (key, value) = text(80)?.split_once('=')?;
+            if !PAGE_SETTABLE_KEYS.contains(&key) {
+                return None;
+            }
+            let mut probe = StartSettings::default();
+            probe.apply_strict(key, value)?;
+            Action::Set { key: key.to_owned(), value: value.to_owned() }
+        }
+        "wallpaper" if only(&[], &[]) => Action::Wallpaper,
+        "wallclear" if only(&[], &[]) => Action::WallpaperClear,
         _ => return None,
     })
 }

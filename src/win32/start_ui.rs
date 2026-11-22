@@ -340,14 +340,14 @@ fn run(owner: HWND, app: &AppRef, action: wire::Action) {
     let (paths, guest) = paths();
     let Some(paths) = paths else { return };
     // A guest window keeps nothing: it can open what is shown (nothing is), and reach Settings.
-    let readonly = matches!(action, Action::Open { .. } | Action::OpenUrl { .. } | Action::Settings | Action::Refresh);
+    let readonly = matches!(action, Action::Open { .. } | Action::OpenUrl { .. } | Action::Settings | Action::Refresh | Action::Search(_));
     if guest && !readonly {
         fail(owner, "Speed dials are not kept in a guest window.");
         super::window::split_ui_invalidate(owner);
         return;
     }
     let mut requested = with(owner, |rt| rt.requested).flatten();
-    let changes_model = !matches!(action, Action::Show(_) | Action::Open { .. } | Action::OpenUrl { .. } | Action::Settings | Action::WidgetSaveNote(_));
+    let changes_model = !matches!(action, Action::Show(_) | Action::Open { .. } | Action::OpenUrl { .. } | Action::Settings | Action::WidgetSaveNote(_) | Action::Search(_) | Action::Wallpaper);
     let result = service::apply(&paths, &mut requested, action);
     match result {
         Ok(effect) => {
@@ -393,6 +393,30 @@ fn carry_out(owner: HWND, app: &AppRef, paths: &Paths, effect: Effect) {
             }
         }
         Effect::Settings => super::settings_page::open(owner, app, Some(Section::StartPage), false),
+        Effect::Search(text) => {
+            if let Some(url) = App::input_target(app, &text) {
+                App::navigate_current(app, &url);
+            }
+        }
+        Effect::Set { key, value } => {
+            if let Err(message) = App::set_start_setting(app, &key, &value) {
+                fail(owner, &message);
+            }
+        }
+        Effect::PickWallpaper => {
+            let Some(path) = pick_image_titled(owner, "Choose a background picture") else { return };
+            let outcome = std::fs::metadata(&path)
+                .ok()
+                .filter(|meta| meta.len() <= MAX_WALLPAPER_SOURCE_BYTES)
+                .and_then(|_| std::fs::read(&path).ok())
+                .and_then(|bytes| reencode_wallpaper(&bytes))
+                .ok_or_else(|| "That picture could not be used. Choose a PNG, JPEG, GIF or BMP picture.".to_owned())
+                .and_then(|jpeg| service::set_wallpaper(paths, &jpeg))
+                .and_then(|()| App::set_start_setting(app, "start_wallpaper", "custom"));
+            if let Err(message) = outcome {
+                fail(owner, &message);
+            }
+        }
     }
 }
 
@@ -400,10 +424,14 @@ fn carry_out(owner: HWND, app: &AppRef, paths: &Paths, effect: Effect) {
 
 /// The system open dialog for a picture. `None` when cancelled or when it cannot be created.
 fn pick_image(owner: HWND) -> Option<PathBuf> {
+    pick_image_titled(owner, "Choose a picture for this speed dial")
+}
+
+fn pick_image_titled(owner: HWND, title: &str) -> Option<PathBuf> {
     use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
     unsafe {
         let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-        let title: Vec<u16> = "Choose a picture for this speed dial".encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
         let name: Vec<u16> = "Pictures".encode_utf16().chain(Some(0)).collect();
         let spec: Vec<u16> = "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.tif;*.tiff".encode_utf16().chain(Some(0)).collect();
         let types = [COMDLG_FILTERSPEC { pszName: PCWSTR(name.as_ptr()), pszSpec: PCWSTR(spec.as_ptr()) }];
@@ -427,16 +455,31 @@ const THUMB_MAX_H: u32 = 300;
 /// without enlarging it, lays it on white (so transparency is not black) and encodes a JPEG. Nothing
 /// is sent anywhere; the result is a small file in the profile.
 pub(crate) fn reencode_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    reencode(bytes, THUMB_MAX_W, THUMB_MAX_H, &[None], crate::start_page::MAX_THUMB_BYTES)
+}
+
+/// The largest picture file read for a background.
+const MAX_WALLPAPER_SOURCE_BYTES: u64 = 40 * 1024 * 1024;
+/// A background is kept at most this size: sharp on a 1440p panel, small enough to send to the page.
+const WALL_MAX_W: u32 = 2560;
+const WALL_MAX_H: u32 = 1600;
+
+/// A background picture as a JPEG of at most [`crate::start_page::MAX_WALLPAPER_BYTES`]: the quality
+/// steps down until it fits.
+pub(crate) fn reencode_wallpaper(bytes: &[u8]) -> Option<Vec<u8>> {
+    reencode(bytes, WALL_MAX_W, WALL_MAX_H, &[Some(0.88), Some(0.78), Some(0.66), Some(0.52)], crate::start_page::MAX_WALLPAPER_BYTES)
+}
+
+/// Decodes, fits inside `max_w` x `max_h`, flattens on white and encodes a JPEG, trying each quality
+/// (`None`: the encoder's default) until the result is at most `limit` bytes.
+fn reencode(bytes: &[u8], max_w: u32, max_h: u32, qualities: &[Option<f32>], limit: usize) -> Option<Vec<u8>> {
     use windows::Win32::{
         Graphics::Imaging::{
-            CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppPBGRA,
-            IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapInterpolationModeFant,
-            WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
+            CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapDitherTypeNone,
+            WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnLoad,
         },
-        System::Com::{IStream, STREAM_SEEK_END, STREAM_SEEK_SET},
-        UI::Shell::SHCreateMemStream,
     };
-    if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_WALLPAPER_SOURCE_BYTES {
         return None;
     }
     unsafe {
@@ -450,7 +493,7 @@ pub(crate) fn reencode_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
         if width == 0 || height == 0 || width > 20_000 || height > 20_000 {
             return None;
         }
-        let (out_w, out_h) = fit_within(width, height, THUMB_MAX_W, THUMB_MAX_H);
+        let (out_w, out_h) = fit_within(width, height, max_w, max_h);
         let scaler = factory.CreateBitmapScaler().ok()?;
         scaler.Initialize(&frame, out_w, out_h, WICBitmapInterpolationModeFant).ok()?;
         // Premultiplied so the white underlay below is a plain add.
@@ -460,7 +503,27 @@ pub(crate) fn reencode_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
         let mut pixels = vec![0u8; (stride * out_h) as usize];
         converter.CopyPixels(std::ptr::null(), stride, &mut pixels).ok()?;
         let bgr = flatten_on_white(&pixels);
+        qualities.iter().find_map(|quality| encode_jpeg(&factory, &bgr, out_w, out_h, *quality).filter(|jpeg| jpeg.len() <= limit))
+    }
+}
 
+/// Packed 24-bit BGR rows as a JPEG at `quality` (0 to 1; `None`: the encoder's default).
+unsafe fn encode_jpeg(
+    factory: &windows::Win32::Graphics::Imaging::IWICImagingFactory,
+    bgr: &[u8],
+    width: u32,
+    height: u32,
+    quality: Option<f32>,
+) -> Option<Vec<u8>> {
+    use windows::Win32::{
+        Graphics::Imaging::{GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, WICBitmapEncoderNoCache},
+        System::{
+            Com::{IStream, STREAM_SEEK_END, STREAM_SEEK_SET, StructuredStorage::PROPBAG2},
+            Variant::VARIANT,
+        },
+        UI::Shell::SHCreateMemStream,
+    };
+    unsafe {
         let target: IStream = SHCreateMemStream(None)?;
         let encoder = factory.CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null()).ok()?;
         encoder.Initialize(&target, WICBitmapEncoderNoCache).ok()?;
@@ -468,26 +531,32 @@ pub(crate) fn reencode_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
         let mut options = None;
         encoder.CreateNewFrame(&mut out, &mut options).ok()?;
         let out = out?;
+        if let (Some(quality), Some(bag)) = (quality, options.as_ref()) {
+            let mut name: Vec<u16> = "ImageQuality".encode_utf16().chain(Some(0)).collect();
+            let property = PROPBAG2 { pstrName: windows::core::PWSTR(name.as_mut_ptr()), ..Default::default() };
+            let value = VARIANT::from(quality.clamp(0.0, 1.0));
+            bag.Write(1, &property, &value).ok()?;
+        }
         out.Initialize(options.as_ref()).ok()?;
-        out.SetSize(out_w, out_h).ok()?;
+        out.SetSize(width, height).ok()?;
         let mut format = GUID_WICPixelFormat24bppBGR;
         out.SetPixelFormat(&mut format).ok()?;
         if format != GUID_WICPixelFormat24bppBGR {
             return None;
         }
-        out.WritePixels(out_h, out_w * 3, &bgr).ok()?;
+        out.WritePixels(height, width * 3, bgr).ok()?;
         out.Commit().ok()?;
         encoder.Commit().ok()?;
         let mut end = 0u64;
         target.Seek(0, STREAM_SEEK_END, Some(&mut end)).ok()?;
         target.Seek(0, STREAM_SEEK_SET, None).ok()?;
-        if end == 0 || end > crate::start_page::MAX_THUMB_BYTES as u64 {
+        if end == 0 || end > u64::from(u32::MAX) {
             return None;
         }
         let mut jpeg = vec![0u8; end as usize];
         let mut read = 0u32;
         let status = target.Read(jpeg.as_mut_ptr().cast(), end as u32, Some(&mut read));
-        (status.is_ok() && read as u64 == end).then_some(jpeg)
+        (status.is_ok() && u64::from(read) == end).then_some(jpeg)
     }
 }
 

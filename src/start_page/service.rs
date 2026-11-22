@@ -81,6 +81,7 @@ pub fn stamp(paths: &Paths) -> Stamp {
         paths.dir.join(model::WIDGETS_FILE),
         paths.history.clone(),
         paths.privacy.clone(),
+        paths.dir.join(model::WALLPAPER_FILE),
     ]
     .iter()
     .map(|path| file_stamp(path))
@@ -242,8 +243,22 @@ pub fn page_with(
         }
         _ => None,
     };
+    // The chosen background picture: its stamp in the page, its bytes in `wall` messages after it.
+    let wallpaper = match paths {
+        Some(paths) if !guest && settings.wallpaper == "custom" => {
+            let path = PathBuf::from(model::WALLPAPER_FILE);
+            let stamp = file_stamp(&paths.dir.join(&path));
+            files.borrow_mut().push((path, stamp));
+            stamp.and_then(|(len, modified)| {
+                let bytes = wallpaper_bytes(&paths.dir)?;
+                Some((format!("{len}-{modified}"), bytes))
+            })
+        }
+        _ => None,
+    };
+    let wall_stamp = wallpaper.as_ref().map(|(stamp, _)| stamp.as_str()).unwrap_or_default();
     let json = wire::snapshot_json_with(
-        &Snapshot { guest, settings, view: &view, store: &loaded.store, config: &loaded.config, widgets: &loaded.widgets, top: top.as_deref().unwrap_or_default(), privacy: privacy.as_ref(), ack: Ack::None },
+        &Snapshot { guest, settings, view: &view, store: &loaded.store, config: &loaded.config, widgets: &loaded.widgets, top: top.as_deref().unwrap_or_default(), privacy: privacy.as_ref(), wall: wall_stamp, ack: Ack::None },
         |host| {
             let path = paths.filter(|_| !guest).and_then(|_| favicon_path(host));
             let stamp = path.as_deref().and_then(|path| paths.and_then(|paths| file_stamp(&paths.dir.join(path))));
@@ -283,6 +298,10 @@ pub fn page_with(
         }
         _ => Vec::new(),
     };
+    let mut thumbs = thumbs;
+    if let Some((stamp, bytes)) = &wallpaper {
+        thumbs.extend(wire::wallpaper_messages(stamp, bytes));
+    }
     let ack_at = json.strip_suffix(NO_ACK).map(str::len);
     let mut page = Page {
         json, thumbs, folder: view.folder, default_folder, ack_at,
@@ -305,6 +324,12 @@ pub enum Effect {
     SaveNote { title: String, body: String },
     /// Open Settings at the Start page section.
     Settings,
+    /// Search for (or go to) the typed text in the shown tab.
+    Search(String),
+    /// Save one start page setting (`key` is one of `PAGE_SETTABLE_KEYS`).
+    Set { key: String, value: String },
+    /// Ask for a background picture, then [`set_wallpaper`].
+    PickWallpaper,
 }
 
 /// The words for an error from the stores, in the page's voice.
@@ -397,6 +422,18 @@ pub fn apply(paths: &Paths, requested: &mut Option<u64>, action: Action) -> Resu
             config.save(dir).map_err(err)?;
         }
         Action::Add { folder, title, url } => {
+            // `0`: the page has no group to show yet. The first site makes one (the person never has
+            // to know a group exists), and later ones go to the first group.
+            let folder = if folder != 0 {
+                folder
+            } else if let Some(first) = config.groups.first().copied() {
+                first
+            } else {
+                let id = model::add_group(store, config, DEFAULT_GROUP).map_err(err)?;
+                config.save(dir).map_err(err)?;
+                *requested = Some(id);
+                id
+            };
             model::add_dial(store, config, folder, &title, &url).map_err(err)?;
             store.save(dir).map_err(err)?;
         }
@@ -487,8 +524,43 @@ pub fn apply(paths: &Paths, requested: &mut Option<u64>, action: Action) -> Resu
         }
         Action::Settings => return Ok(Effect::Settings),
         Action::Refresh => {}
+        Action::Search(text) => return Ok(Effect::Search(text)),
+        Action::Set { key, value } => return Ok(Effect::Set { key, value }),
+        Action::Wallpaper => return Ok(Effect::PickWallpaper),
+        Action::WallpaperClear => {
+            match fs::remove_file(dir.join(model::WALLPAPER_FILE)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => return Err("The background picture could not be removed.".to_owned()),
+            }
+            return Ok(Effect::Set { key: "start_wallpaper".to_owned(), value: "none".to_owned() });
+        }
     }
     Ok(Effect::None)
+}
+
+/// The name of the group the first speed dial creates.
+pub const DEFAULT_GROUP: &str = "Speed dial";
+
+/// The chosen background picture, when it is a JPEG of a size the page accepts.
+fn wallpaper_bytes(dir: &Path) -> Option<Vec<u8>> {
+    let bytes = fs::read(dir.join(model::WALLPAPER_FILE)).ok()?;
+    (bytes.len() >= 4 && bytes.len() <= model::MAX_WALLPAPER_BYTES && bytes[..2] == [0xFF, 0xD8]).then_some(bytes)
+}
+
+/// Keeps a re-encoded picture (a JPEG) as the start page background.
+pub fn set_wallpaper(paths: &Paths, jpeg: &[u8]) -> Result<(), String> {
+    if jpeg.len() < 4 || jpeg.len() > model::MAX_WALLPAPER_BYTES || jpeg[..2] != [0xFF, 0xD8] {
+        return Err("That picture could not be used. Choose a smaller picture.".to_owned());
+    }
+    let target = paths.dir.join(model::WALLPAPER_FILE);
+    let temp = paths.dir.join(format!("{}.tmp", model::WALLPAPER_FILE));
+    fs::write(&temp, jpeg)
+        .and_then(|()| fs::rename(&temp, &target))
+        .map_err(|_| {
+            let _ = fs::remove_file(&temp);
+            "The background picture could not be saved.".to_owned()
+        })
 }
 
 /// Keeps a re-encoded image (a small JPEG) as dial `id`'s tile.
