@@ -6080,6 +6080,10 @@ unsafe fn configure_controller(
         settings.SetIsStatusBarEnabled(crate::layout_prefs::status_overlay_shown())?;
         match settings.cast::<ICoreWebView2Settings4>() {
             Ok(settings4) => {
+                // Bowser's own autofill (src/autofill) is the only one: WebView2's built-in address
+                // autofill guessed its own fields (an email in a username box, an address in a date of
+                // birth) and asked to save in a prompt of its own beside Bowser's.
+                settings4.SetIsGeneralAutofillEnabled(false)?;
                 settings4.SetIsPasswordAutosaveEnabled(false)?;
                 let mut password_autosave_enabled = BOOL::default();
                 settings4.IsPasswordAutosaveEnabled(&mut password_autosave_enabled)?;

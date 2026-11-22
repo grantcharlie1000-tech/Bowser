@@ -16,6 +16,8 @@ const BW_AC = new Map([
 ]);
 // The first rule whose pattern matches the control's text wins; '' means "never fill this".
 const BW_RULES = [
+  // Dates of birth (one box, or day, month and year apart) are never an address, a phone or a name.
+  [/birth|\bdob\b|\bbday\b|geburt|naissance|nacimiento|nascita/, ''],
   [/one.?time|\botp\b|totp|\b2fa\b|\bmfa\b|verification.?code|auth\w*.?code|security.?(?:question|answer)|captcha|coupon|promo|voucher|gift.?card|search|query|\bq\b|filter/, ''],
   [/\bc(?:vc|vv|sc|vn)\d?\b|cvc|cvv|security.?code|card.?verif|card.?code|\bcid\b/, 'cc-csc'],
   [/card.?(?:num|no\b|nr|#)|cc.?(?:num|no\b)|credit.?card(?!.*(?:name|holder|exp))|debit.?card(?!.*(?:name|holder|exp))|kartennummer|n[uú]mero.?de.?tarjeta|num[eé]ro.?de.?carte|\bpan\b/, 'cc-number'],
@@ -24,8 +26,12 @@ const BW_RULES = [
   [/(?:exp|expir\w*|valid).{0,12}(?:month|\bmon\b|\bmm\b)|cc.?month|card.?month|exp.?m\b/, 'cc-exp-month'],
   [/(?:exp|expir\w*|valid).{0,12}(?:year|\byr\b|\byy)|cc.?year|card.?year|exp.?y\b/, 'cc-exp-year'],
   [/expir|exp.?date|\bexp\b|valid.?(?:thru|through|until)|mm.?\/.?yy/, 'cc-exp'],
+  // The parts of any other date: a day, month or year box that is not a card's expiry (matched above).
+  [/^(?:\s*(?:day|month|year|dd|mm|yy|yyyy|date))+\s*(?:\(.*\))?\s*$|\b(?:day|month|year)\b.*\b(?:day|month|year)\b/, ''],
   [/e.?mail|courriel|correo|\bmail\b/, 'email'],
   [/user.?name|user.?id|login.?(?:name|id)|\blogin\b|benutzer|identifiant|usuario|\buser\b|account.?(?:name|id)|member.?id|customer.?(?:id|number)/, 'username'],
+  // A phone split in two: the prefix (area or mobile code, often a list such as 021 or 09) and the rest.
+  [/(?:phone|mobile|\btel\b|cell).{0,16}(?:prefix|area|\bcode\b)|(?:prefix|area.?code|dial.?code|\bstd\b).{0,16}(?:phone|mobile|\btel\b|cell)|area.?code/, 'tel-area'],
   [/phone|mobile|\btel\b|telephone|cell|handy|t[eé]l[eé]phone|tel[eé]fono|whats.?app/, 'tel'],
   [/first.?name|given.?name|\bf.?name\b|forename|vorname|pr[eé]nom|nombre(?!.*apellido)/, 'given-name'],
   [/last.?name|sur.?name|family.?name|\bl.?name\b|nachname|apellido|nom.?de.?famille/, 'family-name'],
@@ -84,7 +90,8 @@ const bwKind = (e) => {
     return kind;
   }
   if (type === 'email') return 'email';
-  if (type === 'tel') return 'tel';
+  // A tel box no rule named is only a phone when nothing says otherwise (day and year boxes use type=tel for the keypad).
+  if (type === 'tel' && !/\b(?:day|month|year|dd|mm|yyyy|pin|code|zip|post)\b/.test(text)) return 'tel';
   // A plain text box just before a password field is the username, whatever it is called.
   if ((type === 'text' || type === '') && e instanceof HTMLInputElement) {
     const after = bwPasswords(bwScope(e)).some((p) => e.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING);
@@ -93,11 +100,21 @@ const bwKind = (e) => {
   return '';
 };
 // What Bowser offers for a field: a login, an identity (name, address, contact) or a card.
+// A form that creates a password (sign-up, change password) rather than one that asks for it.
+const bwCreates = (scope) => bwPasswords(scope).some((p) => bwKind(p) === 'new-password');
 const bwGroup = (e, kind) => {
   if (!kind) return '';
-  if (kind === 'username' || kind === 'current-password') return 'login';
   if (kind === 'new-password') return 'new';
   if (kind.startsWith('cc-')) return 'card';
-  if (kind === 'email' && bwPasswords(bwScope(e)).length) return 'login';
+  if (kind === 'username' || kind === 'current-password' || kind === 'email') {
+    const scope = bwScope(e);
+    if (kind === 'current-password') return 'login';
+    // On a sign-up the email is yours (from a saved address) and the username is a new name you choose:
+    // neither is a saved sign-in, and Bowser offers nothing for a name you are making up.
+    if (bwCreates(scope)) return kind === 'email' ? 'identity' : '';
+    if (kind === 'username' || bwPasswords(scope).length) return 'login';
+  }
   return 'identity';
 };
+// The kind Bowser is told about: a phone prefix is part of the phone.
+const bwWire = (kind) => (kind === 'tel-area' ? 'tel' : kind);

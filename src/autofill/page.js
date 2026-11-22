@@ -199,7 +199,7 @@ const bwHide = () => {
 const bwRequest = () => {
   if (!bwField) return;
   const r = bwField.getBoundingClientRect();
-  const field = bwFieldKind === 'email' && bwFieldGroup === 'login' ? 'username' : bwFieldKind;
+  const field = bwFieldKind === 'email' && bwFieldGroup === 'login' ? 'username' : bwWire(bwFieldKind);
   bwPost({ kind: 'autofill-request', field, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
 };
 
@@ -274,8 +274,14 @@ const bwCapture = (scope) => {
     sent = true;
   }
   const values = {};
+  // The first phone only (a form may ask for a mobile and a landline), with its prefix list in front of it.
+  let prefix = '';
   for (const e of fields) {
     const kind = bwKind(e);
+    if (kind === 'tel-area') {
+      if (!prefix && !values.tel) prefix = String(bwValueOf(e) || '').replace(/[^\d+]/g, '').slice(0, 8);
+      continue;
+    }
     if (!kind || kind === 'username' || kind === 'cc-csc' || kind.endsWith('password')) continue;
     if (kind === 'email' && passwords.length) continue;
     const value = String(bwValueOf(e) || '').trim().slice(0, 200);
@@ -284,7 +290,7 @@ const bwCapture = (scope) => {
     if (kind === 'cc-number' && values[kind]) { values[kind] = (values[kind] + value).slice(0, 40); continue; }
     if (e instanceof HTMLSelectElement && (!bwChanged.has(e) || !e.value)) continue;
     if (Object.prototype.hasOwnProperty.call(values, kind)) continue;
-    values[kind] = value;
+    values[kind] = kind === 'tel' && prefix ? `${prefix}${value}`.slice(0, 200) : value;
   }
   const keys = Object.keys(values);
   const card = (values['cc-number'] || '').replace(/\D/g, '').length >= 12;

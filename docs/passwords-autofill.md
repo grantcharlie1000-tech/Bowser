@@ -26,7 +26,19 @@ The classifier reads, in order: the page's `autocomplete` tokens, `type=password
 control's name, id, label, placeholder and ARIA text. It recognises username, email, current and
 new password, given/family/full name, organisation, phone, address lines, town, region, postcode,
 country, and card name, number, expiry (combined or month/year) and security code. Search boxes,
-one-time codes, coupons and captchas are never filled.
+one-time codes, coupons, captchas and dates of birth (one box, or day, month and year apart; a day or
+year box is often `type=tel`, which alone no longer makes it a phone) are never filled.
+
+- A phone split into a prefix (a list of codes such as 021 or 09, or a short area-code box) and the
+  rest is filled as both parts: the saved number, in its national form when it was saved as +64..., is
+  matched against the prefix list. Only the first phone on a form is filled (a second, landline box is
+  left for the person), and a submitted prefix and number are saved as one phone. The page never
+  reports a prefix to Bowser as a kind of its own.
+- On a form that creates a password (a sign-up), the email box offers saved addresses (your email),
+  not saved sign-ins, and the username box offers nothing: it is a new name the person chooses.
+- WebView2's built-in autofill is off in browsing tabs, as it is in pinned web apps
+  (`SetIsGeneralAutofillEnabled(false)`): it guessed fields on its own (an email in a username box, an
+  address in a date of birth) and asked to save in a second prompt beside Bowser's.
 
 ## In the page
 

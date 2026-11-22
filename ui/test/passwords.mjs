@@ -120,3 +120,63 @@ test('the page detector and fill script are valid scripts that never use innerHT
   }
   assert.match(read('page.js'), /mode: 'closed'/, 'the fill button lives in a closed shadow root');
 });
+
+// ---- the field classifier (src/autofill/fields.js) on a sign-up like Trade Me's, in a small fake DOM ----
+
+function classifier() {
+  class El {
+    constructor(tag, attrs = {}, label = '') {
+      this.tag = tag; this.attrs = attrs; this.type = tag === 'input' ? (attrs.type || 'text') : tag; this.id = attrs.id || '';
+      this.labels = label ? [{ textContent: label }] : []; this.disabled = false; this.hidden = false; this.form = null; this.order = 0;
+    }
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+    getBoundingClientRect() { return { width: 100, height: 20 }; }
+    closest() { return null; }
+    compareDocumentPosition(other) { return other.order > this.order ? 4 : 2; }
+  }
+  class HTMLInputElement extends El {}
+  class HTMLSelectElement extends El {}
+  class HTMLTextAreaElement extends El {}
+  const form = { fields: [], getAttribute: () => null, id: '', className: '', querySelectorAll() { return this.fields.filter((f) => f.type === 'password'); } };
+  const make = (Kind, tag, attrs, label) => { const e = new Kind(tag, attrs, label); e.form = form; e.order = form.fields.length; form.fields.push(e); return e; };
+  const ctx = vm.createContext({
+    HTMLInputElement, HTMLSelectElement, HTMLTextAreaElement, Node: { DOCUMENT_POSITION_FOLLOWING: 4 }, Map, Set,
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }), document: { getElementById: () => null },
+  });
+  vm.runInContext(`${readFileSync(join(root, 'src', 'autofill', 'fields.js'), 'utf8')}\nthis.api = { bwKind, bwGroup, bwWire };`, ctx);
+  const input = (attrs, label) => make(HTMLInputElement, 'input', attrs, label);
+  const select = (attrs, label) => make(HTMLSelectElement, 'select', attrs, label);
+  return { api: ctx.api, input, select };
+}
+
+test('a sign-up form: the email is yours, the username is new, and a date of birth is never a phone or an address', () => {
+  const { api, input } = classifier();
+  const email = input({ type: 'email', name: 'email', id: 'tg-1' }, 'Email');
+  input({ type: 'password', name: 'password', id: 'tg-2', placeholder: '8 or more characters' }, 'Password');
+  input({ type: 'password', name: 'confirmPassword', id: 'tg-3' }, 'Confirm password');
+  const user = input({ type: 'text', name: 'userName', id: 'tg-4' }, 'Username');
+  const kindGroup = (e) => `${api.bwKind(e)}/${api.bwGroup(e, api.bwKind(e))}`;
+  assert.equal(kindGroup(email), 'email/identity', 'the email box offers your saved details, not a saved sign-in');
+  assert.equal(kindGroup(user), 'username/', 'nothing is offered for a new username');
+
+  const two = classifier();
+  const day = two.input({ type: 'tel', name: 'day', id: 'd', placeholder: 'Day' }, 'Day');
+  const month = two.select({ name: 'month', id: 'm' }, 'Month');
+  const year = two.input({ type: 'tel', name: 'year', id: 'y', placeholder: 'Year (YYYY)' }, 'Year');
+  const dob = two.input({ name: 'dob', id: 'b', placeholder: 'DD/MM/YYYY' }, 'Date of birth');
+  for (const e of [day, month, year, dob]) assert.equal(two.api.bwKind(e), '', `${e.attrs.name} is left alone`);
+  const prefix = two.select({ name: 'primaryPhonePrefix', id: 'pp' }, 'Phone number');
+  const number = two.input({ type: 'tel', name: 'primaryPhoneNumber', id: 'pn', placeholder: '1234567' });
+  const area = two.input({ name: 'areacode', id: 'ac' }, 'Area code');
+  assert.equal(two.api.bwKind(prefix), 'tel-area');
+  assert.equal(two.api.bwKind(area), 'tel-area');
+  assert.equal(two.api.bwKind(number), 'tel');
+  assert.equal(two.api.bwWire('tel-area'), 'tel', 'Bowser only ever hears of a phone');
+  assert.equal(two.api.bwKind(two.input({ type: 'tel', name: 'dayphone', id: 'dp' }, 'Daytime phone')), 'tel');
+
+  // A plain sign-in still offers the saved sign-in from its email box.
+  const three = classifier();
+  const signIn = three.input({ type: 'email', name: 'email', id: 'e' }, 'Email');
+  three.input({ type: 'password', name: 'password', id: 'p' }, 'Password');
+  assert.equal(three.api.bwGroup(signIn, three.api.bwKind(signIn)), 'login');
+});

@@ -41,6 +41,31 @@ const bwPut = (e, value) => {
   bwFire(e);
   return true;
 };
+// A saved phone in the forms a page may want: as saved, digits only, and national (+64 21 ... is 021 ...).
+const bwPhoneForms = (phone) => {
+  const digits = String(phone).replace(/\D/g, '');
+  const forms = [digits];
+  if (/^\s*(?:\+|00)/.test(phone)) {
+    const rest = digits.replace(/^00/, '');
+    for (const cc of [1, 2, 3]) forms.push(`0${rest.slice(cc)}`);
+  }
+  return forms.filter((f) => f.length >= 4);
+};
+// A phone split into a prefix (a list of codes, or a short box) and the rest: the prefix the number starts with.
+const bwSplitPhone = (area, phone) => {
+  for (const digits of bwPhoneForms(phone)) {
+    if (area instanceof HTMLSelectElement) {
+      const codes = [...area.options].map((o) => ({ o, d: String(o.value || o.text).replace(/\D/g, '') || String(o.text).replace(/\D/g, '') }))
+        .filter((c) => c.d.length >= 1 && digits.startsWith(c.d) && digits.length > c.d.length + 3)
+        .sort((a, b) => b.d.length - a.d.length);
+      if (codes.length) return { code: codes[0].o.value, rest: digits.slice(codes[0].d.length) };
+    } else {
+      const take = area.maxLength > 0 && area.maxLength < 6 ? area.maxLength : 3;
+      if (digits.length > take + 3) return { code: digits.slice(0, take), rest: digits.slice(take) };
+    }
+  }
+  return null;
+};
 const bwActive = document.activeElement instanceof Element && bwIsField(document.activeElement) ? document.activeElement : null;
 let bwScopeEl = bwActive ? bwScope(bwActive) : null;
 if (!bwScopeEl || !bwScopeEl.querySelector) {
@@ -65,8 +90,23 @@ if (M === 'generate') {
     }
   }
   const has = (k) => bwFields.some((e) => bwKind(e) === k);
+  // One phone: the first number box (and the prefix before it); a second phone box (a landline as well as a
+  // mobile) is left for the person rather than given the same number twice.
+  const phoneBox = bwFields.find((e) => bwKind(e) === 'tel');
+  const areaBox = phoneBox && bwFields.find((e) => bwKind(e) === 'tel-area' && (e.compareDocumentPosition(phoneBox) & Node.DOCUMENT_POSITION_FOLLOWING));
+  let phoneDone = false;
+  if (phoneBox && areaBox && V.has('tel')) {
+    const split = bwSplitPhone(areaBox, V.get('tel'));
+    if (split && (!phoneBox.value || M !== 'form' || phoneBox === bwActive)) {
+      if (bwPut(areaBox, split.code)) bwFilled++;
+      if (bwPut(phoneBox, split.rest)) bwFilled++;
+      phoneDone = true;
+    }
+  }
   for (const e of bwFields) {
     let kind = bwKind(e);
+    if (kind === 'tel-area') continue;
+    if (kind === 'tel' && (phoneDone || e !== phoneBox)) continue;
     if (kind === 'cc-number' && numbers.length > 1) continue;
     if (kind === 'new-password') continue;
     // A sign-in that asks for an email fills the saved username there.
