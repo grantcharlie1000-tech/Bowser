@@ -224,6 +224,11 @@ fn due_with(
     })??;
     if rebuild {
         let page = build(paths.as_ref(), guest, &settings, requested, Ack::None);
+        // A site never opened here has no icon yet: fetch it from the site (bookmark_icons), and the
+        // page is drawn again when it arrives (`WM_BOOKMARK_ICONS`).
+        if !guest && !page.missing_icons.is_empty() {
+            crate::bookmark_icons::fetch_missing(owner.0 as isize, page.missing_icons.iter().map(String::as_str));
+        }
         let _ = with(owner, |rt| {
             rt.thumbs_delivered &= rt.built.page.thumbs == page.thumbs;
             rt.built = Built { stamp, paths, settings: Some(settings), requested, guest, page, checked: Some(now) };

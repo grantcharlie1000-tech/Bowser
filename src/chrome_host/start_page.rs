@@ -20,7 +20,7 @@ const MAX_HOST_CHARS: usize = 64;
 const MAX_URL_CHARS: usize = 400;
 /// Most hosts whose cached favicon rides along, and their total data-URI bytes.
 const MAX_FAV_HOSTS: usize = 80;
-const MAX_FAV_BYTES: usize = 100 * 1024;
+const MAX_FAV_BYTES: usize = 150 * 1024;
 /// Largest `page` snapshot (the page refuses inbound messages over 256 KiB).
 pub const MAX_SNAPSHOT_BYTES: usize = 200 * 1024;
 /// Largest `thumbs` message.
@@ -68,7 +68,7 @@ pub struct Snapshot<'a> {
 
 /// The snapshot, with cached favicons from the profile's favicon cache.
 pub fn snapshot_json(s: &Snapshot<'_>) -> String {
-    snapshot_json_with(s, |host| crate::favicon::load_favicon_bytes(host).ok().flatten())
+    snapshot_json_with(s, crate::bookmark_icons::start_icon_png)
 }
 
 /// [`snapshot_json`] with an injectable favicon lookup (host to cached PNG bytes).

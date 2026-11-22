@@ -103,6 +103,8 @@ pub struct Page {
     history_dependency: Cell<Option<productivity::HistoryDependency>>,
     privacy_day: Option<String>,
     cacheable: bool,
+    /// Hosts on the page with no cached icon yet: the window fetches them from the sites.
+    pub missing_icons: Vec<String>,
 }
 
 impl Page {
@@ -190,7 +192,8 @@ fn favicon_path(host: &str) -> Option<PathBuf> {
 /// Builds the page for `settings`, showing folder `requested` (or the group the settings name).
 /// `paths` is `None` for a window with no profile folder (a guest): empty dials, default widgets.
 pub fn page(paths: Option<&Paths>, guest: bool, settings: &StartSettings, requested: Option<u64>, ack: Ack) -> Page {
-    page_with(paths, guest, settings, requested, ack, |host| crate::favicon::load_favicon_bytes(host).ok().flatten())
+    // Cached icons are often ICO files or large PNGs: re-encoded for the round shortcuts, not dropped.
+    page_with(paths, guest, settings, requested, ack, crate::bookmark_icons::start_icon_png)
 }
 
 /// [`page`] with an injectable favicon lookup.
@@ -208,6 +211,7 @@ pub fn page_with(
     };
     let cacheable = Cell::new(can_cache);
     let files = RefCell::new(Vec::new());
+    let missing_icons = RefCell::new(Vec::new());
     let view = model::dial_view(&loaded.store, &loaded.config, settings.group_reopen, requested);
     let default_folder = if requested.is_none() { view.folder } else {
         model::dial_view(&loaded.store, &loaded.config, settings.group_reopen, None).folder
@@ -266,6 +270,7 @@ pub fn page_with(
             if path.is_none() || (stamp.is_some() && bytes.is_none()) {
                 cacheable.set(false);
             }
+            if path.is_some() && stamp.is_none() { missing_icons.borrow_mut().push(host.to_owned()); }
             if let Some(path) = path { files.borrow_mut().push((path, stamp)); }
             bytes
         },
@@ -306,6 +311,7 @@ pub fn page_with(
     let mut page = Page {
         json, thumbs, folder: view.folder, default_folder, ack_at,
         files: files.into_inner(), top: top.map(bounded_top_sites), history_dependency, privacy_day, cacheable: cacheable.get(),
+        missing_icons: missing_icons.into_inner(),
     };
     if let Ack::Failed(error) = ack { page.json = page.json_with_ack(Some(&error)); }
     page

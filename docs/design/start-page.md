@@ -39,6 +39,11 @@ folder"); removing a group from the page only unflags it, the folder and its sit
 - Every site on the page (speed dials, Most visited, bookmark tiles) is the same shortcut: a round icon with
   its name under it, no box, and a soft highlight on hover; a short last row is centred. Widgets are
   borderless surfaces with a quiet text label; a row of cards shares one height.
+- Site icons: the profile's cached icon for the host, re-encoded at 64 px when it is an ICO or a large PNG
+  (`bookmark_icons::start_icon_png`; they used to be dropped, leaving a letter). A site with no cached icon
+  (never opened in Bowser) has its icon fetched from the site itself by the bookmark icon fetcher
+  (`/apple-touch-icon.png`, then `/favicon.ico`, `/favicon.png`; public hosts only, no cookies, once per
+  run, not in a guest profile or with history off), and the page is drawn again when it arrives.
 - Tile faces: the chosen image, else the site's cached favicon (`favicon::load_favicon_bytes`, sent as
   PNG data URIs, at most 80 hosts and 100 KiB), else a letter on a tone. No page screenshots exist in
   Bowser, so a tile is never a thumbnail of the page.

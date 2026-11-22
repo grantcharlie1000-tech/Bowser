@@ -3443,6 +3443,7 @@ unsafe extern "system" fn window_proc(
                     super::bookmark_bar::icons_changed(hwnd, app);
                 }
                 super::html_panel::bookmark_icons_changed(hwnd);
+                super::start_ui::settings_changed(hwnd);
                 LRESULT(0)
             }
             // Engine suggestions for the address field or the search field arrived.

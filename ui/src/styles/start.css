@@ -406,8 +406,9 @@ body:has(> #app.split-view.is-start) {
 }
 
 #app.split-view.is-start .sp-fav {
-  width: 46%;
-  height: 46%;
+  width: 52%;
+  height: 52%;
+  border-radius: 6px;
   object-fit: contain;
 }
 

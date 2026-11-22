@@ -5,8 +5,8 @@
 //!   The cache holds whatever the tab reported (often a large PNG or an ICO); anything that is not
 //!   already a small PNG is decoded and re-encoded at 32 px, so it always fits the page's limits.
 //! - [`fetch_missing`]: a bookmarked site that has never been opened (imported bookmarks) has no
-//!   cached icon. Its `/favicon.ico` (then `/favicon.png`, `/apple-touch-icon.png`) is fetched in the
-//!   background with the feed reader's hardened GET (`crate::feeds::fetch`: public hosts only, no
+//!   cached icon. Its `/apple-touch-icon.png` (then `/favicon.ico`, `/favicon.png`) is fetched in the
+//!   background, kept at up to 64 px, with the feed reader's hardened GET (`crate::feeds::fetch`: public hosts only, no
 //!   cookies, no credentials, size and time limits), stored in the favicon cache, and the window is
 //!   told to redraw the bar and the panel. Each host is asked at most once per run. Nothing is
 //!   fetched in a guest profile or while the profile keeps no history (no new record of sites).
@@ -54,6 +54,47 @@ pub fn icon_png(host: &str) -> Option<Vec<u8>> {
         memo.insert(host.to_owned(), (bytes.len(), png.clone()));
     });
     png
+}
+
+/// The icon for `host` for the start page's round shortcuts: drawn at up to 32 CSS px, so it is
+/// re-encoded at 64 px (sharp at 200%) unless the cached PNG is already small enough to send.
+pub fn start_icon_png(host: &str) -> Option<Vec<u8>> {
+    const START_PX: u32 = 64;
+    const START_BYTES: usize = 12 * 1024;
+    let bytes = crate::favicon::load_favicon_bytes(host).ok().flatten()?;
+    type ReencodedIcon = (usize, Option<Vec<u8>>);
+    thread_local! {
+        static MEMO: std::cell::RefCell<HashMap<String, ReencodedIcon>> = std::cell::RefCell::new(HashMap::new());
+    }
+    if let Some(hit) = MEMO.with(|memo| memo.borrow().get(host).filter(|(len, _)| *len == bytes.len()).map(|(_, png)| png.clone())) {
+        return hit;
+    }
+    let png = if bytes.starts_with(&PNG_SIGNATURE) && bytes.len() <= START_BYTES && png_side(&bytes).is_some_and(|side| side <= 2 * START_PX) {
+        Some(bytes.clone())
+    } else {
+        crate::favicon::decode(&bytes, START_PX)
+            .and_then(|bitmap| encode_png(bitmap.width, bitmap.height, &straight_rgba(&bitmap.bgra_premultiplied)))
+            .filter(|png| png.len() <= START_BYTES)
+            .or_else(|| small_png(&bytes))
+    };
+    MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() > 2048 {
+            memo.clear();
+        }
+        memo.insert(host.to_owned(), (bytes.len(), png.clone()));
+    });
+    png
+}
+
+/// The larger side of a PNG, from its header.
+fn png_side(png: &[u8]) -> Option<u32> {
+    if png.len() < 24 || &png[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+    let height = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
+    Some(width.max(height))
 }
 
 /// `bytes` (PNG, ICO or any image WIC reads) as a small PNG: a PNG that is small already as it is,
@@ -231,15 +272,21 @@ fn worker() {
     }
 }
 
-/// The site's own icon as a small PNG: its conventional icon addresses, first that is an image.
+/// The site's own icon as a PNG of at most 64 px: its high-resolution touch icon first (sharp in the
+/// start page's round shortcuts), then its conventional icon addresses; the first that is an image.
 fn fetch_icon(host: &str) -> Option<Vec<u8>> {
-    for candidate in crate::favicon::favicon_url_candidates(&format!("https://{host}/")) {
+    let mut candidates = crate::favicon::favicon_url_candidates(&format!("https://{host}/"));
+    candidates.sort_by_key(|candidate| !candidate.ends_with("/apple-touch-icon.png"));
+    for candidate in candidates {
         let Ok(url) = url::Url::parse(&candidate) else { continue };
         let Ok(fetched) = crate::feeds::fetch::fetch(&url) else { continue };
         if fetched.bytes.is_empty() || fetched.bytes.len() > 256 * 1024 {
             continue;
         }
-        if let Some(png) = small_png(&fetched.bytes) {
+        let large = crate::favicon::decode(&fetched.bytes, 64)
+            .and_then(|bitmap| encode_png(bitmap.width, bitmap.height, &straight_rgba(&bitmap.bgra_premultiplied)))
+            .filter(|png| png.len() <= 12 * 1024);
+        if let Some(png) = large.or_else(|| small_png(&fetched.bytes)) {
             return Some(png);
         }
     }
