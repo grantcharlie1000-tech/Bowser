@@ -1,0 +1,29 @@
+name: Chromium Windows feasibility probe
+
+on:
+  pull_request:
+    paths:
+      - 'tools/chromium-windows-probe/**'
+      - '.github/workflows/chromium-windows-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-package-cef:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned CEF Rust sample and inspect package
+        shell: pwsh
+        run: |
+          ./tools/chromium-windows-probe/validate.ps1 -WorkingDirectory (Join-Path $env:RUNNER_TEMP 'bowser-cef-probe')
+      - name: Publish validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-windows-package-report
+          path: ${{ runner.temp }}/bowser-cef-probe/validation.json
+          if-no-files-found: warn
