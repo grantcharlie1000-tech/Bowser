@@ -104,13 +104,13 @@ test('the start settings object: strict parse, and the save lines are the keys R
 test('columns: the setting is a ceiling, the window width a floor, never fewer than one', () => {
   assert.equal(logic.columnsFor(1200, 6, 3), 6);
   assert.equal(logic.columnsFor(1200, 3, 3), 3, 'maximum columns holds on a wide window');
-  assert.equal(logic.columnsFor(400, 6, 3), 2, 'a narrow window drops columns');
+  assert.equal(logic.columnsFor(400, 6, 3), 3, 'a narrow window drops columns');
   assert.equal(logic.columnsFor(10, 6, 3), 1);
-  assert.equal(logic.columnsFor(1000, 12, 1), 9, 'smaller tiles fit more per row');
-  assert.equal(logic.columnsFor(1000, 12, 5), 4);
-  assert.deepEqual([1, 2, 3, 4, 5].map(logic.tileWidth), [96, 120, 148, 184, 232], 'five tile sizes, each wider than the last');
-  assert.equal(logic.tileWidth(0), 96);
-  assert.equal(logic.tileWidth(9), 232);
+  assert.equal(logic.columnsFor(1000, 12, 1), 11, 'smaller tiles fit more per row');
+  assert.equal(logic.columnsFor(1000, 12, 5), 6);
+  assert.deepEqual([1, 2, 3, 4, 5].map(logic.tileWidth), [72, 88, 104, 120, 144], 'five shortcut sizes, each wider than the last');
+  assert.equal(logic.tileWidth(0), 72);
+  assert.equal(logic.tileWidth(9), 144);
 });
 
 test('titles: always, never, or only where the tile shows no image of its own', () => {
@@ -305,17 +305,17 @@ test('the page draws the groups, the dials in order, the add tile, and what Rust
 test('maximum columns, the five sizes and drag are display settings: they change what the page carries', () => {
   show(withSettings(fixture.page, { columns: 3, thumbSize: 5 }));
   const grid = root.querySelector('.sp-grid');
-  assert.equal(grid.style.getPropertyValue('--sp-tile'), '232px');
-  assert.equal(grid.style.getPropertyValue('--sp-cols'), '3', 'the page is 900 wide in the fake document: 3 columns of 232 fit');
+  assert.equal(grid.style.getPropertyValue('--sp-tile'), '144px');
+  assert.equal(grid.style.getPropertyValue('--sp-cols'), '3', 'the setting caps it at 3');
   show(withSettings(fixture.page, { columns: 12, thumbSize: 1 }));
-  assert.equal(grid.style.getPropertyValue('--sp-tile'), '96px');
+  assert.equal(grid.style.getPropertyValue('--sp-tile'), '72px');
   assert.equal(grid.style.getPropertyValue('--sp-cols'), '4', 'never more columns than tiles (3 dials and the add tile): a short row stays centred');
   show(withSettings(fixture.page, { columns: 2, thumbSize: 1 }));
   assert.equal(grid.style.getPropertyValue('--sp-cols'), '2');
-  // With enough dials the width limits it (900px, tiles of 96px: 8), and the setting caps it.
+  // With enough dials the width limits it (900px, cells of 72px and 16px gaps: 10), and the setting caps it.
   const many = (n) => ({ ...fixture.page, d: { ...fixture.page.d, dials: Array.from({ length: n }, (_, i) => ({ id: 100 + i, title: `S${i}`, kind: 'link', url: `https://s${i}.example/`, host: `s${i}.example`, n: 0, thumb: false })) } });
   show(withSettings(many(20), { columns: 12, thumbSize: 1 }));
-  assert.equal(grid.style.getPropertyValue('--sp-cols'), '8');
+  assert.equal(grid.style.getPropertyValue('--sp-cols'), '10');
   show(withSettings(many(20), { columns: 5, thumbSize: 1 }));
   assert.equal(grid.style.getPropertyValue('--sp-cols'), '5');
   show(fixture.page);
@@ -592,8 +592,8 @@ test('widgets: each kind draws, and the dashboard follows its settings', () => {
   assert.match(card('date').querySelector('.sp-wclock-time').textContent, /\d{1,2}.\d{2}/);
   assert.equal(card('topsites').querySelector('.sp-icon-name').textContent, 'Docs.rs');
   assert.equal(card('privacy').querySelector('.sp-stat').textContent, '7');
-  assert.match(card('privacy').textContent, /All time1,234/);
-  assert.match(card('privacy').textContent, /Most blockedtracker\.example \(99\)/);
+  assert.match(card('privacy').textContent, /7 trackers blocked today/);
+  assert.match(card('privacy').textContent, /1,234 in total · most from tracker\.example/);
   assert.equal(card('bookmarks').querySelectorAll('.sp-icon-link').length, 2, 'tiles view');
   assert.equal(card('bookmarks').querySelector('.sp-widget-name').textContent, 'Work', 'named after its folder');
   assert.equal(card('webpage').querySelector('.sp-widget-name').textContent, 'widget.example', 'named after its site');

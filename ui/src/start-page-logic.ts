@@ -338,8 +338,8 @@ export function parseStartMessage(d: unknown): StartMessage | null {
 
 // ---- layout and display decisions ----
 
-/** Tile widths in CSS px for the five thumbnail sizes. */
-export const TILE_WIDTHS: readonly number[] = [96, 120, 148, 184, 232];
+/** Shortcut cell widths in CSS px for the five sizes (the round icon is about half of it). */
+export const TILE_WIDTHS: readonly number[] = [72, 88, 104, 120, 144];
 export const TILE_GAP = 16;
 /** The widest the dial area grows regardless of `columns`: nothing here wraps text or leaves a gap. */
 export function tileWidth(size: number): number {

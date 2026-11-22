@@ -36,6 +36,9 @@ the Bookmarks panel and the start page always agree. "Remove" therefore deletes 
 confirmation says so. A group can be a new folder or an existing bookmark folder ("Or use a bookmark
 folder"); removing a group from the page only unflags it, the folder and its sites stay in Bookmarks.
 
+- Every site on the page (speed dials, Most visited, bookmark tiles) is the same shortcut: a round icon with
+  its name under it, no box, and a soft highlight on hover; a short last row is centred. Widgets are
+  borderless surfaces with a quiet text label; a row of cards shares one height.
 - Tile faces: the chosen image, else the site's cached favicon (`favicon::load_favicon_bytes`, sent as
   PNG data URIs, at most 80 hosts and 100 KiB), else a letter on a tone. No page screenshots exist in
   Bowser, so a tile is never a thumbnail of the page.
@@ -109,7 +112,7 @@ file (a value that does not parse is ignored; numbers are clamped).
 | `start_titles` | `always`, `auto`, `never` | when a dial shows its name (`auto`: under tiles with no chosen image, on hover for the rest) |
 | `start_add_button` | bool | the "Add a site" tile |
 | `start_columns` | 1 to 12 | most dials in a row (the width can lower it) |
-| `start_thumb_size` | 1 to 5 | tile width 96, 120, 148, 184, 232 px |
+| `start_thumb_size` | 1 to 5 | shortcut cell width 72, 88, 104, 120, 144 px (the round icon is about half of it) |
 | `start_drag_reorder` | bool | pointer and keyboard moves |
 | `homepage` | http(s) address or empty | the rail's Home button opens it in the current tab; empty keeps "new tab" |
 | `startup` | `last_session` (default), `homepage`, `specific_pages`; `start_page` is read as `last_session` | what opens in front of the restored tabs |

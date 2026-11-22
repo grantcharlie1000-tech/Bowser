@@ -322,93 +322,97 @@ body:has(> #app.split-view.is-start) {
   font-weight: var(--bw-weight-strong);
 }
 
-/* ---- Speed dials ---- */
+/* ---- Speed dials: round icons with their names, no boxes (the look every site on the page shares) ---- */
+/* Rows of at most --sp-cols shortcuts, and a short last row centred under the full ones. */
 #app.split-view.is-start .sp-grid {
-  display: grid;
-  grid-template-columns: repeat(var(--sp-cols, 6), var(--sp-tile, 148px));
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
-  gap: 20px var(--bw-space-4);
+  gap: var(--bw-space-2) var(--bw-space-4);
+  box-sizing: border-box;
   width: 100%;
-  margin: 0;
+  max-width: calc(var(--sp-cols, 6) * (var(--sp-tile, 104px) + var(--bw-space-4)));
+  margin: 0 auto;
   padding: 0;
   list-style: none;
 }
 
 #app.split-view.is-start .sp-dial {
   position: relative;
+  flex: none;
+  width: var(--sp-tile, 104px);
   min-width: 0;
 }
 
-#app.split-view.is-start .sp-open {
+/* The shortcut: a cell that lights up softly on hover, the round icon, the name. */
+#app.split-view.is-start .sp-open,
+#app.split-view.is-start .sp-icon-link {
+  --sp-icon: clamp(36px, calc(var(--sp-tile, 104px) * 0.54), 80px);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--bw-space-2);
+  box-sizing: border-box;
   width: 100%;
   margin: 0;
-  padding: 0;
+  padding: var(--bw-space-3) var(--bw-space-1) var(--bw-space-2);
   border: 0;
+  border-radius: 16px;
   background: transparent;
   color: var(--sp-ink);
   font: inherit;
   text-align: center;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-#app.split-view.is-start .sp-open:focus-visible {
-  outline: none;
+#app.split-view.is-start .sp-open:hover,
+#app.split-view.is-start .sp-icon-link:hover {
+  background: var(--sp-glass);
 }
 
-#app.split-view.is-start .sp-open:focus-visible .sp-face {
+#app.split-view.is-start .sp-open:active .sp-face,
+#app.split-view.is-start .sp-icon-link:active .sp-face {
+  transform: scale(0.96);
+}
+
+#app.split-view.is-start .sp-open:focus-visible,
+#app.split-view.is-start .sp-icon-link:focus-visible {
   outline: 2px solid var(--bw-focus);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 1px var(--bw-focus-inner);
+  outline-offset: -2px;
 }
 
 #app.split-view.is-start .sp-face {
   position: relative;
   display: grid;
+  flex: none;
   place-items: center;
   box-sizing: border-box;
-  width: 100%;
-  aspect-ratio: 16 / 10;
+  width: var(--sp-icon, 56px);
+  height: var(--sp-icon, 56px);
   overflow: hidden;
-  border: 1px solid var(--sp-glass-edge);
-  border-radius: 14px;
-  background: var(--sp-glass);
-  backdrop-filter: var(--sp-blur);
-  color: var(--sp-ink-2);
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), border-color var(--bw-dur-fast) var(--bw-ease-fade), transform var(--bw-dur-base) var(--bw-ease-out);
-}
-
-#app.split-view.is-start .sp-open:hover .sp-face {
+  border-radius: 50%;
   background: var(--sp-glass-hover);
-  transform: translateY(-2px);
+  color: var(--sp-ink);
+  transition: transform var(--bw-dur-base) var(--bw-ease-out);
 }
 
-#app.split-view.is-start .sp-open:active .sp-face {
-  transform: translateY(0) scale(0.98);
-}
-
-/* The round chip in the middle of a tile: the site's icon, its letter, a folder, or the plus. */
+/* The circle is the face itself; the chip inside it only holds the glyph. */
 #app.split-view.is-start .sp-chip {
   display: grid;
   place-items: center;
-  width: clamp(30px, calc(var(--sp-tile, 148px) * 0.3), 60px);
-  height: clamp(30px, calc(var(--sp-tile, 148px) * 0.3), 60px);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--sp-ink) 12%, transparent);
-  color: var(--sp-ink);
-}
-
-#app.split-view.is-start .sp-face.has-icon .sp-chip {
-  background: color-mix(in srgb, var(--bw-on-glyph) 92%, transparent);
-  box-shadow: var(--bw-sh-tip);
+  width: 100%;
+  height: 100%;
+  color: inherit;
 }
 
 #app.split-view.is-start .sp-fav {
-  width: 56%;
-  height: 56%;
+  width: 46%;
+  height: 46%;
   object-fit: contain;
+}
+
+#app.split-view.is-start .sp-face.has-icon {
+  background: color-mix(in srgb, var(--bw-on-glyph) 94%, transparent);
 }
 
 #app.split-view.is-start .sp-thumb {
@@ -417,7 +421,7 @@ body:has(> #app.split-view.is-start) {
   object-fit: cover;
 }
 
-#app.split-view.is-start .sp-face[data-tone] .sp-chip {
+#app.split-view.is-start .sp-face[data-tone] {
   background: var(--sp-tone, var(--bw-glyph-fill));
   color: var(--bw-on-glyph);
 }
@@ -433,23 +437,18 @@ body:has(> #app.split-view.is-start) {
 
 #app.split-view.is-start .sp-letter {
   color: inherit;
-  font-size: clamp(14px, calc(var(--sp-tile, 148px) * 0.13), 26px);
+  font-size: clamp(12px, calc(var(--sp-icon, 56px) * 0.4), 32px);
   font-weight: var(--bw-weight-strong);
   line-height: 1;
 }
 
 #app.split-view.is-start .sp-add .sp-face {
-  border: 1.5px dashed color-mix(in srgb, var(--sp-ink) 28%, transparent);
-  background: transparent;
-  backdrop-filter: none;
-}
-
-#app.split-view.is-start .sp-add .sp-open:hover .sp-face {
-  border-color: color-mix(in srgb, var(--sp-ink) 50%, transparent);
   background: var(--sp-glass);
+  color: var(--sp-ink-2);
 }
 
-#app.split-view.is-start .sp-title {
+#app.split-view.is-start .sp-title,
+#app.split-view.is-start .sp-icon-name {
   max-width: 100%;
   overflow: hidden;
   color: var(--sp-ink);
@@ -478,25 +477,33 @@ body:has(> #app.split-view.is-start) {
   opacity: 1;
 }
 
+/* Edit, image and remove: a small floating bar over the corner, on hover or focus. */
 #app.split-view.is-start .sp-tools {
   position: absolute;
-  top: var(--bw-space-1);
-  right: var(--bw-space-1);
+  z-index: 2;
+  top: calc(var(--bw-space-1) * -1);
+  right: calc(var(--bw-space-1) * -1);
   display: flex;
-  gap: var(--bw-space-0_5);
-  padding: var(--bw-space-0_5);
+  gap: 1px;
+  padding: 2px;
   border: 1px solid var(--bw-hairline);
-  border-radius: var(--bw-r-island);
+  border-radius: var(--bw-r-pill);
   background: var(--bw-overlay);
   box-shadow: var(--bw-sh-tip);
   color: var(--bw-text);
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-tools .bw-icon-btn {
+  border-radius: var(--bw-r-pill);
 }
 
 #app.split-view.is-start .sp-dial:hover > .sp-tools,
 #app.split-view.is-start .sp-dial:focus-within > .sp-tools {
   opacity: 1;
+  pointer-events: auto;
 }
 
 #app.split-view.is-start .sp-dial:not(.is-editable) > .sp-tools {
@@ -553,27 +560,25 @@ body:has(> #app.split-view.is-start) {
   background: var(--bw-accent-soft);
 }
 
-/* ---- Widgets ---- */
+/* ---- Widgets: calm surfaces, a quiet label, nothing boxed inside ---- */
 #app.split-view.is-start .sp-widgets {
   display: flex;
   flex-direction: column;
-  gap: var(--bw-space-4);
-}
-
-#app.split-view.is-start .sp-widget-grid {
-  display: grid;
-  grid-template-columns: repeat(var(--sp-wcols, 2), minmax(0, 1fr));
-  gap: var(--bw-space-4);
+  gap: var(--bw-space-6);
 }
 
 #app.split-view.is-start .sp-page {
   /* The card material, by the Widget background setting. */
   --sp-card: var(--sp-glass);
-  --sp-card-edge: var(--sp-glass-edge);
   --sp-card-ink: var(--sp-ink);
   --sp-card-ink-2: var(--sp-ink-2);
   --sp-card-blur: var(--sp-blur);
-  --sp-wh: 224px;
+  --sp-card-shadow: none;
+  --sp-wh: 232px;
+}
+
+:root[data-scheme="light"] #app.split-view.is-start .sp-page {
+  --sp-card-shadow: 0 1px 2px color-mix(in srgb, var(--bw-text) 8%, transparent), 0 4px 16px color-mix(in srgb, var(--bw-text) 6%, transparent);
 }
 
 #app.split-view.is-start .sp-page.is-tall {
@@ -582,7 +587,6 @@ body:has(> #app.split-view.is-start) {
 
 #app.split-view.is-start .sp-page.is-bg-solid {
   --sp-card: var(--bw-card);
-  --sp-card-edge: var(--bw-card-edge);
   --sp-card-ink: var(--bw-text);
   --sp-card-ink-2: var(--bw-text-2);
   --sp-card-blur: none;
@@ -590,35 +594,40 @@ body:has(> #app.split-view.is-start) {
 
 #app.split-view.is-start .sp-page.is-bg-transparent {
   --sp-card: transparent;
-  --sp-card-edge: transparent;
   --sp-card-blur: none;
 }
 
 #app.split-view.is-start .sp-page.is-bg-custom {
   --sp-card: var(--sp-widget-custom);
-  --sp-card-edge: color-mix(in srgb, var(--sp-widget-custom-fg) 14%, transparent);
   --sp-card-ink: var(--sp-widget-custom-fg);
   --sp-card-ink-2: color-mix(in srgb, var(--sp-widget-custom-fg) 78%, var(--sp-widget-custom));
   --sp-card-blur: none;
+}
+
+#app.split-view.is-start .sp-widget-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--sp-wcols, 2), minmax(0, 1fr));
+  gap: var(--bw-space-4);
 }
 
 #app.split-view.is-start .sp-widget {
   position: relative;
   display: flex;
   flex-direction: column;
-  height: var(--sp-wh);
   min-width: 0;
+  min-height: 132px;
   overflow: hidden;
-  border: 1px solid var(--sp-card-edge);
-  border-radius: 18px;
+  border-radius: 20px;
   background: var(--sp-card);
   backdrop-filter: var(--sp-card-blur);
+  box-shadow: var(--sp-card-shadow);
   color: var(--sp-card-ink);
 }
 
-/* A note is a little warmer than the other cards. */
-#app.split-view.is-start .sp-widget[data-kind="notes"] {
-  background: color-mix(in srgb, var(--bw-warning) 16%, var(--sp-card));
+/* A note and a web page keep the height setting; the others are as tall as their row. */
+#app.split-view.is-start .sp-widget[data-kind="notes"],
+#app.split-view.is-start .sp-widget[data-kind="webpage"] {
+  height: var(--sp-wh);
 }
 
 #app.split-view.is-start .sp-widget-head {
@@ -627,30 +636,22 @@ body:has(> #app.split-view.is-start) {
   align-items: center;
   justify-content: space-between;
   gap: var(--bw-space-2);
-  height: 44px;
-  padding: 0 var(--bw-space-2) 0 var(--bw-space-4);
+  height: 40px;
+  padding: var(--bw-space-1) var(--bw-space-2) 0 20px;
+}
+
+#app.split-view.is-start .sp-widget-head {
+  padding-left: 20px;
 }
 
 #app.split-view.is-start .sp-widget-title {
   display: flex;
   align-items: center;
-  gap: var(--bw-space-2);
   min-width: 0;
   margin: 0;
   color: var(--sp-card-ink-2);
   font-size: var(--bw-text-caption);
-  font-weight: var(--bw-weight-strong);
-}
-
-#app.split-view.is-start .sp-widget-glyph {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--sp-card-ink) 10%, transparent);
-  color: var(--sp-card-ink);
+  font-weight: 500;
 }
 
 #app.split-view.is-start .sp-widget-name {
@@ -663,7 +664,7 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-widget-tools {
   display: flex;
   flex: none;
-  gap: var(--bw-space-0_5);
+  gap: 2px;
   opacity: 0;
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
 }
@@ -687,8 +688,12 @@ body:has(> #app.split-view.is-start) {
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
-  padding: 0 var(--bw-space-4) var(--bw-space-4);
+  padding: 0 20px 20px;
   overflow-y: auto;
+}
+
+#app.split-view.is-start .sp-widget.is-fit .sp-widget-body {
+  justify-content: center;
 }
 
 #app.split-view.is-start .sp-widget-bar {
@@ -697,15 +702,13 @@ body:has(> #app.split-view.is-start) {
 }
 
 #app.split-view.is-start .sp-add-widget {
-  border: 1px solid var(--sp-glass-edge);
   border-radius: var(--bw-r-pill);
-  background: var(--sp-glass);
-  backdrop-filter: var(--sp-blur);
-  color: var(--sp-ink);
+  color: var(--sp-ink-2);
 }
 
 #app.split-view.is-start .sp-add-widget:hover {
-  background: var(--sp-glass-hover);
+  background: var(--sp-glass);
+  color: var(--sp-ink);
 }
 
 #app.split-view.is-start .sp-widget-empty {
@@ -721,11 +724,11 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-empty-glyph {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--sp-card-ink) 9%, transparent);
-  color: var(--sp-card-ink);
+  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
+  color: var(--sp-card-ink-2);
 }
 
 #app.split-view.is-start .sp-widget-note,
@@ -743,11 +746,62 @@ body:has(> #app.split-view.is-start) {
   line-height: var(--bw-leading-body);
 }
 
-/* Most visited and bookmark tiles: round icons with their names. */
+/* Most visited and bookmark tiles: the same round shortcuts as the speed dials, under a quiet label. */
+#app.split-view.is-start .sp-strips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-4);
+}
+
+#app.split-view.is-start .sp-widget.is-strip {
+  min-height: 0;
+  overflow: visible;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  color: var(--sp-ink);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-head {
+  justify-content: center;
+  height: 28px;
+  padding: 0;
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-title {
+  color: var(--sp-ink-2);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-tools {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-tool {
+  color: var(--sp-ink-2);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-body {
+  flex: none;
+  padding: 0;
+  overflow: visible;
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-config {
+  align-self: center;
+  padding: var(--bw-space-2) var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: 12px;
+  background: var(--bw-overlay);
+}
+
 #app.split-view.is-start .sp-icons {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
-  gap: var(--bw-space-1);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--bw-space-1) var(--bw-space-2);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -755,78 +809,32 @@ body:has(> #app.split-view.is-start) {
 
 #app.split-view.is-start .sp-icons > li {
   position: relative;
+  width: 88px;
   min-width: 0;
 }
 
 #app.split-view.is-start .sp-icon-link {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--bw-space-1_5);
-  width: 100%;
-  margin: 0;
-  padding: var(--bw-space-2) var(--bw-space-1);
-  border: 0;
-  border-radius: 12px;
+  --sp-tile: 88px;
+}
+
+#app.split-view.is-start .sp-icon-link .sp-face {
+  --sp-icon: 44px;
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-empty {
+  flex-direction: row;
+  gap: var(--bw-space-1);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-empty-glyph {
+  width: 24px;
+  height: 24px;
   background: transparent;
-  color: var(--sp-card-ink);
-  font: inherit;
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+  color: var(--sp-ink-2);
 }
 
-#app.split-view.is-start .sp-icon-link:hover {
-  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
-}
-
-#app.split-view.is-start .sp-icon-link:focus-visible,
-#app.split-view.is-start .sp-row:focus-visible {
-  outline: 2px solid var(--bw-focus);
-  outline-offset: -2px;
-}
-
-#app.split-view.is-start .sp-icon-face,
-#app.split-view.is-start .sp-row-face {
-  --sp-tile: 136px;
-  flex: none;
-  width: 42px;
-  height: 42px;
-  aspect-ratio: auto;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  backdrop-filter: none;
-}
-
-#app.split-view.is-start .sp-icon-face .sp-chip,
-#app.split-view.is-start .sp-row-face .sp-chip {
-  width: 100%;
-  height: 100%;
-}
-
-#app.split-view.is-start .sp-icon-face.has-image {
-  border-radius: 12px;
-}
-
-#app.split-view.is-start .sp-row-face {
-  --sp-tile: 96px;
-  width: 30px;
-  height: 30px;
-}
-
-#app.split-view.is-start .sp-open:hover .sp-icon-face,
-#app.split-view.is-start .sp-icon-link:hover .sp-face,
-#app.split-view.is-start .sp-row:hover .sp-face {
-  background: transparent;
-  transform: none;
-}
-
-#app.split-view.is-start .sp-icon-name {
-  max-width: 100%;
-  overflow: hidden;
-  font-size: var(--bw-text-caption);
-  line-height: var(--bw-leading-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-note {
+  color: var(--sp-ink-2);
 }
 
 #app.split-view.is-start .sp-mini-tools {
@@ -835,16 +843,17 @@ body:has(> #app.split-view.is-start) {
   right: 0;
   display: flex;
   padding: 2px;
-  border-radius: var(--bw-r-control);
+  border-radius: var(--bw-r-pill);
   background: var(--bw-overlay);
   color: var(--bw-text);
 }
 
+/* A bookmark list (the List look): rows, still in a card. */
 #app.split-view.is-start .sp-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin: 0;
+  margin: 0 calc(var(--bw-space-2) * -1);
   padding: 0;
   list-style: none;
 }
@@ -866,7 +875,16 @@ body:has(> #app.split-view.is-start) {
 }
 
 #app.split-view.is-start .sp-row:hover {
-  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
+  background: color-mix(in srgb, var(--sp-card-ink) 7%, transparent);
+}
+
+#app.split-view.is-start .sp-row:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+}
+
+#app.split-view.is-start .sp-row-face {
+  --sp-icon: 28px;
 }
 
 #app.split-view.is-start .sp-row-text {
@@ -929,6 +947,18 @@ body:has(> #app.split-view.is-start) {
 #app.split-view.is-start .sp-url-row .bw-input {
   flex: 1 1 auto;
   min-width: 0;
+  height: 34px;
+  padding-inline: var(--bw-space-3);
+  border: 0;
+  border-radius: var(--bw-r-pill);
+  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
+  color: var(--sp-card-ink);
+}
+
+#app.split-view.is-start .sp-url-row .bw-button {
+  height: 34px;
+  padding-inline: var(--bw-space-4);
+  border-radius: var(--bw-r-pill);
 }
 
 /* Note */
@@ -962,6 +992,13 @@ body:has(> #app.split-view.is-start) {
   justify-content: space-between;
   gap: var(--bw-space-2);
   min-height: 32px;
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-widget:hover .sp-note-foot,
+#app.split-view.is-start .sp-widget:focus-within .sp-note-foot {
+  opacity: 1;
 }
 
 #app.split-view.is-start .sp-note-status {
@@ -970,19 +1007,19 @@ body:has(> #app.split-view.is-start) {
 }
 
 #app.split-view.is-start .sp-note-save {
-  color: var(--sp-card-ink);
+  color: var(--sp-card-ink-2);
 }
 
 /* Clock */
 #app.split-view.is-start .sp-widget-body.is-clock {
-  justify-content: center;
+  align-items: center;
   gap: var(--bw-space-1);
-  padding: 0 var(--bw-space-6) var(--bw-space-6);
+  text-align: center;
 }
 
 #app.split-view.is-start .sp-wclock-time {
   margin: 0;
-  font-size: calc(48px * var(--bw-font-scale));
+  font-size: calc(44px * var(--bw-font-scale));
   font-weight: 300;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -995,73 +1032,56 @@ body:has(> #app.split-view.is-start) {
   font-size: var(--bw-text-body);
 }
 
-/* Protection */
-#app.split-view.is-start .sp-widget-body.is-stats {
-  justify-content: space-between;
-  gap: var(--bw-space-3);
-}
-
-#app.split-view.is-start .sp-stat-lead {
+/* Protection: one sentence with its number, and a quieter line under it. */
+#app.split-view.is-start .sp-guard {
   display: flex;
   align-items: center;
-  gap: var(--bw-space-3);
-  margin-top: var(--bw-space-1);
+  gap: var(--bw-space-4);
 }
 
-#app.split-view.is-start .sp-stat-badge {
+#app.split-view.is-start .sp-guard-badge {
   display: grid;
   flex: none;
   place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--bw-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--bw-accent) 22%, transparent);
   color: var(--sp-card-ink);
 }
 
-#app.split-view.is-start .sp-stat {
+#app.split-view.is-start .sp-guard-words {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+#app.split-view.is-start .sp-guard-line {
   margin: 0;
-  font-size: calc(34px * var(--bw-font-scale));
-  font-weight: var(--bw-weight-strong);
+  color: var(--sp-card-ink-2);
+  font-size: var(--bw-text-body);
+}
+
+#app.split-view.is-start .sp-stat {
+  margin-right: 2px;
+  color: var(--sp-card-ink);
+  font-size: calc(28px * var(--bw-font-scale));
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  line-height: 1.05;
+  line-height: 1;
 }
 
 #app.split-view.is-start .sp-stat-caption {
   margin: 0;
-  color: var(--sp-card-ink-2);
-  font-size: var(--bw-text-caption);
-}
-
-#app.split-view.is-start .sp-facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: var(--bw-space-2);
-  margin: 0;
-}
-
-#app.split-view.is-start .sp-fact {
-  min-width: 0;
-  padding: var(--bw-space-2) var(--bw-space-3);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--sp-card-ink) 7%, transparent);
-}
-
-#app.split-view.is-start .sp-fact dt {
-  color: var(--sp-card-ink-2);
-  font-size: var(--bw-text-caption);
-}
-
-#app.split-view.is-start .sp-fact dd {
-  margin: 0;
   overflow: hidden;
-  font-size: var(--bw-text-body);
-  font-weight: var(--bw-weight-strong);
+  color: var(--sp-card-ink-2);
+  font-size: var(--bw-text-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Web page: the page fills the card under its header. */
+/* Web page: the page fills the card under its label. */
 #app.split-view.is-start .sp-widget-body.is-frame {
   padding: 0 var(--bw-space-1_5) var(--bw-space-1_5);
 }
@@ -1071,7 +1091,7 @@ body:has(> #app.split-view.is-start) {
   width: 100%;
   min-height: 0;
   border: 0;
-  border-radius: 12px;
+  border-radius: 14px;
   background: #ffffff;
 }
 
@@ -1417,129 +1437,4 @@ body:has(> #app.split-view.is-start) {
   #app.split-view.is-start .sp-clock-time {
     font-size: calc(52px * var(--bw-font-scale));
   }
-}
-
-#app.split-view.is-start .sp-url-row .bw-input {
-  height: 34px;
-  padding-inline: var(--bw-space-3);
-  border: 1px solid var(--sp-card-edge);
-  border-radius: var(--bw-r-pill);
-  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
-  color: var(--sp-card-ink);
-}
-
-#app.split-view.is-start .sp-url-row .bw-button {
-  height: 34px;
-  padding-inline: var(--bw-space-4);
-  border-radius: var(--bw-r-pill);
-}
-
-/* ---- Widget sizes: nothing taller than what it shows ---- */
-#app.split-view.is-start .sp-widget-grid {
-  align-items: start;
-}
-
-/* A clock, the counts or a bookmark list: as tall as its content. */
-#app.split-view.is-start .sp-widget.is-fit {
-  height: auto;
-}
-
-#app.split-view.is-start .sp-widget.is-fit .sp-widget-body {
-  flex: none;
-  overflow: visible;
-}
-
-#app.split-view.is-start .sp-widget.is-fit .sp-widget-body.is-clock {
-  padding: var(--bw-space-1) var(--bw-space-4) var(--bw-space-4);
-}
-
-#app.split-view.is-start .sp-widget.is-fit .sp-wclock-time {
-  font-size: calc(40px * var(--bw-font-scale));
-}
-
-/* Sites as sites: a row of small tiles across the page under a quiet label, with no card around them. */
-#app.split-view.is-start .sp-strips {
-  display: flex;
-  flex-direction: column;
-  gap: var(--bw-space-3);
-}
-
-#app.split-view.is-start .sp-widget.is-strip {
-  height: auto;
-  overflow: visible;
-  border: 0;
-  background: transparent;
-  backdrop-filter: none;
-  color: var(--sp-ink);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-widget-head {
-  height: 32px;
-  padding: 0 var(--bw-space-1);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-widget-title {
-  color: var(--sp-ink-2);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-widget-glyph {
-  background: transparent;
-  color: var(--sp-ink-2);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-widget-tool {
-  color: var(--sp-ink-2);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-widget-body {
-  flex: none;
-  padding: 0;
-  overflow: visible;
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-config {
-  padding: var(--bw-space-2) var(--bw-space-3);
-  border: 1px solid var(--bw-hairline);
-  border-radius: 12px;
-  background: var(--bw-overlay);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-icons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--bw-space-2);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-icons > li {
-  width: 96px;
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-icon-link {
-  padding: var(--bw-space-3) var(--bw-space-1) var(--bw-space-2);
-  border: 1px solid var(--sp-card-edge);
-  border-radius: 14px;
-  background: var(--sp-card);
-  backdrop-filter: var(--sp-card-blur);
-  color: var(--sp-card-ink);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-icon-link:hover {
-  background: color-mix(in srgb, var(--sp-card-ink) 10%, var(--sp-card));
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-widget-empty {
-  flex-direction: row;
-  justify-content: flex-start;
-  padding: var(--bw-space-1);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-empty-glyph {
-  width: 28px;
-  height: 28px;
-  background: transparent;
-  color: var(--sp-ink-2);
-}
-
-#app.split-view.is-start .sp-widget.is-strip .sp-widget-note {
-  color: var(--sp-ink-2);
 }

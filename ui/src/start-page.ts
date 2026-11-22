@@ -16,7 +16,7 @@ import { tileTone } from './history-page-logic';
 import { onSpoilerConfig, activeSpoilerMode } from './spoiler-config'; // --- spoiler guard ---
 import { guardTitle, hostOnly } from './spoiler-guard'; // --- spoiler guard --- titles that came from pages (top sites, bookmarks, dials)
 import {
-  DIM_STEPS, MAX_NOTE, MAX_TITLE, MAX_URL, NOTE_SAVED, SIZE_LABELS, WALL_ART, WIDGET_BGS, WIDGET_HINTS, WIDGET_KINDS, WIDGET_LABELS, blockedText, clockParts,
+  DIM_STEPS, MAX_NOTE, MAX_TITLE, MAX_URL, NOTE_SAVED, SIZE_LABELS, WALL_ART, WIDGET_BGS, WIDGET_HINTS, WIDGET_KINDS, WIDGET_LABELS, clockParts,
   columnsFor, dialCountText, dimStep, dropBefore, isWebAddress, normaliseAddress, textOn, tileWidth, titleState, toneOf, wallInk, widgetClasses,
   type BookmarkView, type Dial, type GroupTab, type StartMessage, type StartSnapshot, type TitleMode, type WallTone, type Wallpaper, type Widget,
   type WidgetBg, type WidgetKind,
@@ -842,12 +842,10 @@ export function buildStartPage(): {
   function widgetHead(widget: Widget, s: StartSnapshot): HTMLElement {
     const head = el('header', 'sp-widget-head');
     const title = el('h2', 'sp-widget-title');
-    const glyph = el('span', 'sp-widget-glyph');
-    glyph.append(icon(widgetIcon(widget.kind), { size: 14 }));
     const label = el('span', 'sp-widget-name');
     label.textContent = widgetName(widget, s);
     label.dir = 'auto';
-    title.append(glyph, label);
+    title.append(label);
     const tools = el('div', 'sp-widget-tools');
     const kindLabel = WIDGET_LABELS[widget.kind];
     if (!s.guest && (widget.kind === 'bookmarks' || widget.kind === 'webpage')) {
@@ -1018,30 +1016,21 @@ export function buildStartPage(): {
         break;
       }
       case 'privacy': {
-        const lead = el('div', 'sp-stat-lead');
-        const badge = el('span', 'sp-stat-badge');
+        const lead = el('div', 'sp-guard');
+        const badge = el('span', 'sp-guard-badge');
         badge.setAttribute('aria-hidden', 'true');
-        badge.append(icon('shield-check', { size: 20 }));
-        const figure = el('div', 'sp-stat-figure');
-        const big = el('p', 'sp-stat');
+        badge.append(icon('shield-check', { size: 18 }));
+        const words = el('div', 'sp-guard-words');
+        const line = el('p', 'sp-guard-line');
+        const big = el('span', 'sp-stat');
         big.textContent = widget.today.toLocaleString('en-GB');
-        const caption = el('p', 'sp-stat-caption');
-        caption.textContent = widget.today === 1 ? 'request blocked today' : 'requests blocked today';
-        figure.append(big, caption);
-        lead.append(badge, figure);
-        const facts = el('dl', 'sp-facts');
-        const fact = (name: string, value: string): void => {
-          const wrap = el('div', 'sp-fact');
-          const dt = el('dt');
-          dt.textContent = name;
-          const dd = el('dd');
-          dd.textContent = value;
-          wrap.append(dt, dd);
-          facts.append(wrap);
-        };
-        fact('All time', blockedText(widget.total).replace(/ requests? blocked$/, ''));
-        if (widget.topHost !== '') fact('Most blocked', `${widget.topHost} (${widget.topCount.toLocaleString('en-GB')})`);
-        body.append(lead, facts);
+        line.append(big, document.createTextNode(widget.today === 1 ? ' tracker blocked today' : ' trackers blocked today'));
+        const more = el('p', 'sp-stat-caption');
+        const total = `${widget.total.toLocaleString('en-GB')} in total`;
+        more.textContent = widget.topHost === '' ? total : `${total} \u00b7 most from ${widget.topHost}`;
+        words.append(line, more);
+        lead.append(badge, words);
+        body.append(lead);
         body.classList.add('is-stats');
         break;
       }
