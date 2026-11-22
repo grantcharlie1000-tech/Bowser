@@ -1433,3 +1433,113 @@ body:has(> #app.split-view.is-start) {
   padding-inline: var(--bw-space-4);
   border-radius: var(--bw-r-pill);
 }
+
+/* ---- Widget sizes: nothing taller than what it shows ---- */
+#app.split-view.is-start .sp-widget-grid {
+  align-items: start;
+}
+
+/* A clock, the counts or a bookmark list: as tall as its content. */
+#app.split-view.is-start .sp-widget.is-fit {
+  height: auto;
+}
+
+#app.split-view.is-start .sp-widget.is-fit .sp-widget-body {
+  flex: none;
+  overflow: visible;
+}
+
+#app.split-view.is-start .sp-widget.is-fit .sp-widget-body.is-clock {
+  padding: var(--bw-space-1) var(--bw-space-4) var(--bw-space-4);
+}
+
+#app.split-view.is-start .sp-widget.is-fit .sp-wclock-time {
+  font-size: calc(40px * var(--bw-font-scale));
+}
+
+/* Sites as sites: a row of small tiles across the page under a quiet label, with no card around them. */
+#app.split-view.is-start .sp-strips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+}
+
+#app.split-view.is-start .sp-widget.is-strip {
+  height: auto;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
+  color: var(--sp-ink);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-head {
+  height: 32px;
+  padding: 0 var(--bw-space-1);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-title {
+  color: var(--sp-ink-2);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-glyph {
+  background: transparent;
+  color: var(--sp-ink-2);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-tool {
+  color: var(--sp-ink-2);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-body {
+  flex: none;
+  padding: 0;
+  overflow: visible;
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-config {
+  padding: var(--bw-space-2) var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: 12px;
+  background: var(--bw-overlay);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-2);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-icons > li {
+  width: 96px;
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-icon-link {
+  padding: var(--bw-space-3) var(--bw-space-1) var(--bw-space-2);
+  border: 1px solid var(--sp-card-edge);
+  border-radius: 14px;
+  background: var(--sp-card);
+  backdrop-filter: var(--sp-card-blur);
+  color: var(--sp-card-ink);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-icon-link:hover {
+  background: color-mix(in srgb, var(--sp-card-ink) 10%, var(--sp-card));
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-empty {
+  flex-direction: row;
+  justify-content: flex-start;
+  padding: var(--bw-space-1);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-empty-glyph {
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  color: var(--sp-ink-2);
+}
+
+#app.split-view.is-start .sp-widget.is-strip .sp-widget-note {
+  color: var(--sp-ink-2);
+}

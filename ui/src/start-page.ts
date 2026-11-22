@@ -141,12 +141,13 @@ export function buildStartPage(): {
   dialsSection.append(groupBar, crumbs, grid);
   const widgetsSection = el('section', 'sp-widgets');
   widgetsSection.setAttribute('aria-label', 'Widgets');
+  const stripList = el('div', 'sp-strips');
   const widgetGrid = el('div', 'sp-widget-grid');
   const widgetBar = el('div', 'sp-widget-bar');
   const addWidget = textButton('Add widget', () => openWidgetMenu(addWidget), { icon: 'plus', subtle: true });
   addWidget.classList.add('sp-add-widget');
   widgetBar.append(addWidget);
-  widgetsSection.append(widgetGrid, widgetBar);
+  widgetsSection.append(stripList, widgetGrid, widgetBar);
   const toast = el('p', 'sp-toast');
   toast.setAttribute('role', 'status');
   toast.hidden = true;
@@ -801,6 +802,7 @@ export function buildStartPage(): {
     root.style.setProperty('--sp-widget-custom', s.settings.widgetColor);
     root.style.setProperty('--sp-widget-custom-fg', textOn(s.settings.widgetColor));
     const cards: HTMLElement[] = [];
+    const strips: HTMLElement[] = [];
     const seen = new Set<number>();
     for (const widget of s.widgets) {
       let node = widgetNodes.get(widget.id);
@@ -812,7 +814,7 @@ export function buildStartPage(): {
       }
       seen.add(widget.id);
       paintWidget(node, widget, s);
-      cards.push(node.root);
+      (node.root.classList.contains('is-strip') ? strips : cards).push(node.root);
     }
     for (const id of Array.from(widgetNodes.keys())) {
       if (seen.has(id)) continue;
@@ -822,6 +824,8 @@ export function buildStartPage(): {
       savedNotes.delete(id);
       if (configuring === id) configuring = null;
     }
+    stripList.replaceChildren(...strips);
+    stripList.hidden = strips.length === 0;
     widgetGrid.replaceChildren(...cards);
     widgetGrid.hidden = cards.length === 0;
     addWidget.hidden = s.guest || s.widgets.length >= 12;
@@ -888,6 +892,11 @@ export function buildStartPage(): {
   function paintWidget(node: WidgetNode, widget: Widget, s: StartSnapshot): void {
     node.root.dataset.kind = widget.kind;
     node.root.classList.toggle('is-configuring', configuring === widget.id);
+    // Sites are shown as sites: a row of tiles the width of the page, as tall as its tiles, not a card.
+    const strip = widget.kind === 'topsites' || (widget.kind === 'bookmarks' && widget.view === 'tiles');
+    node.root.classList.toggle('is-strip', strip);
+    // The clock, the counts and a bookmark list are as tall as what they show; a note and a page keep the set height.
+    node.root.classList.toggle('is-fit', !strip && widget.kind !== 'notes' && widget.kind !== 'webpage');
     const body = el('div', 'sp-widget-body bw-scroll');
     const open = (url: string, event?: MouseEvent): void => { cmd(event?.ctrlKey || event?.shiftKey ? { a: 'openurl', url, on: true } : { a: 'openurl', url }); };
     switch (widget.kind) {

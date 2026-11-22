@@ -1171,7 +1171,7 @@ pub struct Widget {
 
 impl Widget {
     fn new(id: u32, kind: WidgetKind) -> Self {
-        Self { id, kind, folder: 0, view: BookmarksView::List, url: String::new(), text: String::new() }
+        Self { id, kind, folder: 0, view: BookmarksView::Tiles, url: String::new(), text: String::new() }
     }
 }
 

@@ -584,7 +584,10 @@ test('drag to reorder is a setting: dropping before or after, into a folder, Esc
 test('widgets: each kind draws, and the dashboard follows its settings', () => {
   show(fixture.page);
   const cards = root.querySelectorAll('.sp-widget');
-  assert.deepEqual(cards.map((c) => c.dataset.kind), ['date', 'topsites', 'privacy', 'bookmarks', 'notes', 'webpage']);
+  // Sites are rows of tiles above the cards (as tall as their tiles); the cards keep their order below.
+  assert.deepEqual(cards.map((c) => c.dataset.kind), ['topsites', 'bookmarks', 'date', 'privacy', 'notes', 'webpage']);
+  assert.deepEqual(root.querySelectorAll('.sp-strips .sp-widget').map((c) => c.dataset.kind), ['topsites', 'bookmarks']);
+  assert.deepEqual(root.querySelectorAll('.sp-widget.is-fit').map((c) => c.dataset.kind), ['date', 'privacy'], 'the clock and the counts fit their content');
   const card = (kind) => root.querySelector(`.sp-widget[data-kind="${kind}"]`);
   assert.match(card('date').querySelector('.sp-wclock-time').textContent, /\d{1,2}.\d{2}/);
   assert.equal(card('topsites').querySelector('.sp-icon-name').textContent, 'Docs.rs');
