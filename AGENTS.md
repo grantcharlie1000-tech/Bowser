@@ -4,6 +4,10 @@ Bowser is a small experimental x64 Windows browser, written in Rust. It uses one
 
 The chrome is a calm translucent window with soft rounded tab islands and a centred address pill, as described in PRODUCT.md. Design references include Safari 18.4's compact bar, along with other browsers listed in docs/design/reference-spec.md.
 
+## Skills
+
+Check for and use any and all relevant skills before and during a task. This includes the repo skills in `.agents/skills/` (currently `delete-comment`, for source comment cleanup) and any skills available in your own environment.
+
 ## Simple code
 
 - Write the simplest code that solves the problem. Do not add layers, options or abstractions that the task does not need.
