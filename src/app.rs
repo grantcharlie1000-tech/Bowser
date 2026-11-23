@@ -7725,6 +7725,12 @@ impl App {
                 }))
             },
             // --- end address bar, search and bookmarks ---
+            context_translate: {
+                let translate_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, text: &str| {
+                    translate_app.upgrade().and_then(|app| App::selection_translate_target(&app, tab, text))
+                }))
+            },
             // --- page tools (T7): "Insert note" in a text field's context menu ---
             context_notes: Some(Rc::new(move |_tab| win32::context_note_items())),
             context_note_pick: {

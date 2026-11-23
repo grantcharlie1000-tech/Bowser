@@ -416,7 +416,7 @@ pub(crate) fn show_menu(
     context: Option<MenuContext>,
     on_result: ResultCallback,
 ) -> Result<(), ShowRefused> {
-    let acts = currency_acts(menu);
+    let acts = live_acts(menu);
     let on_act: Option<ActHandler> = if acts.is_empty() { None } else {
         let menu = menu.clone();
         Some(Rc::new(move |_app, _id, n| {
@@ -871,7 +871,7 @@ fn apply_outcome(owner: HWND, token: u32, outcome: ActOutcome, app: &AppRef) {
             let Some(json) = menu_json(token, &kind, &menu, &mut ids) else { close(owner); return; };
             let host = POPUPS.with(|p| p.borrow_mut().get_mut(&(owner.0 as isize)).map(|popup| {
                 popup.enabled_ids = ids;
-                popup.acts = currency_acts(&menu);
+                popup.acts = live_acts(&menu);
                 popup.host.clone()
             }));
             if let Some(host) = host { let _ = host.post_json(&json); }
@@ -1164,9 +1164,12 @@ fn menu_json(tok: u32, kind: &str, menu: &Menu, ids: &mut HashSet<u32>) -> Optio
     }))
 }
 
-fn currency_acts(menu: &Menu) -> HashMap<u32, u8> {
+/// Rows whose text changes while the menu is open. The page asks for a fresh copy with act 0 while one
+/// is loading; act 1 on a currency row also switches the currency.
+fn live_acts(menu: &Menu) -> HashMap<u32, u8> {
     menu.entries.iter().filter_map(|entry| match entry {
         Entry::Item(item) if item.currency.is_some() && item.enabled => u32::try_from(item.id).ok().map(|id| (id, 1)),
+        Entry::Item(item) if item.translation.is_some() => u32::try_from(item.id).ok().map(|id| (id, 0)),
         _ => None,
     }).collect()
 }
@@ -1264,13 +1267,16 @@ fn write_entries(
             }
             Entry::Item(item) => rows.object(|out| {
                 out.uint("id", item.id as u64);
-                let conversion = item.currency.as_deref().copied().map(crate::currency::label);
-                out.string("label", cap16(conversion.as_ref().unwrap_or(&item.label), MAX_LABEL));
+                let live = item.live_label();
+                out.string("label", cap16(live.as_ref().unwrap_or(&item.label), MAX_LABEL));
                 if item.currency.is_some() {
                     out.object("currency", |out| {
                         out.string("symbol", crate::currency::SYMBOLS[crate::currency::target()]);
                         out.bool("loading", crate::currency::loading());
                     });
+                }
+                if let Some(lookup) = item.translation {
+                    out.object("translation", |out| out.bool("loading", crate::translate::selection::loading(lookup)));
                 }
                 out.bool("enabled", item.enabled);
                 out.bool("checked", item.checked);
@@ -1517,12 +1523,28 @@ mod tests {
         assert!(json.contains("\"currency\":{\"symbol\":"));
         assert!(!json.contains("Currency conversion"));
         assert_eq!(picks, HashSet::from([10]));
-        let acts = currency_acts(&menu);
+        let acts = live_acts(&menu);
         assert!(act_allowed(true, 7, 7, 9, 0, &acts));
         assert!(act_allowed(true, 7, 7, 9, 1, &acts));
         assert!(!act_allowed(true, 7, 7, 9, 2, &acts));
         assert!(!act_allowed(true, 8, 7, 9, 1, &acts));
         assert!(!act_allowed(true, 7, 7, 10, 1, &acts));
+    }
+
+    #[test]
+    fn translation_rows_are_picks_that_refresh_in_place() {
+        let mut translation = menu::Item::new(9, "Translation", Icon::None).glyph("translate");
+        translation.translation = Some(u64::MAX);
+        let menu = Menu { header: None, entries: vec![Entry::Item(translation),
+            Entry::Item(menu::Item::new(10, "Copy", Icon::None))], footer: String::new() };
+        let mut picks = HashSet::new();
+        let json = menu_json(7, "selection", &menu, &mut picks).unwrap();
+        assert!(json.contains("\"label\":\"Translation unavailable\""), "{json}");
+        assert!(json.contains("\"translation\":{\"loading\":false}"), "{json}");
+        assert_eq!(picks, HashSet::from([9, 10]));
+        let acts = live_acts(&menu);
+        assert!(act_allowed(true, 7, 7, 9, 0, &acts));
+        assert!(!act_allowed(true, 7, 7, 9, 1, &acts));
     }
 
     #[test]

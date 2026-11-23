@@ -4572,8 +4572,8 @@ unsafe extern "system" fn window_proc(
                 crate::engine::engine_menu_tick(hwnd);
                 LRESULT(0)
             }
-            super::currency_menu::WM_SHOW => {
-                super::currency_menu::run(hwnd);
+            super::selection_menu::WM_SHOW => {
+                super::selection_menu::run(hwnd);
                 LRESULT(0)
             }
             WM_HTML_DEFERRED => {
@@ -5014,7 +5014,7 @@ unsafe extern "system" fn window_proc(
                 super::split_ui::revoke(hwnd);
                 let _ = KillTimer(Some(hwnd), chrome_recovery::TIMER);
                 let _ = KillTimer(Some(hwnd), surface_recovery::TIMER);
-                super::currency_menu::cancel(hwnd);
+                super::selection_menu::cancel(hwnd);
                 auto_hide::forget(hwnd); // --- auto-hide (T11) ---
                 super::panel_webapp::shutdown();
                 passwords_panel::clear_password_clipboard_timer(hwnd);
@@ -13497,7 +13497,7 @@ mod tests {
             super::super::WM_ENGINE_FAILURE,
             chrome_recovery::EVENT, chrome_recovery::INPUT_RELEASED,
             WM_CHROME_SYNC, WM_FOREGROUND_SYNC, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_HTML_CHROME_ENV,
-            super::super::currency_menu::WM_SHOW,
+            super::super::selection_menu::WM_SHOW,
             WM_HTML_CHROME_FAILED, WM_HTML_CHROME_START, WM_HTML_DEFERRED, WM_HTML_HOVER_START, WM_HTML_PANEL_FAILED,
             WM_HTML_POPUP_FAILED, WM_HTML_RAIL_FAILED, WM_HTML_TABS_FAILED, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
             WM_PANE_FOCUSED, WM_RAIL_CHANGED, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, WM_UPDATE_CHECKED,

@@ -7127,6 +7127,7 @@ unsafe fn configure_controller(
         if !coordinated_menu && let Ok(webview11) = webview.cast::<ICoreWebView2_11>() {
             let currency_controller = controller.clone();
             let currency_gate = document_gate.clone();
+            let translate_target = events.context_translate.clone();
             crate::currency::refresh();
             webview11.add_ContextMenuRequested(
                 &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
@@ -7139,8 +7140,18 @@ unsafe fn configure_controller(
                     let mut selected = PWSTR::null();
                     target.SelectionText(&mut selected)?;
                     let selection = CoTaskMemPWSTR::from(selected).to_string();
-                    if let Some(price) = crate::currency::parse(&selection) {
-                        crate::currency::refresh();
+                    let price = crate::currency::parse(&selection);
+                    let selection = selection.trim();
+                    // Like page translation, text in a form field is never sent.
+                    let mut editable = BOOL::default();
+                    target.IsEditable(&mut editable)?;
+                    let translation = translate_target
+                        .as_ref()
+                        .filter(|_| !editable.as_bool() && selection.chars().count() <= crate::translate::selection::MAX_CHARS)
+                        .and_then(|target| target(tab_id, selection))
+                        .map(|target| (selection.to_owned(), target));
+                    if price.is_some() || translation.is_some() {
+                        if price.is_some() { crate::currency::refresh(); }
                         let mut anchor = windows::Win32::Foundation::POINT::default();
                         args.Location(&mut anchor)?;
                         let mut current_bounds = RECT::default();
@@ -7155,7 +7166,7 @@ unsafe fn configure_controller(
                             controller.IsVisible(&mut visible).is_ok() && visible.as_bool()
                                 && gate.try_borrow().is_ok_and(|gate| gate.proof() == Some(proof))
                         });
-                        if current() { win32::currency_menu::queue(parent, anchor, &args, price, current)?; }
+                        if current() { win32::selection_menu::queue(parent, anchor, &args, price, translation, current)?; }
                     }
                     Ok(())
                 })),

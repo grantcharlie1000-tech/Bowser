@@ -176,6 +176,24 @@ impl App {
         translate::should_offer(&OfferInput { page_lang, target: &target, offer_on, auto_on, site, private })
     }
 
+    /// The language to translate `text` into, when it was selected in `tab` and looks like it is in
+    /// another language; `None` for no translation row in the context menu. Never for a private tab,
+    /// a page that is not a plain web page, or with the offer setting off. A translated page's own
+    /// language no longer describes its text, so it is not used then.
+    pub fn selection_translate_target(app: &AppRef, tab: TabId, text: &str) -> Option<String> {
+        let (page_lang, setting) = {
+            let state = app.try_borrow().ok()?;
+            let entry = state.tabs.iter().find(|entry| entry.id == tab)?;
+            if !state.settings.translate_offer || entry.private || !entry.url.as_ref().is_some_and(translate::url_allowed) {
+                return None;
+            }
+            let page_lang = if entry.translate.active { translate::Lang::NONE } else { entry.translate.page_lang };
+            (page_lang, state.settings.translate_target.clone())
+        };
+        let target = translate::target_language(&setting);
+        translate::selection::looks_foreign(text, page_lang, &target).then_some(target)
+    }
+
     /// The toolbar button for `tab`.
     pub fn translate_pill(app: &AppRef, tab: TabId) -> Pill {
         if Self::translate_active(app, tab) {

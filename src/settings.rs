@@ -598,7 +598,8 @@ pub struct Settings {
     /// `ask_download_location` (default false): show a Save dialog for each download first.
     pub ask_download_location: bool,
     /// `translate_offer` (default true): show the toolbar's translate button on a page in another
-    /// language. It only offers; nothing is downloaded or changed until the user clicks.
+    /// language, and a translation row in the context menu of selected text in another language
+    /// (`translate::selection`; the selection is sent to Google when the menu opens).
     pub translate_offer: bool,
     /// `translate_auto` (default false): translate a site automatically when it is set to "Always
     /// translate this site". Off, that choice only keeps the button offered.

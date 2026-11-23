@@ -662,6 +662,9 @@ pub struct EngineEvents {
     pub context_search: Option<ContextSearchLabelsFn>,
     /// One of those items was picked.
     pub context_search_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, ContextSearchPick)>>,
+    /// The page context menu is about to open on selected text: the language to translate it into
+    /// when it looks like it is in another one, or `None` for no translation row.
+    pub context_translate: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, &str) -> Option<String>>>,
     // --- end address bar, search and bookmarks ---
     // --- page tools (T7) ---
     /// The page context menu opened on a text field: the notes it may insert, as (id, menu label).

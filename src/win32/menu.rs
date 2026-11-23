@@ -201,6 +201,8 @@ pub(crate) struct Item {
     pub favicon_png: Option<std::rc::Rc<Vec<u8>>>,
     /// Live conversion in a normal-height row; activating it cycles the target in place.
     pub currency: Option<Box<crate::currency::Price>>,
+    /// Live translation of the selected text (a `translate::selection` lookup id) in a normal row.
+    pub translation: Option<u64>,
 }
 
 /// Optional list presentation for a page or other row that has a title and favicon.
@@ -227,7 +229,17 @@ impl Item {
             glyph: None,
             favicon_png: None,
             currency: None,
+            translation: None,
         }
+    }
+
+    /// The text of a row that changes while it is shown (a conversion or a translation).
+    pub fn live_label(&self) -> Option<String> {
+        self.currency
+            .as_deref()
+            .copied()
+            .map(crate::currency::label)
+            .or_else(|| self.translation.map(crate::translate::selection::label))
     }
 
     /// Family icon the HTML popup draws for this row.
@@ -897,7 +909,7 @@ fn track_placed(
 
     unsafe {
         let _ = ShowWindow(window, SW_SHOW);
-        if (*state).menu.entries.iter().any(|entry| matches!(entry, Entry::Item(item) if item.currency.is_some())) {
+        if (*state).menu.entries.iter().any(|entry| matches!(entry, Entry::Item(item) if item.currency.is_some() || item.translation.is_some())) {
             let _ = SetTimer(Some(window), CURRENCY_FRAME_TIMER, 250, None);
         }
     }
@@ -1782,7 +1794,7 @@ unsafe fn draw_item(
         } else {
             inner.right - s(10)
         };
-        let conversion = item.currency.as_deref().copied().map(crate::currency::label);
+        let conversion = item.live_label();
         draw_text(
             dc,
             rect(

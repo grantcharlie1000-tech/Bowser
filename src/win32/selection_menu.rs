@@ -1,4 +1,6 @@
-//! Deferred content menu: never enter a modal loop inside a WebView2 callback.
+//! The page's context menu on a selection, shown by Bowser with live rows on top: a currency
+//! conversion for a price, a translation for text in another language. Deferred: never enter a
+//! modal loop inside a WebView2 callback.
 use super::menu::{self, Entry, Icon, Item, Menu};
 use std::{cell::RefCell, rc::Rc};
 use webview2_com::{CoTaskMemPWSTR, Microsoft::Web::WebView2::Win32::*};
@@ -11,6 +13,8 @@ use windows::{
 };
 
 pub const WM_SHOW: u32 = WM_APP + 0xB8;
+const CURRENCY_ID: usize = 0x7fff_fffe;
+const TRANSLATION_ID: usize = 0x7fff_fffd;
 struct Pending {
     owner: HWND,
     anchor: POINT,
@@ -102,24 +106,36 @@ unsafe fn entries(
     }
 }
 
+/// Takes over the menu with `price` converted and `translation` (the selected text and the language
+/// to translate it into) on top. Does nothing when there is neither.
 pub unsafe fn queue(
     owner: HWND,
     anchor: POINT,
     args: &ICoreWebView2ContextMenuRequestedEventArgs,
-    price: crate::currency::Price,
+    price: Option<crate::currency::Price>,
+    translation: Option<(String, String)>,
     current: Rc<dyn Fn() -> bool>,
 ) -> Result<()> {
     unsafe {
-        if PENDING.with(|pending| pending.borrow().is_some()) {
+        if (price.is_none() && translation.is_none()) || PENDING.with(|pending| pending.borrow().is_some()) {
             return Ok(());
         }
         let mut items = entries(&args.MenuItems()?, 0)?;
-        let mut conversion = Item::new(0x7fff_fffe, "Currency conversion", Icon::None)
-            .described("Approximate reference rate · Frankfurter. Click the currency symbol or press Enter to switch currency.");
-        conversion.currency = Some(Box::new(price));
-        items.insert(0, Entry::Item(conversion));
+        if let Some(price) = price {
+            let mut conversion = Item::new(CURRENCY_ID, "Currency conversion", Icon::None)
+                .described("Approximate reference rate · Frankfurter. Click the currency symbol or press Enter to switch currency.");
+            conversion.currency = Some(Box::new(price));
+            items.insert(0, Entry::Item(conversion));
+        }
         if !current() {
             return Ok(());
+        }
+        if let Some((text, target)) = translation {
+            let mut row = Item::new(TRANSLATION_ID, "Translation", Icon::None)
+                .glyph("translate")
+                .described("Translated by Google Translate. Choose it to copy the translation.");
+            row.translation = Some(crate::translate::selection::start(text, target));
+            items.insert(0, Entry::Item(row));
         }
         let deferral = Completion(args.GetDeferral()?);
         args.SetHandled(true)?;
@@ -162,19 +178,17 @@ pub fn run(owner: HWND) {
     if !(pending.current)() {
         return;
     }
-    if crate::currency::target()
-        == pending
-            .menu
-            .entries
-            .first()
-            .and_then(|entry| match entry {
-                Entry::Item(item) => item.currency.as_deref().copied(),
-                _ => None,
-            })
-            .map_or(usize::MAX, |price| price.currency)
-    {
+    let price = pending.menu.entries.iter().find_map(|entry| match entry {
+        Entry::Item(item) => item.currency.as_deref().copied(),
+        _ => None,
+    });
+    if price.is_some_and(|price| price.currency == crate::currency::target()) {
         crate::currency::cycle();
     }
+    let lookup = pending.menu.entries.iter().find_map(|entry| match entry {
+        Entry::Item(item) => item.translation,
+        _ => None,
+    });
     let Pending {
         owner,
         anchor,
@@ -188,13 +202,19 @@ pub fn run(owner: HWND) {
         anchor,
         menu::Placement::BelowLeft,
         menu,
-        "currency-selection",
+        "selection",
         move |_app, chosen| {
             if let Some(chosen) = chosen
                 && current()
             {
-                unsafe {
-                    let _ = args.SetSelectedCommandId(chosen.id as i32);
+                if chosen.id == TRANSLATION_ID {
+                    if let Some(text) = lookup.and_then(crate::translate::selection::translation) {
+                        super::window::copy_text_to_clipboard(owner, &text);
+                    }
+                } else {
+                    unsafe {
+                        let _ = args.SetSelectedCommandId(chosen.id as i32);
+                    }
                 }
             }
             drop(deferral);

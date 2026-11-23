@@ -9,6 +9,7 @@ Translation of web pages by Google Translate. There is nothing to download, no k
 - A translate button in the toolbar (HTML chrome) appears when the page says it is in a language other than the target. The main menu has **Translate page to English** (or **Show original**), and **More tools** has **Always translate this site** and **Never offer to translate this site**. The command palette has **Translate page**.
 - Clicking it shows "Translating with Google Translate…" and the page turns into the target language in place, nearest text first. **Show original** puts every original string back exactly.
 - A page that does not say what language it is in is not offered, but the menu command still works: Google detects the language.
+- Select text in another language and right-click it. The context menu shows the translation in its top row, for example **English: Hello world**. The row says "Translating…" until Google answers. Choose the row to copy the translation. See [Selected text](#selected-text).
 - In a private tab Bowser asks first ("Send this page's text to Google Translate"), every time.
 - Settings (Appearance > Translation): offer on or off (default on), translate automatically on sites set to "always" (default off), and the target language (default: the Windows display language, or English when that is not a language in the list).
 
@@ -29,17 +30,26 @@ Nothing runs until the user asks, except one pure decision per toolbar refresh a
 2. **Google** (`src/translate/google.rs`, `net.rs`). One form POST per batch: `q=` once per string, `sl` the page's language when it is one in the table (otherwise `auto`), `tl` the target. The answer is a JSON array of strings (a named source) or of `[text, detected language]` pairs (`auto`), in the order sent; anything else, or a different count, is refused. `net.rs` is WinHTTP: HTTPS only, redirects refused, 10 s to connect, 20 s to receive, answers capped at 1 MB. A network failure is tried once more; HTTP 429 is reported as "limiting requests" and not retried. The host `translate.googleapis.com` is the only address translation contacts.
 3. **Rust** (`src/app/page_translate.rs`). One job at a time, driven by completions: collect, send, apply, repeat. The request runs on a thread and posts `WM_TRANSLATE_NET` (job id and request id) back; the result waits in a process-wide list keyed by request id. Every step checks the tab's translate epoch (bumped on every navigation, like reader view), so a navigation, a reload or a closed tab drops the job silently. A watchdog (120 s) fails a step that never answers. Everything that crosses a boundary is validated: `translate::parse_reply` (the page's answer: exact members, token `[a-z0-9]{1,16}`, bounded batch), `google::parse_answer`, and the answer must have exactly as many strings as were sent. Strings sent into the page are escaped with `json_string` (which also escapes `<`, U+2028 and U+2029).
 
+## Selected text
+
+When the page's context menu opens on a selection, Bowser decides on the device whether the text looks like it is in another language (`translate::selection::looks_foreign`). It is foreign when most of its letters are in a writing system the target language does not use (Cyrillic, Han, Arabic and so on for an English reader), or when the page declares a language other than the target and the letters are that language's (French text on a French page). Text with no letters is never translated. A passage in another language on a page in the target language, written in the same letters, is not caught.
+
+Then Bowser shows its own copy of the menu (`src/win32/selection_menu.rs`, which also shows the currency conversion row) with one more row at the top, and sends the selection to Google on a background thread (`sl=auto`). The row reads "Translating…" and changes to "<language>: <translation>" when the answer comes. A long translation is cut at the row's end; choosing the row copies all of it. There is one lookup at a time, and the same text again uses the last answer.
+
+There is no row in a private tab, on a page that is not a plain web page, for text in a form field, for a selection over 2,000 characters, or while **Offer translate** is off.
+
 ## Privacy
 
 - Page text goes from the page to Bowser's process to `translate.googleapis.com` over HTTPS and back. Google can see it, and the connection's address. No page address, cookie or identifier is part of any request, and Bowser sends no key or account.
-- It is only ever sent on the user's command, or for a site they chose "always translate" for with the automatic setting on (both off by default). A private tab asks every time and never stores or reads a per-site "always" or "never" (`translate_set_site` refuses, `should_offer` ignores the stored choice).
+- Selected text is sent when the user right-clicks a selection that looks like it is in another language, with **Offer translate** on (the default). Nothing is sent from a private tab.
+- Page text is only ever sent on the user's command, or for a site they chose "always translate" for with the automatic setting on (both off by default). A private tab asks every time and never stores or reads a per-site "always" or "never" (`translate_set_site` refuses, `should_offer` ignores the stored choice).
 - Form fields, code blocks, numbers, URLs and anything marked `translate="no"` are never collected.
 
 ## Settings
 
 | Key | Default | Meaning |
 |---|---|---|
-| `translate_offer` | `true` | Show the toolbar button on a page in another language. It only offers. |
+| `translate_offer` | `true` | Show the toolbar button on a page in another language (it only offers), and the translation row for selected text in another language (this sends the selection). |
 | `translate_auto` | `false` | Translate a site automatically when it is set to "always translate". |
 | `translate_target` | empty | The language pages are translated into: a primary subtag (`en`, `fr`), or empty for the Windows display language, read once on first use (`GetUserPreferredUILanguages`) and never at startup. A value that is not in the table is replaced by the display language, then English. |
 
@@ -66,6 +76,8 @@ The table is `translate::LANGUAGES` (code and English name), 63 languages from E
 | `src/translate/net.rs` | The one WinHTTP POST |
 | `src/translate/json.rs` | Strict JSON reader for the page's and Google's answers |
 | `src/translate/translate.js` | Page script (`include_str!`) |
+| `src/translate/selection.rs` | Selected text: `looks_foreign`, the one background lookup, the row's label |
+| `src/win32/selection_menu.rs` | The context menu on a selection, with the translation and currency rows |
 | `src/engine/webview2.rs` | `run_translate_script` |
 | `src/app/page_translate.rs` | Job state machine, offer, per-site choice, watchdog |
 | `src/win32/window.rs` | Menu rows (ids 5048 to 5050), palette command, toolbar command, toasts, the private-tab prompt |

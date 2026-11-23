@@ -1,5 +1,5 @@
 mod card;
-pub(crate) mod currency_menu;
+pub(crate) mod selection_menu;
 // --- address bar, search and bookmarks (src/address_settings.rs) ---
 mod address_bar;
 mod address_dialog;

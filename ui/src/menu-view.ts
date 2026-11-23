@@ -109,13 +109,14 @@ function reveal(list: Element | null, row: HTMLElement): void {
 export function createMenuView(root: HTMLElement, now: () => number = () => performance.now()): MenuView {
   let message: MenuMessage | null = null;
   let nav: MenuNav | null = null;
-  let currencyTimer: ReturnType<typeof setTimeout> | undefined;
-  const refreshCurrency = (): void => {
-    clearTimeout(currencyTimer);
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
+  // A conversion or translation still loading: ask Rust for a fresh copy of the menu every 500 ms.
+  const refreshLive = (): void => {
+    clearTimeout(liveTimer);
     const msg = message;
-    const item = msg?.entries.find(entry => 'id' in entry && entry.currency?.loading);
+    const item = msg?.entries.find(entry => 'id' in entry && (entry.currency?.loading || entry.translation?.loading));
     if (msg && item && 'id' in item && !closed) {
-      currencyTimer = setTimeout(() => {
+      liveTimer = setTimeout(() => {
         if (!closed && message?.tok === msg.tok) sendPopupAct(msg.tok, item.id, 0);
       }, 500);
     }
@@ -438,6 +439,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       row.dataset.index = String(index);
       row.dataset.id = String(entry.id);
       if (entry.icon) row.dataset.icon = entry.icon;
+      if (entry.translation) row.dataset.tip = 'Copy translation';
 
       if (lead) {
         // Icon, favicon or badge; rows without one keep the column so labels line up.
@@ -638,22 +640,25 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   return {
     show(raw: unknown): boolean {
       if (!validMenuPayload(raw)) return false;
-      // An in-place conversion refresh leaves selection, open submenus and menu geometry alone.
-      if (message && !closed && message.tok === raw.tok && message.kind === 'currency-selection' && message.kind === raw.kind) {
+      // An in-place conversion or translation refresh leaves selection, open submenus and menu geometry alone.
+      if (message && !closed && message.tok === raw.tok && message.kind === 'selection' && message.kind === raw.kind) {
         for (const entry of raw.entries) {
-          if (!('id' in entry) || !entry.currency) continue;
+          if (!('id' in entry) || !(entry.currency || entry.translation)) continue;
           const previous = message.entries.find(item => 'id' in item && item.id === entry.id);
-          if (!previous || !('id' in previous) || !previous.currency) continue;
+          if (!previous || !('id' in previous) || !(previous.currency || previous.translation)) continue;
           previous.label = entry.label;
           previous.currency = entry.currency;
+          previous.translation = entry.translation;
           const row = root.querySelector<HTMLElement>(`[data-id="${entry.id}"]`);
           const label = row?.querySelector('.html-menu-label');
-          const symbol = row?.querySelector('.html-menu-currency');
           if (label) label.textContent = entry.label;
-          if (symbol) symbol.textContent = entry.currency.symbol;
-          row?.setAttribute('aria-label', `${entry.label}. Switch currency`);
+          if (entry.currency) {
+            const symbol = row?.querySelector('.html-menu-currency');
+            if (symbol) symbol.textContent = entry.currency.symbol;
+            row?.setAttribute('aria-label', `${entry.label}. Switch currency`);
+          }
         }
-        refreshCurrency();
+        refreshLive();
         return true;
       }
       epoch += 1;
@@ -677,7 +682,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       root.replaceChildren(track);
       rebuild(true);
       measure();
-      refreshCurrency();
+      refreshLive();
       return true;
     },
     room(raw: unknown): boolean {

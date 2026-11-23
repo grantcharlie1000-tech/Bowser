@@ -17,6 +17,7 @@
 pub mod google;
 pub mod json;
 pub mod net;
+pub mod selection;
 
 use url::Url;
 
