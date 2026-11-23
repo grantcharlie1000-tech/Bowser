@@ -1,5 +1,37 @@
 [
  {
+  "tag": "v0.0.42",
+  "date": "2026-11-23",
+  "prs": [
+   [
+    192,
+    "Pin Stable to v0.0.41"
+   ],
+   [
+    193,
+    "Fix the new tab group editor; every settings option acts or is out of the way"
+   ],
+   [
+    200,
+    "Remove Settings comments and ratchet lint"
+   ],
+   [
+    203,
+    "Add root AGENTS.md with standing agent rules"
+   ],
+   [
+    204,
+    "Require agents to use any and all relevant skills"
+   ],
+   [
+    205,
+    "Bump Bowser to 0.0.42"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 4a9bfa4bf2a6d67ed5bfddd32af8563ab1bdc65c. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.41",
   "date": "2026-11-20",
   "prs": [
