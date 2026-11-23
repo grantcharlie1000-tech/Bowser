@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bowser Chromium Windows Smoke Test</title>
+<style>
+:root { font: 16px system-ui,sans-serif; color-scheme:light dark; }
+body { margin:0 auto; max-width:760px; padding:3rem 1.5rem; line-height:1.5; }
+button,input { padding:.75rem; margin:.5rem 0; font:inherit; }
+canvas { display:block; width:200px; height:80px; border:1px solid gray; }
+.status { white-space:pre-wrap; font-family:ui-monospace,monospace; }
+</style>
+</head>
+<body>
+<h1>Chromium on Windows — Bowser feasibility</h1>
+<p>This is the standalone CEF sample, NOT Bowser. A successful load verifies web rendering and JavaScript, not browser feature parity.</p>
+<p id="version" class="status">Checking JavaScript...</p>
+<label>Keyboard input: <input id="field" placeholder="Type here and press Enter"></label>
+<button id="button">Click test</button>
+<p id="result" aria-live="polite">Input not yet tested.</p>
+<canvas id="canvas" width="200" height="80"></canvas>
+<p id="gpu" class="status"></p>
+<p>Scroll down to check scrolling.</p>
+<div style="height:850px" aria-hidden="true"></div>
+<p id="bottom">Scroll test complete.</p>
+<script>
+document.getElementById('version').textContent = 'JavaScript OK\n' + navigator.userAgent;
+document.getElementById('button').addEventListener('click', () => {
+  document.getElementById('result').textContent = 'Button click OK';
+});
+document.getElementById('field').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') document.getElementById('result').textContent = 'Keyboard input OK: ' + event.target.value;
+});
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle = '#7c3141'; ctx.fillRect(0,0,200,80);
+ctx.fillStyle = '#fff'; ctx.font = '18px system-ui'; ctx.fillText('Canvas OK',40,45);
+const glCanvas = document.createElement('canvas');
+const gl = glCanvas.getContext('webgl2') || glCanvas.getContext('webgl');
+document.getElementById('gpu').textContent = 'WebGL: ' + (gl ? 'context available' : 'unavailable');
+</script>
+</body>
+</html>
