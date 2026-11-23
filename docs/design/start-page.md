@@ -36,7 +36,7 @@ the Bookmarks panel and the start page always agree. "Remove" therefore deletes 
 confirmation says so. A group can be a new folder or an existing bookmark folder ("Or use a bookmark
 folder"); removing a group from the page only unflags it, the folder and its sites stay in Bookmarks.
 
-- Every site on the page (speed dials, Most visited, bookmark tiles) is the same shortcut: a round icon with
+- Every site on the page (speed dials, bookmark rows) is the same shortcut: a round icon with
   its name under it, no box, and a soft highlight on hover; a short last row is centred. Widgets are
   borderless surfaces with a quiet text label; a row of cards shares one height.
 - Site icons: the profile's cached icon for the host, re-encoded at 64 px when it is an ICO or a large PNG
@@ -82,29 +82,30 @@ folder"); removing a group from the page only unflags it, the folder and its sit
   or more groups (folders flagged elsewhere keep working). There is no "add a group" button, no explanation text
   and no "New folder" tile on the page.
 
-## Widgets
+## Bookmark rows (the one widget)
 
-`start-widgets.txt` lists, orders and configures them (an absent file shows the date, top sites and privacy
-statistics). All widget data is read from the profile: no new network service, no account.
+The start page has one kind of widget: a bookmark folder's sites (`bookmarks` in `start-widgets.txt`, which
+lists, orders and configures them; a profile with no file has none). As tiles (the default for a new one) it
+is a row of the same round shortcuts as the speed dials under the folder's name, with no card; as a list it is
+a card as tall as the list. "Add bookmarks" (under the page, or in the Customise panel) adds one in one click;
+its gear picks the folder and the look; the close button removes it.
 
-| Widget | Shows |
-|---|---|
-| Most visited (`topsites`) | hosts ranked by how many of their pages are in history (one line per address), newest page linked |
-| Bookmarks | a folder you choose, as titles and favicons (list) or tiles (favicon, or the image you chose) |
-| Note (`notes`) | a note saved as you type (up to 2000 characters); "Save to Notes" adds it to the Notes panel |
-| Clock (`date`) | the time and the date, drawn by the page |
-| Protection (`privacy`) | blocked today, blocked in all, and the host blocked most (`privacy-stats.txt`) |
-| Webpage | an http(s) address you type, in a sandboxed frame (see Security) |
+The clock, most visited, note, protection and web page widgets were removed. A saved `start-widgets.txt` that
+still names one of them just skips that line (its bookmark rows stay); the snapshot never carries them and
+`wadd` refuses them. With the web page widget gone, the start page embeds nothing: every view is served with
+`frame-src 'none'` again and every subframe navigation is cancelled.
 
-Settings: show the dashboard, columns 1 to 4 (the window width can lower it), regular or tall, background
-solid / semi-transparent / transparent / custom colour (the text colour is chosen to keep 4.5:1), drag to
-rearrange (pointer on the handle, or Alt and an arrow key).
+Settings: show the rows, list columns 1 to 4 (the window width can lower it), list background solid /
+semi-transparent / transparent / custom colour (the text colour is chosen to keep 4.5:1), drag to rearrange
+(pointer on the handle, or Alt and an arrow key). `start_widget_height` is still read and written but no
+longer changes anything, so Settings no longer offers it.
 
-In Settings (Tabs, right after New tabs) the start page is two groups, each led by its switch: **Start
-page** (Speed dials, then the rows that tune them) and **Start page widgets** (Widgets, then the widget
-rows). A row whose switch is off is disabled and dimmed rather than left looking live, the custom colour
-only wakes for a Custom background, and while the new tab page is Blank there is no start page, so both
-groups rest and the two switches say "Not shown: New tab page is Blank" (`settings-start.ts`).
+In Settings (Tabs, right after New tabs) the start page is three groups: **Start page** (clock, search box,
+background, dim), **Speed dials** (led by its switch, then the rows that tune them) and **Bookmark rows** (led
+by its switch, then the list rows). A row whose switch is off is disabled and dimmed rather than left looking
+live, the custom colour only wakes for a Custom background, and while the new tab page is Blank there is no
+start page, so the groups rest and the two switches say "Not shown: New tab page is Blank"
+(`settings-start.ts`).
 
 ## Settings keys (`settings.txt`)
 
@@ -124,7 +125,7 @@ file (a value that does not parse is ignored; numbers are clamped).
 | `startup_pages` | up to 8 http(s) addresses, space separated | `specific_pages` |
 | `start_widgets` | bool | the dashboard |
 | `start_widget_columns` | 1 to 4 | widgets per row |
-| `start_widget_height` | `regular`, `tall` | 208 or 384 px |
+| `start_widget_height` | `regular`, `tall` | nothing any more (kept so older files and pages still parse) |
 | `start_widget_bg` | `solid`, `translucent`, `transparent`, `custom` | the card fill |
 | `start_widget_color` | `#rrggbb` | the `custom` fill |
 | `start_widget_drag` | bool | widget moves |
@@ -169,21 +170,8 @@ then (`App::session_finish`), so the window closed last is the one that comes ba
   `v` and `t`), accepted only from the split host (`view_accepts_command`), and checked again in Rust:
   each action only with exactly its own fields, ids resolved against the live data, addresses http(s)
   without user info, lengths capped. Page text reaches the DOM through `textContent` only.
-- **Webpage widget.** The one place the chrome embeds a page. The page makes an `<iframe>` only for an
-  address the user typed into that widget (re-validated as http(s) in the page and in Rust), with
-  `sandbox="allow-scripts allow-forms"` (a unique origin: no cookies or storage, no same-origin access,
-  no top navigation, popups, downloads or modals), `referrerpolicy="no-referrer"`, `allow=""` and
-  `loading="lazy"`. Two chrome-host rules had to change for it, both for the split host only (the
-  shared `index.html` meta CSP carries the same `frame-src`, because the stricter of meta and header
-  wins; the header still sends `frame-src 'none'` to every other view):
-  its document is served with `frame-src http: https:` (`assets::SPLIT_RESPONSE_HEADERS`; scripts,
-  styles, images, connections, forms and objects stay as locked down as in every view), and a subframe
-  of that host may navigate to an http(s) address (`assets::split_frame_may_navigate`; every other host,
-  every other scheme and every top-level navigation is still cancelled). Messages from inside the frame
-  fail the bridge's exact-source check, new windows, downloads and permission requests are still
-  refused, and the chrome profile is InPrivate. The frame's site sees an ordinary request (its IP and
-  user agent) each time the page is shown: that is the cost of the feature, and it only happens for a
-  widget the user added.
+- The page embeds nothing: no frame, and every view, the start page included, keeps `frame-src 'none'`
+  (`assets::RESPONSE_HEADERS`, the shared `index.html` meta CSP) with every subframe navigation cancelled.
 - The thumbnail picker reads one file the user picked (at most 16 MiB), decodes it with the system
   imaging component, and keeps only the re-encoded JPEG.
 
@@ -196,7 +184,7 @@ then (`App::session_finish`), so the window closed last is the one that comes ba
 
 ## Tests
 
-- Rust: `start_page::tests` (settings, groups, dial view, thumbnails, widgets, top sites),
+- Rust: `start_page::tests` (settings, groups, dial view, thumbnails, bookmark widgets),
   `start_page::service::tests` (each command, file, snapshot; reopen last/first; widgets; guest; a
   new-tab cost check on a large profile), `chrome_host::start_page::tests` (snapshot, fixture
   `ui/test/fixtures/start-page-messages.json`, command grammar), `settings`/`chrome_host::settings`

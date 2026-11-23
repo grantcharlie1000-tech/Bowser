@@ -561,7 +561,7 @@ body:has(> #app.split-view.is-start) {
   background: var(--bw-accent-soft);
 }
 
-/* ---- Widgets: calm surfaces, a quiet label, nothing boxed inside ---- */
+/* ---- Bookmark widgets: a row of shortcuts, or a list in a calm card ---- */
 #app.split-view.is-start .sp-widgets {
   display: flex;
   flex-direction: column;
@@ -575,15 +575,10 @@ body:has(> #app.split-view.is-start) {
   --sp-card-ink-2: var(--sp-ink-2);
   --sp-card-blur: var(--sp-blur);
   --sp-card-shadow: none;
-  --sp-wh: 232px;
 }
 
 :root[data-scheme="light"] #app.split-view.is-start .sp-page {
   --sp-card-shadow: 0 1px 2px color-mix(in srgb, var(--bw-text) 8%, transparent), 0 4px 16px color-mix(in srgb, var(--bw-text) 6%, transparent);
-}
-
-#app.split-view.is-start .sp-page.is-tall {
-  --sp-wh: 392px;
 }
 
 #app.split-view.is-start .sp-page.is-bg-solid {
@@ -623,12 +618,6 @@ body:has(> #app.split-view.is-start) {
   backdrop-filter: var(--sp-card-blur);
   box-shadow: var(--sp-card-shadow);
   color: var(--sp-card-ink);
-}
-
-/* A note and a web page keep the height setting; the others are as tall as their row. */
-#app.split-view.is-start .sp-widget[data-kind="notes"],
-#app.split-view.is-start .sp-widget[data-kind="webpage"] {
-  height: var(--sp-wh);
 }
 
 #app.split-view.is-start .sp-widget-head {
@@ -924,188 +913,6 @@ body:has(> #app.split-view.is-start) {
 
 #app.split-view.is-start .sp-config .bw-select {
   flex: 1 1 140px;
-}
-
-#app.split-view.is-start .sp-url-form {
-  flex-direction: column;
-  align-items: stretch;
-  margin: 0;
-}
-
-#app.split-view.is-start .sp-widget-body.is-setup .sp-url-form {
-  flex: 1 1 auto;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-}
-
-#app.split-view.is-start .sp-url-row {
-  display: flex;
-  gap: var(--bw-space-2);
-  width: min(360px, 100%);
-}
-
-#app.split-view.is-start .sp-url-row .bw-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 34px;
-  padding-inline: var(--bw-space-3);
-  border: 0;
-  border-radius: var(--bw-r-pill);
-  background: color-mix(in srgb, var(--sp-card-ink) 8%, transparent);
-  color: var(--sp-card-ink);
-}
-
-#app.split-view.is-start .sp-url-row .bw-button {
-  height: 34px;
-  padding-inline: var(--bw-space-4);
-  border-radius: var(--bw-r-pill);
-}
-
-/* Note */
-#app.split-view.is-start .sp-widget-body.is-note {
-  padding-bottom: var(--bw-space-2);
-}
-
-#app.split-view.is-start .sp-note {
-  flex: 1 1 auto;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--sp-card-ink);
-  font: inherit;
-  font-size: var(--bw-text-body);
-  line-height: calc(22px * var(--bw-font-scale));
-  resize: none;
-}
-
-#app.split-view.is-start .sp-note::placeholder {
-  color: var(--sp-card-ink-2);
-}
-
-#app.split-view.is-start .sp-note-foot {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--bw-space-2);
-  min-height: 32px;
-  opacity: 0;
-  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
-}
-
-#app.split-view.is-start .sp-widget:hover .sp-note-foot,
-#app.split-view.is-start .sp-widget:focus-within .sp-note-foot {
-  opacity: 1;
-}
-
-#app.split-view.is-start .sp-note-status {
-  color: var(--sp-card-ink-2);
-  font-size: var(--bw-text-caption);
-}
-
-#app.split-view.is-start .sp-note-save {
-  color: var(--sp-card-ink-2);
-}
-
-/* Clock */
-#app.split-view.is-start .sp-widget-body.is-clock {
-  align-items: center;
-  gap: var(--bw-space-1);
-  text-align: center;
-}
-
-#app.split-view.is-start .sp-wclock-time {
-  margin: 0;
-  font-size: calc(44px * var(--bw-font-scale));
-  font-weight: 300;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-  line-height: 1.05;
-}
-
-#app.split-view.is-start .sp-wclock-date {
-  margin: 0;
-  color: var(--sp-card-ink-2);
-  font-size: var(--bw-text-body);
-}
-
-/* Protection: one sentence with its number, and a quieter line under it. */
-#app.split-view.is-start .sp-guard {
-  display: flex;
-  align-items: center;
-  gap: var(--bw-space-4);
-}
-
-#app.split-view.is-start .sp-guard-badge {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--bw-accent) 22%, transparent);
-  color: var(--sp-card-ink);
-}
-
-#app.split-view.is-start .sp-guard-words {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-#app.split-view.is-start .sp-guard-line {
-  margin: 0;
-  color: var(--sp-card-ink-2);
-  font-size: var(--bw-text-body);
-}
-
-#app.split-view.is-start .sp-stat {
-  margin-right: 2px;
-  color: var(--sp-card-ink);
-  font-size: calc(28px * var(--bw-font-scale));
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-#app.split-view.is-start .sp-stat-caption {
-  margin: 0;
-  overflow: hidden;
-  color: var(--sp-card-ink-2);
-  font-size: var(--bw-text-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Web page: the page fills the card under its label. */
-#app.split-view.is-start .sp-widget-body.is-frame {
-  padding: 0 var(--bw-space-1_5) var(--bw-space-1_5);
-}
-
-#app.split-view.is-start .sp-frame {
-  flex: 1 1 auto;
-  width: 100%;
-  min-height: 0;
-  border: 0;
-  border-radius: 14px;
-  background: #ffffff;
-}
-
-/* Spoiler guard: a web page widget waits for a click while protection is on. */
-#app.split-view.is-start .sp-frame-paused {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--bw-space-2);
-  padding: var(--bw-space-3);
-  text-align: center;
 }
 
 /* ---- Customise ---- */

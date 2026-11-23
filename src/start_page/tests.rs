@@ -355,12 +355,9 @@ fn a_bookmark_deleted_outside_the_start_page_takes_its_thumbnail_with_it() {
 #[test]
 fn widgets_default_round_trip_and_reorder() {
     let mut set = WidgetSet::default();
-    assert_eq!(set.items.iter().map(|w| w.kind).collect::<Vec<_>>(), [WidgetKind::Date, WidgetKind::TopSites, WidgetKind::Privacy]);
-    let page = set.add(WidgetKind::Webpage).unwrap();
-    set.get_mut(page).unwrap().url = "https://widget.example/".to_owned();
-    let notes = set.add(WidgetKind::Notes).unwrap();
-    set.get_mut(notes).unwrap().text = "line one\nline\ttwo \\ end".to_owned();
+    assert!(set.items.is_empty(), "a profile with no widget file has no widgets");
     let marks = set.add(WidgetKind::Bookmarks).unwrap();
+    let other = set.add(WidgetKind::Bookmarks).unwrap();
     {
         let w = set.get_mut(marks).unwrap();
         w.folder = 42;
@@ -369,24 +366,25 @@ fn widgets_default_round_trip_and_reorder() {
     let again = WidgetSet::parse(&set.serialize()).unwrap();
     assert_eq!(again, set);
 
-    assert!(set.reorder(marks, Some(1)));
-    assert_eq!(set.items[0].id, marks);
-    assert!(set.reorder(marks, None));
-    assert_eq!(set.items.last().unwrap().id, marks);
+    assert!(set.reorder(other, Some(marks)));
+    assert_eq!(set.items[0].id, other);
+    assert!(set.reorder(other, None));
+    assert_eq!(set.items.last().unwrap().id, other);
     assert!(!set.reorder(marks, Some(9999)));
-    assert!(set.remove(page));
-    assert!(!set.remove(page));
+    assert!(set.remove(other));
+    assert!(!set.remove(other));
     assert!(WidgetSet::parse("nope").is_none());
-    let hostile = format!("{WIDGETS_HEADER}\nw\t1\twebpage\t0\tlist\tjavascript:alert(1)\t\nw\t1\tdate\t0\tlist\t\t\nw\t2\tunknown\t0\tlist\t\t\n");
-    let parsed = WidgetSet::parse(&hostile).unwrap();
-    assert_eq!(parsed.items.len(), 1, "a repeated id and an unknown kind are dropped");
-    assert_eq!(parsed.items[0].url, "", "a non-http address never survives a load");
+    // A file from before the other widgets were removed: their lines are skipped, the bookmarks stay.
+    let old = format!("{WIDGETS_HEADER}\nw\t1\tdate\t0\tlist\t\t\nw\t2\tbookmarks\t7\ttiles\t\t\nw\t3\twebpage\t0\tlist\thttps://x.example/\t\nw\t4\tnotes\t0\tlist\t\tbuy milk\nw\t2\tbookmarks\t0\tlist\t\t\nw\t5\tunknown\t0\tlist\t\t\n");
+    let parsed = WidgetSet::parse(&old).unwrap();
+    assert_eq!(parsed.items.len(), 1, "removed kinds, a repeated id and an unknown kind are dropped");
+    assert_eq!((parsed.items[0].id, parsed.items[0].folder, parsed.items[0].view), (2, 7, BookmarksView::Tiles));
     let mut full = WidgetSet::default();
     for _ in 0..MAX_WIDGETS {
-        let _ = full.add(WidgetKind::Date);
+        let _ = full.add(WidgetKind::Bookmarks);
     }
     assert_eq!(full.items.len(), MAX_WIDGETS);
-    assert!(full.add(WidgetKind::Date).is_err());
+    assert!(full.add(WidgetKind::Bookmarks).is_err());
 }
 
 #[test]
@@ -394,7 +392,7 @@ fn widget_files_save_and_an_unreadable_one_falls_back_to_the_defaults() {
     let dir = temp_dir("widgets");
     assert_eq!(WidgetSet::load(&dir), WidgetSet::default());
     let mut set = WidgetSet::default();
-    set.add(WidgetKind::Notes).unwrap();
+    set.add(WidgetKind::Bookmarks).unwrap();
     set.save(&dir).unwrap();
     assert_eq!(WidgetSet::load(&dir), set);
     fs::write(dir.join(WIDGETS_FILE), "garbage").unwrap();
@@ -403,128 +401,9 @@ fn widget_files_save_and_an_unreadable_one_falls_back_to_the_defaults() {
 }
 
 #[test]
-fn top_sites_rank_hosts_by_pages_then_recency() {
-    let h = |t: u64, url: &str, title: &str| (t, url.to_owned(), title.to_owned());
-    let history = vec![
-        h(1, "https://www.a.example/1", "A one"),
-        h(2, "https://b.example/", "B"),
-        h(3, "https://a.example/2", "A two"),
-        h(4, "https://a.example/3", "A three"),
-        h(5, "https://c.example/", "C"),
-        h(6, "bowser://settings", "Settings"),
-        h(7, "file:///x", "File"),
-    ];
-    let top = top_sites(&history, 3);
-    assert_eq!(top.iter().map(|s| s.host.as_str()).collect::<Vec<_>>(), ["a.example", "c.example", "b.example"]);
-    assert_eq!(top[0].url, "https://a.example/3", "the host's newest page");
-    assert_eq!(top[0].title, "A three");
-    assert_eq!(top_sites(&history, 1).len(), 1);
-    assert!(top_sites(&[], 5).is_empty());
-}
-
-#[test]
-fn top_sites_over_5000_distinct_hosts_is_fast_and_keeps_the_ranking() {
-    // 5000 distinct hosts plus repeat visits, so counts, recency and the host tiebreak all decide.
-    let mut history: Vec<(u64, String, String)> =
-        (0..5000u64).map(|i| (i, format!("https://host{i}.example/"), format!("Host {i}"))).collect();
-    for i in 0..300u64 {
-        history.push((10_000 + i, format!("https://www.host{}.example/again", i % 37), "Again".to_owned()));
-    }
-    // The old ranking, a linear find per row: the same order, and the cost the fix removes.
-    let quadratic = |history: &[(u64, String, String)]| -> Vec<String> {
-        let mut hosts: Vec<(String, usize, u64)> = Vec::new();
-        for (stamp, url, _) in history {
-            let parsed = url::Url::parse(url).unwrap();
-            let host = parsed.host_str().unwrap();
-            let host = host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase();
-            match hosts.iter_mut().find(|(h, ..)| *h == host) {
-                Some((_, count, newest)) => {
-                    *count += 1;
-                    *newest = (*newest).max(*stamp);
-                }
-                None => hosts.push((host, 1, *stamp)),
-            }
-        }
-        hosts.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
-        hosts.into_iter().map(|(host, ..)| host).collect()
-    };
-    // Build an independent reference once, outside warmups and every timing interval.
-    // Reference ranking: count desc, newest desc, host asc.
-    let mut expected: Vec<(usize, u64, String)> = (0..5000u64)
-        .map(|i| {
-            let repeats: Vec<u64> = (0..300u64).filter(|r| r % 37 == i).collect();
-            let newest = repeats.last().map_or(i, |r| 10_000 + r);
-            (1 + repeats.len(), newest, format!("host{i}.example"))
-        })
-        .collect();
-    expected.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
-    let expected_hosts: Vec<String> = expected.iter().map(|e| e.2.clone()).collect();
-    let check_old = |old: &[String]| assert_eq!(old, expected_hosts.as_slice(), "the same order as before");
-    let check_top = |top: &[TopSite]| {
-        assert_eq!(top.len(), 5000);
-        assert_eq!(top.iter().map(|s| s.host.clone()).collect::<Vec<_>>(), expected_hosts);
-        assert_eq!(top[0].url, "https://www.host3.example/again", "the newest repeat page wins");
-        for (site, (_, newest, host)) in top.iter().zip(&expected) {
-            let (url, title) = if *newest >= 10_000 {
-                (format!("https://www.{host}/again"), "Again".to_owned())
-            } else {
-                (format!("https://{host}/"), format!("Host {newest}"))
-            };
-            assert_eq!(site.url, url);
-            assert_eq!(site.title, title);
-        }
-    };
-    // One checked warmup of each arm; neither contributes to the predeclared measured total.
-    let old = std::hint::black_box(quadratic(std::hint::black_box(&history)));
-    check_old(&old);
-    drop(old);
-    let top = std::hint::black_box(top_sites(std::hint::black_box(&history), 5000));
-    check_top(&top);
-    drop(top);
-    let measure_old = || {
-        let started = std::time::Instant::now();
-        let old = std::hint::black_box(quadratic(std::hint::black_box(&history)));
-        let elapsed = started.elapsed();
-        check_old(&old);
-        drop(old);
-        elapsed
-    };
-    let measure_top = || {
-        let started = std::time::Instant::now();
-        let top = std::hint::black_box(top_sites(std::hint::black_box(&history), 5000));
-        let elapsed = started.elapsed();
-        check_top(&top);
-        drop(top);
-        elapsed
-    };
-    // Relative timing can still suffer asymmetric scheduling contention. Use exactly eight
-    // alternating pairs and sum ALL samples: no trimming, best-of selection or adaptive retries.
-    // Each result is checked and dropped outside its timer before starting the other arm.
-    let mut elapsed = std::time::Duration::ZERO;
-    let mut old_elapsed = std::time::Duration::ZERO;
-    for pair in 0..8 {
-        let old_first = pair % 2 == 0;
-        let (old_sample, sample) = if old_first {
-            (measure_old(), measure_top())
-        } else {
-            let sample = measure_top();
-            (measure_old(), sample)
-        };
-        eprintln!("top_sites pair={} old_first={old_first} top_sites={sample:?} quadratic={old_sample:?}", pair + 1);
-        elapsed += sample;
-        old_elapsed += old_sample;
-    }
-    eprintln!("top_sites eight-pair totals {elapsed:?}, quadratic {old_elapsed:?}");
-    assert!(elapsed * 3 < old_elapsed, "top_sites took {elapsed:?}, the quadratic version {old_elapsed:?}");
-}
-
-#[test]
-fn bookmark_widget_lists_only_links_of_its_folder_and_a_note_gets_a_short_title() {
+fn bookmark_widget_lists_only_links_of_its_folder() {
     let (store, _, [work, _, a, b, ..]) = fixture();
     let links = widget_links(&store, work);
     assert_eq!(links.iter().map(|l| l.0).collect::<Vec<_>>(), [a, b], "the sub-folder is not a link");
     assert_eq!(links[0].1, "Alpha");
-    assert_eq!(note_title("\n  first line  \nsecond"), "first line");
-    assert_eq!(note_title(""), "Sticky note");
-    assert_eq!(note_title(&"x".repeat(200)).chars().count(), 60);
 }

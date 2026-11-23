@@ -4,25 +4,21 @@
 // bookmarks, see src/start_page.rs); this page renders and reports intent with `{t:"spage",a,...}`
 // commands, and every one is checked again in Rust (chrome_host/start_page.rs).
 //
-// Text from Rust reaches the DOM through textContent and attributes only. The webpage widget is the one
-// place that embeds anything: a sandboxed iframe (no same-origin, no top navigation, no popups, no
-// downloads), http(s) only, created only for an address the user typed into that widget.
+// Text from Rust reaches the DOM through textContent and attributes only, and the page embeds nothing.
 import { sendPanel, type PanelFields } from './protocol';
 import { el, icon, type IconName } from './dom';
 import { iconButton, textButton } from './panels/kit';
 import { tileLetter } from './panels/kit-logic';
 import { selectField } from './panels/select';
 import { tileTone } from './history-page-logic';
-import { onSpoilerConfig, activeSpoilerMode } from './spoiler-config'; // --- spoiler guard ---
-import { guardTitle, hostOnly } from './spoiler-guard'; // --- spoiler guard --- titles that came from pages (top sites, bookmarks, dials)
+import { guardTitle } from './spoiler-guard'; // --- spoiler guard --- titles that came from pages (bookmarks, dials)
 import {
-  DIM_STEPS, MAX_NOTE, MAX_TITLE, MAX_URL, NOTE_SAVED, SIZE_LABELS, WALL_ART, WIDGET_BGS, WIDGET_HINTS, WIDGET_KINDS, WIDGET_LABELS, clockParts,
-  columnsFor, dialCountText, dimStep, dropBefore, isWebAddress, normaliseAddress, textOn, tileWidth, titleState, toneOf, wallInk, widgetClasses,
+  DIM_STEPS, MAX_TITLE, MAX_URL, SIZE_LABELS, WALL_ART, WIDGET_BGS, WIDGET_LABELS, clockParts,
+  columnsFor, dialCountText, dimStep, dropBefore, normaliseAddress, textOn, tileWidth, titleState, toneOf, wallInk, widgetClasses,
   type BookmarkView, type Dial, type GroupTab, type StartMessage, type StartSnapshot, type TitleMode, type WallTone, type Wallpaper, type Widget,
-  type WidgetBg, type WidgetKind,
+  type WidgetBg,
 } from './start-page-logic';
 
-const NOTE_DEBOUNCE_MS = 450;
 /** Pointer travel (px) before a press on a tile becomes a drag. */
 const DRAG_START = 6;
 /** The narrowest a widget gets before the grid drops a column. */
@@ -69,15 +65,7 @@ export function buildStartPage(): {
   const thumbs = new Map<number, string>();
   let entered = false;
   let toastTimer = 0;
-  let noteSaveTimer = 0;
   let clockTimer = 0;
-  /** Widget frames and note editors outlive snapshots, so a refresh never reloads a page or loses a caret. */
-  const frames = new Map<number, { url: string; node: HTMLIFrameElement }>();
-  /** Spoiler guard: web page widgets the user chose to load (widget id to address) while protection is on. The start page is
-   *  a Bowser chrome document, which never gets the page engine, so a live page in it is paused until a click. */
-  const approvedFrames = new Map<number, string>();
-  const editors = new Map<number, HTMLTextAreaElement>();
-  const savedNotes = new Set<number>();
   /** The widget whose settings strip is open, if any. */
   let configuring: number | null = null;
   let modal: HTMLElement | null = null;
@@ -144,7 +132,7 @@ export function buildStartPage(): {
   const stripList = el('div', 'sp-strips');
   const widgetGrid = el('div', 'sp-widget-grid');
   const widgetBar = el('div', 'sp-widget-bar');
-  const addWidget = textButton('Add widget', () => openWidgetMenu(addWidget), { icon: 'plus', subtle: true });
+  const addWidget = textButton('Add bookmarks', () => { cmd({ a: 'wadd', text: 'bookmarks' }); }, { icon: 'plus', subtle: true, aria: 'Add a row of bookmarks' });
   addWidget.classList.add('sp-add-widget');
   widgetBar.append(addWidget);
   widgetsSection.append(stripList, widgetGrid, widgetBar);
@@ -429,15 +417,6 @@ export function buildStartPage(): {
     box.querySelector<HTMLElement>('button:not(:disabled)')?.focus();
   }
 
-  function openWidgetMenu(anchor: HTMLElement): void {
-    openMenu(anchor, 'Add a widget', WIDGET_KINDS.map((kind) => ({
-      label: WIDGET_LABELS[kind],
-      hint: WIDGET_HINTS[kind],
-      icon: widgetIcon(kind),
-      run: () => { cmd({ a: 'wadd', text: kind }); },
-    })));
-  }
-
   function openGroupMenu(anchor: HTMLElement, group: GroupTab, index: number, count: number): void {
     const ids = snap?.groups.map((g) => g.id) ?? [];
     openMenu(anchor, `${group.title} group`, [
@@ -446,17 +425,6 @@ export function buildStartPage(): {
       { label: 'Move right', icon: 'chevron-right', disabled: index >= count - 1, run: () => { const after = ids[index + 2]; cmd(after === undefined ? { a: 'movegroup', id: group.id } : { a: 'movegroup', id: group.id, before: after }); } },
       { label: 'Remove from start page', icon: 'close', run: () => confirm('Remove group', `Stop showing “${group.title}” here? The bookmark folder and its sites stay in Bookmarks.`, 'Remove', () => { cmd({ a: 'removegroup', id: group.id }); }) },
     ]);
-  }
-
-  function widgetIcon(kind: WidgetKind): IconName {
-    switch (kind) {
-      case 'topsites': return 'clock';
-      case 'bookmarks': return 'bookmark';
-      case 'notes': return 'notes';
-      case 'date': return 'calendar';
-      case 'privacy': return 'shield';
-      default: return 'globe';
-    }
   }
 
   // ---- speed dials ----
@@ -819,9 +787,6 @@ export function buildStartPage(): {
     for (const id of Array.from(widgetNodes.keys())) {
       if (seen.has(id)) continue;
       widgetNodes.delete(id);
-      frames.delete(id);
-      editors.delete(id);
-      savedNotes.delete(id);
       if (configuring === id) configuring = null;
     }
     stripList.replaceChildren(...strips);
@@ -832,10 +797,9 @@ export function buildStartPage(): {
     widgetBar.hidden = addWidget.hidden;
   }
 
-  /** What a card is called: its kind, or for a web page its site and for bookmarks its folder. */
+  /** What a row of bookmarks is called: its folder. */
   function widgetName(widget: Widget, s: StartSnapshot): string {
-    if (widget.kind === 'webpage' && widget.url !== '') return hostOnly(widget.url);
-    if (widget.kind === 'bookmarks' && widget.folder !== 0) return s.folders.find((f) => f.id === widget.folder)?.title ?? WIDGET_LABELS.bookmarks;
+    if (widget.folder !== 0) return s.folders.find((f) => f.id === widget.folder)?.title ?? WIDGET_LABELS.bookmarks;
     return WIDGET_LABELS[widget.kind];
   }
 
@@ -848,7 +812,7 @@ export function buildStartPage(): {
     title.append(label);
     const tools = el('div', 'sp-widget-tools');
     const kindLabel = WIDGET_LABELS[widget.kind];
-    if (!s.guest && (widget.kind === 'bookmarks' || widget.kind === 'webpage')) {
+    if (!s.guest) {
       const gear = iconButton('gear', `${kindLabel} settings`, () => {
         configuring = configuring === widget.id ? null : widget.id;
         paintWidgets(s);
@@ -890,192 +854,48 @@ export function buildStartPage(): {
   function paintWidget(node: WidgetNode, widget: Widget, s: StartSnapshot): void {
     node.root.dataset.kind = widget.kind;
     node.root.classList.toggle('is-configuring', configuring === widget.id);
-    // Sites are shown as sites: a row of tiles the width of the page, as tall as its tiles, not a card.
-    const strip = widget.kind === 'topsites' || (widget.kind === 'bookmarks' && widget.view === 'tiles');
-    node.root.classList.toggle('is-strip', strip);
-    // The clock, the counts and a bookmark list are as tall as what they show; a note and a page keep the set height.
-    node.root.classList.toggle('is-fit', !strip && widget.kind !== 'notes' && widget.kind !== 'webpage');
+    const tiles = widget.view === 'tiles';
+    // As tiles, sites are shown as sites: a row of shortcuts the width of the page, not a card. As a list
+    // they sit in a card as tall as the list.
+    node.root.classList.toggle('is-strip', tiles);
+    node.root.classList.toggle('is-fit', !tiles);
     const body = el('div', 'sp-widget-body bw-scroll');
     const open = (url: string, event?: MouseEvent): void => { cmd(event?.ctrlKey || event?.shiftKey ? { a: 'openurl', url, on: true } : { a: 'openurl', url }); };
-    switch (widget.kind) {
-      case 'topsites': {
-        if (widget.sites.length === 0) {
-          body.append(emptyNote('clock', 'Sites you visit often will appear here.'));
-          break;
-        }
-        const list = el('ul', 'sp-icons');
-        for (const site of widget.sites) {
-          const item = el('li');
-          const button = el('button', 'sp-icon-link');
-          button.type = 'button';
-          const face = el('span', 'sp-face sp-icon-face');
-          face.setAttribute('aria-hidden', 'true');
-          paintFace(face, { kind: 'link', title: site.title, host: site.host });
-          const name = el('span', 'sp-icon-name');
-          const title = site.title.trim() === '' ? site.host : guardTitle(site.title);
-          name.textContent = title;
-          name.dir = 'auto';
-          button.setAttribute('aria-label', `${title}, ${site.host}`);
-          button.setAttribute('data-tip', site.host);
-          button.append(face, name);
-          button.addEventListener('click', (event) => open(site.url, event));
-          item.append(button);
-          list.append(item);
-        }
-        body.append(list);
-        break;
+    if (configuring === widget.id && !s.guest) body.append(bookmarksConfig(widget, s));
+    if (widget.links.length === 0) body.append(emptyNote('bookmark', 'No bookmarks in this folder.'));
+    const list = el('ul', tiles ? 'sp-icons' : 'sp-list');
+    for (const link of widget.links) {
+      const item = el('li');
+      const button = el('button', tiles ? 'sp-icon-link' : 'sp-row');
+      button.type = 'button';
+      const face = el('span', tiles ? 'sp-face sp-icon-face' : 'sp-face sp-row-face');
+      face.setAttribute('aria-hidden', 'true');
+      // Tiles show a chosen image when the bookmark has one; the list is titles and favicons.
+      paintFace(face, tiles ? { kind: 'link', title: link.title, host: link.host, id: link.id, thumb: link.thumb } : { kind: 'link', title: link.title, host: link.host });
+      const name = el('span', tiles ? 'sp-icon-name' : 'sp-row-title');
+      name.textContent = guardTitle(link.title);
+      name.dir = 'auto';
+      if (tiles) button.append(face, name);
+      else {
+        const text = el('span', 'sp-row-text');
+        const meta = el('span', 'sp-row-meta');
+        meta.textContent = link.host;
+        text.append(name, meta);
+        button.append(face, text);
       }
-      case 'bookmarks': {
-        if (configuring === widget.id && !s.guest) body.append(bookmarksConfig(widget, s));
-        if (widget.links.length === 0) body.append(emptyNote('bookmark', 'No bookmarks in this folder.'));
-        const tiles = widget.view === 'tiles';
-        const list = el('ul', tiles ? 'sp-icons' : 'sp-list');
-        for (const link of widget.links) {
-          const item = el('li');
-          const button = el('button', tiles ? 'sp-icon-link' : 'sp-row');
-          button.type = 'button';
-          const face = el('span', tiles ? 'sp-face sp-icon-face' : 'sp-face sp-row-face');
-          face.setAttribute('aria-hidden', 'true');
-          // Tiles show a chosen image when the bookmark has one; the list is titles and favicons.
-          paintFace(face, tiles ? { kind: 'link', title: link.title, host: link.host, id: link.id, thumb: link.thumb } : { kind: 'link', title: link.title, host: link.host });
-          const name = el('span', tiles ? 'sp-icon-name' : 'sp-row-title');
-          name.textContent = guardTitle(link.title);
-          name.dir = 'auto';
-          if (tiles) button.append(face, name);
-          else {
-            const text = el('span', 'sp-row-text');
-            const meta = el('span', 'sp-row-meta');
-            meta.textContent = link.host;
-            text.append(name, meta);
-            button.append(face, text);
-          }
-          button.setAttribute('aria-label', `${guardTitle(link.title)}, ${link.host}`);
-          button.addEventListener('click', (event) => open(link.url, event));
-          item.append(button);
-          if (configuring === widget.id && !s.guest && tiles) {
-            // With the settings strip open, a tile can be given a picture of your own (or go back to its icon).
-            const tools = el('div', 'sp-mini-tools');
-            tools.append(iconButton('image', `Choose an image for ${link.title}`, () => { cmd({ a: 'thumb', id: link.id }); }, 'sp-tool'));
-            if (link.thumb) tools.append(iconButton('reset', `Use the site icon for ${link.title}`, () => { cmd({ a: 'thumbclear', id: link.id }); }, 'sp-tool'));
-            item.append(tools);
-          }
-          list.append(item);
-        }
-        if (widget.links.length > 0) body.append(list);
-        break;
+      button.setAttribute('aria-label', `${guardTitle(link.title)}, ${link.host}`);
+      button.addEventListener('click', (event) => open(link.url, event));
+      item.append(button);
+      if (configuring === widget.id && !s.guest && tiles) {
+        // With the settings strip open, a tile can be given a picture of your own (or go back to its icon).
+        const tools = el('div', 'sp-mini-tools');
+        tools.append(iconButton('image', `Choose an image for ${link.title}`, () => { cmd({ a: 'thumb', id: link.id }); }, 'sp-tool'));
+        if (link.thumb) tools.append(iconButton('reset', `Use the site icon for ${link.title}`, () => { cmd({ a: 'thumbclear', id: link.id }); }, 'sp-tool'));
+        item.append(tools);
       }
-      case 'notes': {
-        let area = editors.get(widget.id);
-        if (!area) {
-          area = el('textarea', 'sp-note');
-          area.maxLength = MAX_NOTE;
-          area.placeholder = 'Write something…';
-          area.setAttribute('aria-label', 'Note');
-          area.spellcheck = true;
-          editors.set(widget.id, area);
-          const edited = area;
-          edited.addEventListener('input', () => {
-            savedNotes.delete(widget.id);
-            const status = node.root.querySelector<HTMLElement>('.sp-note-status');
-            if (status) status.textContent = '';
-            clearTimeout(noteSaveTimer);
-            noteSaveTimer = window.setTimeout(() => { cmd({ a: 'wnote', id: widget.id, text: edited.value }); }, NOTE_DEBOUNCE_MS);
-          });
-          edited.addEventListener('blur', () => {
-            clearTimeout(noteSaveTimer);
-            cmd({ a: 'wnote', id: widget.id, text: edited.value });
-          });
-        }
-        if (document.activeElement !== area && area.value !== widget.text) area.value = widget.text;
-        area.disabled = s.guest;
-        const foot = el('div', 'sp-note-foot');
-        const status = el('span', 'sp-note-status');
-        status.setAttribute('role', 'status');
-        status.textContent = savedNotes.has(widget.id) ? NOTE_SAVED : '';
-        const save = textButton('Save to Notes', () => {
-          const current = editors.get(widget.id);
-          if (!current || current.value.trim() === '') return;
-          cmd({ a: 'wnote', id: widget.id, text: current.value });
-          cmd({ a: 'wsavenote', id: widget.id });
-          savedNotes.add(widget.id);
-          status.textContent = NOTE_SAVED;
-        }, { icon: 'notes', subtle: true });
-        save.classList.add('sp-note-save');
-        save.disabled = s.guest;
-        foot.append(status, save);
-        body.append(area, foot);
-        body.classList.add('is-note');
-        break;
-      }
-      case 'date': {
-        const time = el('p', 'sp-wclock-time');
-        const day = el('p', 'sp-wclock-date');
-        body.append(time, day);
-        body.classList.add('is-clock');
-        paintClock(body);
-        break;
-      }
-      case 'privacy': {
-        const lead = el('div', 'sp-guard');
-        const badge = el('span', 'sp-guard-badge');
-        badge.setAttribute('aria-hidden', 'true');
-        badge.append(icon('shield-check', { size: 18 }));
-        const words = el('div', 'sp-guard-words');
-        const line = el('p', 'sp-guard-line');
-        const big = el('span', 'sp-stat');
-        big.textContent = widget.today.toLocaleString('en-GB');
-        line.append(big, document.createTextNode(widget.today === 1 ? ' tracker blocked today' : ' trackers blocked today'));
-        const more = el('p', 'sp-stat-caption');
-        const total = `${widget.total.toLocaleString('en-GB')} in total`;
-        more.textContent = widget.topHost === '' ? total : `${total} \u00b7 most from ${widget.topHost}`;
-        words.append(line, more);
-        lead.append(badge, words);
-        body.append(lead);
-        body.classList.add('is-stats');
-        break;
-      }
-      case 'webpage': {
-        if (configuring === widget.id || widget.url === '') {
-          if (!s.guest) body.append(webpageConfig(widget));
-        }
-        if (widget.url === '') {
-          frames.delete(widget.id);
-          body.classList.add('is-setup');
-          break;
-        }
-        if (activeSpoilerMode() !== 'off' && approvedFrames.get(widget.id) !== widget.url) {
-          frames.delete(widget.id);
-          const hold = el('div', 'sp-frame-paused');
-          const message = el('p', 'sp-widget-note');
-          message.textContent = 'Web page widget paused by spoiler protection';
-          const load = textButton('Load', () => {
-            approvedFrames.set(widget.id, widget.url);
-            if (snap) paintWidgets(snap);
-          }, { subtle: true });
-          load.setAttribute('aria-label', `Load the web page widget (${widget.url === '' ? '' : hostOnly(widget.url)})`);
-          hold.append(message, load);
-          body.append(hold);
-          break;
-        }
-        let entry = frames.get(widget.id);
-        if (!entry || entry.url !== widget.url) {
-          const frame = el('iframe', 'sp-frame');
-          // The whole containment: scripts and forms run, but in a unique origin (no cookies or storage), cannot
-          // navigate the start page, open windows or start downloads. Rust and the host policy back this up.
-          frame.setAttribute('sandbox', 'allow-scripts allow-forms');
-          frame.setAttribute('referrerpolicy', 'no-referrer');
-          frame.setAttribute('allow', '');
-          frame.setAttribute('loading', 'lazy');
-          frame.setAttribute('aria-label', `Web page widget: ${widget.url}`);
-          if (isWebAddress(widget.url)) frame.src = widget.url;
-          entry = { url: widget.url, node: frame };
-          frames.set(widget.id, entry);
-        }
-        body.classList.add('is-frame');
-        body.append(entry.node);
-        break;
-      }
+      list.append(item);
     }
+    if (widget.links.length > 0) body.append(list);
     node.root.replaceChildren(widgetHead(widget, s), body);
   }
 
@@ -1106,52 +926,6 @@ export function buildStartPage(): {
     return strip;
   }
 
-  function webpageConfig(widget: Extract<Widget, { kind: 'webpage' }>): HTMLElement {
-    const form = el('form', 'sp-config sp-url-form');
-    if (widget.url === '') {
-      const mark = el('span', 'sp-empty-glyph');
-      mark.setAttribute('aria-hidden', 'true');
-      mark.append(icon('globe', { size: 20 }));
-      const lead = el('p', 'sp-widget-note');
-      lead.textContent = 'Show any page in this card.';
-      form.append(mark, lead);
-    }
-    const row = el('div', 'sp-url-row');
-    const input = el('input', 'bw-input');
-    input.type = 'text';
-    input.value = widget.url;
-    input.placeholder = 'example.com';
-    input.maxLength = 2048;
-    input.autocomplete = 'off';
-    input.spellcheck = false;
-    input.setAttribute('aria-label', 'Web page address');
-    const go = textButton('Show', () => {}, { primary: true });
-    go.type = 'submit';
-    row.append(input, go);
-    const error = el('p', 'sp-error');
-    error.setAttribute('role', 'alert');
-    error.hidden = true;
-    form.append(row, error);
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const text = input.value.trim();
-      if (text === '') {
-        cmd({ a: 'wurl', id: widget.id, url: '' });
-        return;
-      }
-      const url = normaliseAddress(text);
-      if (url === null) {
-        error.textContent = 'Enter an http or https address.';
-        error.hidden = false;
-        return;
-      }
-      error.hidden = true;
-      configuring = null;
-      cmd({ a: 'wurl', id: widget.id, url });
-    });
-    return form;
-  }
-
   /** A segmented control (`role=radiogroup`) that reports the chosen value. */
   function segmented<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, value: T | null, onPick: (value: T) => void, disabled = false): HTMLElement {
     const seg = el('div', 'bw-segmented sp-seg');
@@ -1171,16 +945,11 @@ export function buildStartPage(): {
     return seg;
   }
 
-  // ---- the clock (the page's own and every clock widget), redrawn on each new minute ----
-  function paintClock(only?: HTMLElement): void {
+  // ---- the clock, redrawn on each new minute ----
+  function paintClock(): void {
     const now = clockParts(new Date());
-    const targets = only ? [only] : [clock, ...Array.from(widgetGrid.querySelectorAll<HTMLElement>('.is-clock'))];
-    for (const target of targets) {
-      const time = target.querySelector<HTMLElement>('.sp-clock-time, .sp-wclock-time');
-      const date = target.querySelector<HTMLElement>('.sp-clock-date, .sp-wclock-date');
-      if (time && time.textContent !== now.time) time.textContent = now.time;
-      if (date && date.textContent !== now.date) date.textContent = now.date;
-    }
+    if (clockTime.textContent !== now.time) clockTime.textContent = now.time;
+    if (clockDate.textContent !== now.date) clockDate.textContent = now.date;
   }
   function tick(): void {
     clearTimeout(clockTimer);
@@ -1366,7 +1135,7 @@ export function buildStartPage(): {
       switchRow('Clock', st.clock, (on) => { setting('start_clock', on); }, 'clock'),
       switchRow('Search box', st.search, (on) => { setting('start_search', on); }, 'search'),
       switchRow('Speed dials', st.dials, (on) => { setting('start_dials', on); }, 'dials'),
-      switchRow('Widgets', st.widgets, (on) => { setting('start_widgets', on); }, 'widgets'),
+      switchRow('Bookmarks', st.widgets, (on) => { setting('start_widgets', on); }, 'widgets'),
     );
 
     const dials = drawerSection('Speed dials',
@@ -1376,13 +1145,11 @@ export function buildStartPage(): {
     );
     dials.classList.toggle('is-off', !st.dials);
 
-    const addOne = textButton('Add widget', () => openWidgetMenu(addOne), { icon: 'plus', subtle: true });
+    const addOne = textButton('Add bookmarks', () => { cmd({ a: 'wadd', text: 'bookmarks' }); }, { icon: 'plus', subtle: true, aria: 'Add a row of bookmarks' });
     addOne.dataset.ctl = 'addwidget';
     addOne.disabled = s.widgets.length >= 12;
-    const widgetsPart = drawerSection('Widgets',
-      choiceRow('Card style', 'style', segmented('Card style', STYLE_CHOICES, (WIDGET_BGS as readonly WidgetBg[]).includes(st.widgetBg) && st.widgetBg !== 'custom' ? st.widgetBg : null, (value) => { setting('start_widget_bg', value); }, !st.widgets)),
-      choiceRow('Columns', 'wcols', segmented('Columns', (['1', '2', '3', '4'] as const).map((n) => [n, n] as const), String(st.widgetColumns), (value) => { setting('start_widget_columns', value); }, !st.widgets)),
-      choiceRow('Height', 'wheight', segmented('Height', [['regular', 'Regular'], ['tall', 'Tall']] as const, st.widgetHeight, (value) => { setting('start_widget_height', value); }, !st.widgets)),
+    const widgetsPart = drawerSection('Bookmarks',
+      choiceRow('List style', 'style', segmented('List style', STYLE_CHOICES, (WIDGET_BGS as readonly WidgetBg[]).includes(st.widgetBg) && st.widgetBg !== 'custom' ? st.widgetBg : null, (value) => { setting('start_widget_bg', value); }, !st.widgets)),
     );
     if (st.widgets) {
       const actions = el('div', 'sp-drawer-actions');
@@ -1429,16 +1196,6 @@ export function buildStartPage(): {
     if (!drawer.hidden) paintDrawer(s);
     if (s.ack === 'failed') say(s.error);
   }
-
-  // Protection switched on: a frame that was loaded goes away, and every widget asks again.
-  let lastMode = activeSpoilerMode();
-  onSpoilerConfig(() => {
-    const mode = activeSpoilerMode();
-    const turnedOn = lastMode === 'off' && mode !== 'off';
-    lastMode = mode;
-    if (turnedOn) { approvedFrames.clear(); frames.clear(); }
-    if (snap && snap.widgets.some((w) => w.kind === 'webpage')) paintWidgets(snap);
-  });
 
   const observer = new ResizeObserver(() => layout());
   observer.observe(column);

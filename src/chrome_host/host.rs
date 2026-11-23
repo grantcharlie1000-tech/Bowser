@@ -1329,10 +1329,6 @@ fn install_handlers(
         }));
 
         // Subframes never navigate: each frame created gets a NavigationStarting that cancels.
-        // --- start page --- The split host alone lets a frame load an http(s) address: the start
-        // page's webpage widget (a sandboxed iframe). Every other host, and every other scheme, cancels.
-        let frames_allowed = view == View::Split;
-        // --- end start page ---
         let webview4: ICoreWebView2_4 = webview.cast()?;
         webview4.add_FrameCreated(
             &FrameCreatedEventHandler::create(Box::new(move |_sender, args| {
@@ -1343,13 +1339,7 @@ fn install_handlers(
                         &FrameNavigationStartingEventHandler::create(Box::new(
                             move |_frame, args| {
                                 if let Some(args) = args {
-                                    let mut uri = PWSTR::null();
-                                    let allowed = frames_allowed
-                                        && args.Uri(&mut uri).is_ok()
-                                        && assets::split_frame_may_navigate(&CoTaskMemPWSTR::from(uri).to_string());
-                                    if !allowed {
-                                        args.SetCancel(true)?;
-                                    }
+                                    args.SetCancel(true)?;
                                 }
                                 Ok(())
                             },
@@ -1628,7 +1618,7 @@ fn install_handlers(
                     })
                     .unwrap_or_default();
                 let asset = request_path(&uri).and_then(|path| assets::lookup(&path));
-                respond(&env, &args, asset, assets::response_headers_for(&uri))
+                respond(&env, &args, asset, assets::RESPONSE_HEADERS)
             })),
             &mut token,
         )?;

@@ -34,7 +34,7 @@ test('the Rust snapshots pass the bridge and the strict page parser, and anythin
   const page = logic.parseStartMessage(fixture.page.d).snap;
   assert.equal(page.groups[1].title, 'Play <b>', 'text arrives as text');
   assert.deepEqual(page.dials.map((d) => d.kind), ['link', 'link', 'folder']);
-  assert.equal(page.widgets.length, 6);
+  assert.deepEqual(page.widgets.map((w) => w.kind), ['bookmarks'], 'bookmarks are the only widget');
   assert.ok(page.favs['docs.rs'].startsWith('data:image/png;base64,'));
   assert.equal(logic.parseStartMessage(fixture.failed.d).snap.error, 'bookmark already exists');
   const empty = logic.parseStartMessage(fixture.empty.d).snap;
@@ -58,11 +58,12 @@ test('the Rust snapshots pass the bridge and the strict page parser, and anythin
     { ...d, dials: [{ ...d.dials[0], url: 'javascript:alert(1)' }, ...d.dials.slice(1)] },
     { ...d, dials: [{ ...d.dials[0], kind: 'folder' }, ...d.dials.slice(1)] },
     { ...d, dials: [d.dials[0], d.dials[0]] },
-    { ...d, widgets: [{ id: 6, kind: 'webpage', url: 'file:///c:/x' }] },
-    { ...d, widgets: [{ id: 6, kind: 'webpage', url: 'https://x.example/', extra: 1 }] },
-    { ...d, widgets: [{ id: 6, kind: 'iframe' }] },
-    { ...d, widgets: [{ id: 1, kind: 'date' }, { id: 1, kind: 'date' }] },
-    { ...d, widgets: Array.from({ length: 13 }, (_, i) => ({ id: i + 1, kind: 'date' })) },
+    { ...d, widgets: [{ id: 6, kind: 'webpage', url: 'https://x.example/' }] },
+    { ...d, widgets: [{ id: 6, kind: 'date' }] },
+    { ...d, widgets: [{ ...d.widgets[0], extra: 1 }] },
+    { ...d, widgets: [{ ...d.widgets[0], links: [{ ...d.widgets[0].links[0], url: 'javascript:alert(1)' }] }] },
+    { ...d, widgets: [d.widgets[0], d.widgets[0]] },
+    { ...d, widgets: Array.from({ length: 13 }, (_, i) => ({ ...d.widgets[0], id: i + 1 })) },
     { ...d, favs: { 'a.example': 'https://evil.example/x.png' } },
     { ...d, ack: 'failed', error: '' },
     { ...d, ack: 'none', error: 'x' },
@@ -581,88 +582,41 @@ test('drag to reorder is a setting: dropping before or after, into a folder, Esc
   show(fixture.page);
 });
 
-test('widgets: each kind draws, and the dashboard follows its settings', () => {
+test('bookmarks are the one widget: a row of sites, added and removed in one click, and the dashboard follows its settings', () => {
   show(fixture.page);
-  const cards = root.querySelectorAll('.sp-widget');
-  // Sites are rows of tiles above the cards (as tall as their tiles); the cards keep their order below.
-  assert.deepEqual(cards.map((c) => c.dataset.kind), ['topsites', 'bookmarks', 'date', 'privacy', 'notes', 'webpage']);
-  assert.deepEqual(root.querySelectorAll('.sp-strips .sp-widget').map((c) => c.dataset.kind), ['topsites', 'bookmarks']);
-  assert.deepEqual(root.querySelectorAll('.sp-widget.is-fit').map((c) => c.dataset.kind), ['date', 'privacy'], 'the clock and the counts fit their content');
-  const card = (kind) => root.querySelector(`.sp-widget[data-kind="${kind}"]`);
-  assert.match(card('date').querySelector('.sp-wclock-time').textContent, /\d{1,2}.\d{2}/);
-  assert.equal(card('topsites').querySelector('.sp-icon-name').textContent, 'Docs.rs');
-  assert.equal(card('privacy').querySelector('.sp-stat').textContent, '7');
-  assert.match(card('privacy').textContent, /7 trackers blocked today/);
-  assert.match(card('privacy').textContent, /1,234 in total · most from tracker\.example/);
-  assert.equal(card('bookmarks').querySelectorAll('.sp-icon-link').length, 2, 'tiles view');
-  assert.equal(card('bookmarks').querySelector('.sp-widget-name').textContent, 'Work', 'named after its folder');
-  assert.equal(card('webpage').querySelector('.sp-widget-name').textContent, 'widget.example', 'named after its site');
-  assert.equal(card('notes').querySelector('textarea').value, 'buy milk\nand <script>', 'text stays text');
+  const card = () => root.querySelector('.sp-widget[data-kind="bookmarks"]');
+  assert.deepEqual(root.querySelectorAll('.sp-widget').map((c) => c.dataset.kind), ['bookmarks']);
+  assert.ok(root.querySelector('.sp-strips').contains(card()), 'as tiles it is a row of sites, not a card');
+  assert.ok(card().classList.contains('is-strip'));
+  assert.equal(card().querySelectorAll('.sp-icon-link').length, 2);
+  assert.equal(card().querySelector('.sp-widget-name').textContent, 'Work', 'named after its folder');
+  for (const gone of ['.sp-note', '.sp-frame', '.sp-guard', '.sp-wclock-time', 'iframe', 'textarea']) assert.equal(root.querySelector(gone), null, gone);
+  // Add is one click (there is nothing to choose between), remove is the card's own button.
+  clear();
+  root.querySelector('.sp-add-widget').click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wadd', text: 'bookmarks' });
+  assert.equal(root.querySelector('.sp-menu'), null, 'no menu with one item');
+  card().querySelectorAll('.sp-widget-tool').at(-1).click();
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wremove', id: 1 });
   // Settings: off sends no widgets and hides the dashboard.
   show(withSettings(fixture.page, { widgets: false }, { widgets: [] }));
   assert.equal(root.querySelector('.sp-widgets').hidden, true);
   show(fixture.page);
   assert.equal(root.querySelector('.sp-widgets').hidden, false);
-  // Background style and height are classes on the page; the custom colour is a variable and a readable text colour.
+  // The list look sits in a card: its background is a class on the page, the custom colour a variable and a readable text colour.
   for (const bg of ['solid', 'translucent', 'transparent', 'custom']) {
-    show(withSettings(fixture.page, { widgetBg: bg, widgetHeight: 'tall', widgetColor: '#336699' }));
+    show(withSettings(fixture.page, { widgetBg: bg, widgetColor: '#336699' }));
     assert.ok(root.classList.contains(`is-bg-${bg}`), bg);
-    assert.ok(root.classList.contains('is-tall'));
     assert.equal(['solid', 'translucent', 'transparent', 'custom'].filter((b) => root.classList.contains(`is-bg-${b}`)).length, 1, 'one background at a time');
   }
   assert.equal(root.style.getPropertyValue('--sp-widget-custom'), '#336699');
   assert.equal(root.style.getPropertyValue('--sp-widget-custom-fg'), '#ffffff');
-  show(withSettings(fixture.page, { widgetHeight: 'regular' }));
-  assert.ok(root.classList.contains('is-regular') && !root.classList.contains('is-tall'));
-  // Columns: the setting caps the grid, the width limits it.
+  // Columns: the setting caps the grid of list cards, the width limits it.
   for (const [setting, expected] of [[1, '1'], [2, '2'], [4, '4']]) {
     show(withSettings(fixture.page, { widgetColumns: setting }));
     assert.equal(root.querySelector('.sp-widget-grid').style.getPropertyValue('--sp-wcols'), expected);
   }
   show(fixture.page);
-});
-
-test('widgets: the sticky note saves as it is typed and goes to Notes on request; add, remove, configure', () => {
-  show(fixture.page);
-  const card = (kind) => root.querySelector(`.sp-widget[data-kind="${kind}"]`);
-  const area = card('notes').querySelector('textarea');
-  clear();
-  area.value = 'remember the milk';
-  area.dispatch('input');
-  assert.equal(sent.length, 0, 'debounced');
-  flushTimers();
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wnote', id: 5, text: 'remember the milk' });
-  clear();
-  card('notes').querySelector('.sp-note-foot .bw-button').click();
-  assert.deepEqual(sent, [{ v: 1, t: 'spage', a: 'wnote', id: 5, text: 'remember the milk' }, { v: 1, t: 'spage', a: 'wsavenote', id: 5 }]);
-  assert.equal(card('notes').querySelector('.sp-note-status').textContent, 'Saved to Notes');
-  // A refresh keeps the caret (the note is not rewritten while it has focus) and the saved state.
-  document.activeElement = area;
-  show(fixture.page);
-  assert.equal(area.value, 'remember the milk');
-  document.activeElement = null;
-  // An empty note has nothing to save.
-  area.value = '   ';
-  clear();
-  card('notes').querySelector('.sp-note-foot .bw-button').click();
-  assert.equal(sent.length, 0);
-  area.value = 'remember the milk';
-
-  // Remove and add.
-  clear();
-  card('date').querySelectorAll('.sp-widget-tool').at(-1).click();
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wremove', id: 1 });
-  root.querySelector('.sp-add-widget').click();
-  const items = root.querySelectorAll('.sp-menu .bw-menu-item');
-  assert.deepEqual(items.map((i) => i.querySelector('.sp-menu-name').textContent), ['Most visited', 'Bookmarks', 'Note', 'Clock', 'Protection', 'Web page']);
-  items[5].click();
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wadd', text: 'webpage' });
-  // Clicking a top site opens it here or in a new tab, by address.
-  clear();
-  card('topsites').querySelector('.sp-icon-link').click();
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'openurl', url: 'https://docs.rs/' });
-  card('topsites').querySelector('.sp-icon-link').click({ ctrlKey: true });
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'openurl', url: 'https://docs.rs/', on: true });
 });
 
 test('widgets: the bookmarks widget picks a folder and a look, and shows titles and favicons or tiles', () => {
@@ -682,17 +636,20 @@ test('widgets: the bookmarks widget picks a folder and a look, and shows titles 
   assert.equal(tools[0].querySelectorAll('button').length, 1, 'no "use the site icon" without an image');
   clear();
   radios[0].click();
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wview', id: 4, text: 'list' });
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wview', id: 1, text: 'list' });
   radios[1].click();
   assert.equal(sent.length, 1, 'the look already chosen sends nothing');
   clear();
   card().querySelector('.sp-icon-link').click();
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'openurl', url: 'https://docs.rs/' });
+  card().querySelector('.sp-icon-link').click({ ctrlKey: true });
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'openurl', url: 'https://docs.rs/', on: true });
   const listView = { ...fixture.page, d: { ...fixture.page.d, widgets: fixture.page.d.widgets.map((w) => (w.kind === 'bookmarks' ? { ...w, view: 'list' } : w)) } };
   show(listView);
   assert.equal(card().querySelectorAll('.sp-row').length, 2);
   assert.equal(card().querySelector('.sp-row-title').textContent, 'Docs "quoted"');
   assert.ok(card().querySelector('.sp-row-face img.sp-fav'), 'the favicon');
+  assert.ok(root.querySelector('.sp-widget-grid').contains(card()) && card().classList.contains('is-fit'), 'as a list it is a card as tall as the list');
   // Tiles show a bookmark's chosen image (it arrives in a thumbs message); the list stays titles and favicons.
   const withImage = { ...fixture.page, d: { ...fixture.page.d, widgets: fixture.page.d.widgets.map((w) => (w.kind === 'bookmarks' ? { ...w, links: w.links.map((l) => (l.id === 3 ? { ...l, thumb: true } : l)) } : w)) } };
   show(withImage);
@@ -703,64 +660,23 @@ test('widgets: the bookmarks widget picks a folder and a look, and shows titles 
   show(fixture.page);
 });
 
-test('the webpage widget is a sandboxed frame for an http(s) address the user typed, and nothing else', () => {
-  show(fixture.page);
-  const card = () => root.querySelector('.sp-widget[data-kind="webpage"]');
-  // Spoiler protection is on by default: the widget waits for a click (see the paused-widget test), then loads.
-  const load = () => card().querySelectorAll('button').find((b) => b.textContent === 'Load')?.click();
-  load();
-  const frame = card().querySelector('iframe');
-  assert.ok(frame);
-  assert.equal(frame.getAttribute('sandbox'), 'allow-scripts allow-forms', 'no same-origin, popups, top navigation, downloads or modals');
-  assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
-  assert.equal(frame.getAttribute('allow'), '');
-  assert.equal(frame.getAttribute('loading'), 'lazy');
-  assert.equal(frame.src, 'https://widget.example/clock');
-  // A refresh keeps the same frame (no reload); a new address makes a new one.
-  show(fixture.page);
-  assert.equal(card().querySelector('iframe'), frame);
-  const next = { ...fixture.page, d: { ...fixture.page.d, widgets: fixture.page.d.widgets.map((w) => (w.kind === 'webpage' ? { ...w, url: 'https://other.example/' } : w)) } };
-  show(next);
-  assert.equal(card().querySelector('iframe'), null, 'a new address is paused again');
-  load();
-  assert.notEqual(card().querySelector('iframe'), frame);
-  assert.equal(card().querySelector('iframe').src, 'https://other.example/');
-  // No address: no frame, an input to type one.
-  const none = { ...fixture.page, d: { ...fixture.page.d, widgets: fixture.page.d.widgets.map((w) => (w.kind === 'webpage' ? { ...w, url: '' } : w)) } };
-  show(none);
-  assert.equal(card().querySelector('iframe'), null);
-  const form = card().querySelector('form');
-  const input = form.querySelector('input');
-  clear();
-  input.value = 'javascript:alert(1)';
-  form.dispatch('submit');
-  assert.equal(sent.length, 0, 'refused');
-  assert.equal(form.querySelector('.sp-error').hidden, false);
-  input.value = 'data:text/html,<b>x</b>';
-  form.dispatch('submit');
-  assert.equal(sent.length, 0);
-  input.value = 'widget.example/clock';
-  form.dispatch('submit');
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wurl', id: 6, url: 'https://widget.example/clock' });
-  show(fixture.page);
-});
-
 test('widgets drag by their handle and move with Alt and the arrows; the setting turns both off', () => {
-  show(fixture.page);
+  const two = { ...fixture.page, d: { ...fixture.page.d, widgets: [fixture.page.d.widgets[0], { ...fixture.page.d.widgets[0], id: 2 }, { ...fixture.page.d.widgets[0], id: 3 }] } };
+  show(two);
   const cardOf = (id) => root.querySelector(`.sp-widget[data-id="${id}"]`);
-  [1, 2, 3, 4, 5, 6].forEach((id, i) => { cardOf(id).rect = { left: (i % 2) * 300, top: Math.floor(i / 2) * 200, right: (i % 2) * 300 + 280, bottom: Math.floor(i / 2) * 200 + 180, width: 280, height: 180 }; });
+  [1, 2, 3].forEach((id, i) => { cardOf(id).rect = { left: 0, top: i * 120, right: 900, bottom: i * 120 + 100, width: 900, height: 100 }; });
   clear();
   const grip = (id) => cardOf(id).querySelector('.sp-grip');
-  grip(6).dispatch('pointerdown', { button: 0, pointerId: 2, clientX: 10, clientY: 10 });
-  hits = [cardOf(2)];
-  winEmit('pointermove', { pointerId: 2, clientX: 310, clientY: 20 });
-  assert.ok(cardOf(2).classList.contains('is-drop-before'));
+  grip(3).dispatch('pointerdown', { button: 0, pointerId: 2, clientX: 10, clientY: 250 });
+  hits = [cardOf(1)];
+  winEmit('pointermove', { pointerId: 2, clientX: 10, clientY: 20 });
+  assert.ok(cardOf(1).classList.contains('is-drop-before'));
   winEmit('pointerup', { pointerId: 2 });
-  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wmove', id: 6, before: 2 });
+  assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wmove', id: 3, before: 1 });
   clear();
   grip(1).dispatch('keydown', { key: 'ArrowRight', altKey: true });
   assert.deepEqual(last(), { v: 1, t: 'spage', a: 'wmove', id: 1, before: 3 });
-  show(withSettings(fixture.page, { widgetDrag: false }));
+  show(withSettings(two, { widgetDrag: false }));
   assert.equal(root.querySelectorAll('.sp-grip').length, 0, 'no handles with drag to rearrange off');
   show(fixture.page);
 });
@@ -790,9 +706,9 @@ test('start.css: its header, tokens only, motion limited to transform, opacity a
     }
   }
   for (const [, prop] of css.matchAll(/transition-property:\s*([^;]+);/g)) assert.ok(/^(transform|opacity|background-color|border-color|color)(,\s*(transform|opacity|background-color|border-color|color))*$/.test(prop.trim()), prop);
-  // Every colour comes from a token, except the white behind a framed page (a page expects a white canvas).
+  // Every colour comes from a token.
   const literals = [...css.matchAll(/#[0-9a-f]{3,8}\b|rgba?\(/gi)].map((m) => m[0].toLowerCase());
-  assert.deepEqual(literals, ['#ffffff']);
+  assert.deepEqual(literals, []);
   assert.match(read(join(srcDir, 'styles', 'app.css')), /@import "\.\/start\.css" layer\(surfaces\);/);
 });
 
@@ -803,28 +719,9 @@ test('the page builds DOM with createElement and textContent only, and never cha
       assert.doesNotMatch(text, banned, `${file}: ${banned}`);
     }
   }
-  // The only frame the page ever makes is the webpage widget's, and it is made with the sandbox attribute.
+  // The page embeds nothing: the web page widget and its frame were removed.
   const source = read(join(srcDir, 'start-page.ts'));
-  assert.equal([...source.matchAll(/el\('iframe'/g)].length, 1);
-  assert.match(source, /setAttribute\('sandbox', 'allow-scripts allow-forms'\)/);
-  assert.doesNotMatch(source, /allow-same-origin|allow-top-navigation|allow-popups|allow-downloads|allow-modals/);
-});
-
-test('spoiler guard: while protection is on a web page widget is a placeholder until Load is clicked; off loads at once', () => {
-  const deliverSetting = (on) => { for (const cb of listeners.slice()) cb({ data: JSON.stringify({ v: 1, t: 'spoiler', on, mode: 'strict' }) }); };
-  show(fixture.page);
-  const card = () => root.querySelector('.sp-widget[data-kind="webpage"]');
-  // A fresh widget id so earlier approvals do not apply.
-  assert.ok(card().textContent.includes('Web page widget paused by spoiler protection') || card().querySelector('iframe'), 'paused or approved earlier');
-  deliverSetting(false);
-  assert.equal(card().querySelector('iframe').src, 'https://widget.example/clock', 'protection off: loads at once');
-  deliverSetting(true);
-  assert.equal(card().querySelector('iframe'), null, 'switched on: the frame is dropped and asks again');
-  assert.ok(card().textContent.includes('Web page widget paused by spoiler protection'));
-  const button = card().querySelectorAll('button').find((b) => b.textContent === 'Load');
-  assert.ok(button);
-  button.click();
-  assert.equal(card().querySelector('iframe').src, 'https://widget.example/clock', 'an explicit click loads it');
+  assert.doesNotMatch(source, /iframe|sandbox/);
 });
 
 test('the clock and the search box follow their settings, and a search goes to Rust as typed', () => {

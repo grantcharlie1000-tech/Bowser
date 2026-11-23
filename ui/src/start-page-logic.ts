@@ -24,7 +24,8 @@ export const WIDGET_HEIGHTS = ['regular', 'tall'] as const;
 export type WidgetHeight = typeof WIDGET_HEIGHTS[number];
 export const WIDGET_BGS = ['solid', 'translucent', 'transparent', 'custom'] as const;
 export type WidgetBg = typeof WIDGET_BGS[number];
-export const WIDGET_KINDS = ['topsites', 'bookmarks', 'notes', 'date', 'privacy', 'webpage'] as const;
+/** The one widget left: a bookmark folder's sites (the clock, top sites, privacy, note and web page cards were removed). */
+export const WIDGET_KINDS = ['bookmarks'] as const;
 export type WidgetKind = typeof WIDGET_KINDS[number];
 export const BOOKMARK_VIEWS = ['list', 'tiles'] as const;
 /** `start_wallpaper`: the window's glass, a picture the page draws, or the user's own picture. */
@@ -42,7 +43,6 @@ export const MAX_WIDGET_COLUMNS = 4;
 export const MAX_STARTUP_PAGES = 8;
 export const MAX_URL = 2048;
 export const MAX_TITLE = 200;
-export const MAX_NOTE = 2000;
 const COLOR_RE = /^#[0-9a-f]{6}$/;
 
 /** Limits shared with `src/chrome_host/start_page.rs`. */
@@ -197,15 +197,8 @@ export interface Crumb { id: number; title: string }
 export interface Dial { id: number; title: string; kind: 'link' | 'folder'; url: string; host: string; n: number; thumb: boolean }
 export interface FolderChoice { id: number; path: string }
 export interface FolderRef { id: number; title: string }
-export interface TopSite { host: string; title: string; url: string }
 export interface BookmarkLink { id: number; title: string; url: string; host: string; thumb: boolean }
-export type Widget =
-  | { id: number; kind: 'topsites'; sites: TopSite[] }
-  | { id: number; kind: 'bookmarks'; folder: number; view: BookmarkView; links: BookmarkLink[] }
-  | { id: number; kind: 'notes'; text: string }
-  | { id: number; kind: 'date' }
-  | { id: number; kind: 'privacy'; today: number; total: number; topHost: string; topCount: number }
-  | { id: number; kind: 'webpage'; url: string };
+export type Widget = { id: number; kind: 'bookmarks'; folder: number; view: BookmarkView; links: BookmarkLink[] };
 export interface StartSnapshot {
   guest: boolean;
   settings: DisplaySettings;
@@ -260,30 +253,9 @@ function parseDisplay(v: unknown): DisplaySettings | null {
 function parseWidget(v: unknown): Widget | null {
   if (!isRecord(v) || !isInt(v.id, 1, 0xffffffff) || !oneOf(v.kind, WIDGET_KINDS)) return null;
   const id = v.id;
-  switch (v.kind) {
-    case 'topsites': {
-      if (!exactKeys(v, ['id', 'kind', 'sites'])) return null;
-      const sites = list(v.sites, MAX_ROWS, (s): TopSite | null => (isRecord(s) && exactKeys(s, ['host', 'title', 'url']) && isStr(s.host, 253) && isStr(s.title, MAX_TITLE) && isStr(s.url, 400) && isWebAddress(s.url) ? { host: s.host, title: s.title, url: s.url } : null));
-      return sites === null ? null : { id, kind: 'topsites', sites };
-    }
-    case 'bookmarks': {
-      if (!exactKeys(v, ['id', 'kind', 'folder', 'view', 'links']) || !isInt(v.folder, 0, Number.MAX_SAFE_INTEGER) || !oneOf(v.view, BOOKMARK_VIEWS)) return null;
-      const links = list(v.links, MAX_ROWS, (s): BookmarkLink | null => (isRecord(s) && exactKeys(s, ['id', 'title', 'url', 'host', 'thumb']) && isInt(s.id, 1, Number.MAX_SAFE_INTEGER) && isStr(s.title, MAX_TITLE) && isStr(s.url, 400) && isWebAddress(s.url) && isStr(s.host, 253) && isBool(s.thumb) ? { id: s.id, title: s.title, url: s.url, host: s.host, thumb: s.thumb } : null));
-      return links === null ? null : { id, kind: 'bookmarks', folder: v.folder, view: v.view, links };
-    }
-    case 'notes':
-      return exactKeys(v, ['id', 'kind', 'text']) && isStr(v.text, MAX_NOTE) ? { id, kind: 'notes', text: v.text } : null;
-    case 'date':
-      return exactKeys(v, ['id', 'kind']) ? { id, kind: 'date' } : null;
-    case 'privacy':
-      return exactKeys(v, ['id', 'kind', 'today', 'total', 'topHost', 'topCount']) && isInt(v.today, 0, Number.MAX_SAFE_INTEGER) && isInt(v.total, 0, Number.MAX_SAFE_INTEGER) && isStr(v.topHost, 253) && isInt(v.topCount, 0, Number.MAX_SAFE_INTEGER)
-        ? { id, kind: 'privacy', today: v.today, total: v.total, topHost: v.topHost, topCount: v.topCount }
-        : null;
-    case 'webpage':
-      return exactKeys(v, ['id', 'kind', 'url']) && isStr(v.url, MAX_URL) && (v.url === '' || isWebAddress(v.url)) ? { id, kind: 'webpage', url: v.url } : null;
-    default:
-      return null;
-  }
+  if (!exactKeys(v, ['id', 'kind', 'folder', 'view', 'links']) || !isInt(v.folder, 0, Number.MAX_SAFE_INTEGER) || !oneOf(v.view, BOOKMARK_VIEWS)) return null;
+  const links = list(v.links, MAX_ROWS, (s): BookmarkLink | null => (isRecord(s) && exactKeys(s, ['id', 'title', 'url', 'host', 'thumb']) && isInt(s.id, 1, Number.MAX_SAFE_INTEGER) && isStr(s.title, MAX_TITLE) && isStr(s.url, 400) && isWebAddress(s.url) && isStr(s.host, 253) && isBool(s.thumb) ? { id: s.id, title: s.title, url: s.url, host: s.host, thumb: s.thumb } : null));
+  return links === null ? null : { id, kind: 'bookmarks', folder: v.folder, view: v.view, links };
 }
 
 function parsePage(d: Rec): StartSnapshot | null {
@@ -392,37 +364,13 @@ export function dropBefore(ids: readonly number[], dragged: number, over: number
   return target === currentBefore ? undefined : target;
 }
 
-export function blockedText(n: number): string {
-  return n === 1 ? '1 request blocked' : `${n.toLocaleString('en-GB')} requests blocked`;
-}
-
 export function dialCountText(n: number): string {
   return n === 1 ? '1 site' : `${n} sites`;
 }
 
-export function dateParts(now: Date, locale?: string): { weekday: string; day: string; month: string; year: string } {
-  const f = (opts: Intl.DateTimeFormatOptions): string => new Intl.DateTimeFormat(locale, opts).format(now);
-  return { weekday: f({ weekday: 'long' }), day: f({ day: 'numeric' }), month: f({ month: 'long' }), year: f({ year: 'numeric' }) };
-}
-
 /** The label of a widget kind in the add menu and a card's heading. */
 export const WIDGET_LABELS: Readonly<Record<WidgetKind, string>> = {
-  topsites: 'Most visited',
   bookmarks: 'Bookmarks',
-  notes: 'Note',
-  date: 'Clock',
-  privacy: 'Protection',
-  webpage: 'Web page',
-};
-
-/** One line for each kind in the add menu. */
-export const WIDGET_HINTS: Readonly<Record<WidgetKind, string>> = {
-  topsites: 'The sites you open most',
-  bookmarks: 'A bookmark folder',
-  notes: 'A note that saves as you type',
-  date: 'The time and the date',
-  privacy: 'Trackers and ads blocked',
-  webpage: 'Any page, live in a card',
 };
 
 /** The big clock: the time in the person's own 12 or 24 hour style, and the date as words. */
@@ -484,5 +432,3 @@ export function dimStep(value: number): number {
 /** Size names for the five tile widths. */
 export const SIZE_LABELS: readonly string[] = ['XS', 'S', 'M', 'L', 'XL'];
 
-/** What the sticky note's save button says once it has saved. */
-export const NOTE_SAVED = 'Saved to Notes';

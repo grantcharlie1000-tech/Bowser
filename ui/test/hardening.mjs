@@ -147,13 +147,10 @@ test('the page meta CSP matches the header Rust serves, minus directives meta ca
     return block[1];
   };
   const header = csp('RESPONSE_HEADERS');
-  const split = csp('SPLIT_RESPONSE_HEADERS');
-  // Every view shares index.html, and the stricter of the meta and the header wins. The meta therefore
-  // carries the split host's policy (the start page's sandboxed Webpage widget frames http(s)); the
-  // header keeps frame-src 'none' for every other view, and that is the only difference.
-  assert.equal(meta[1], split);
-  assert.ok(header.includes("frame-src 'none';"), 'every other view still refuses frames');
-  assert.equal(split.replace('frame-src https: http:;', "frame-src 'none';"), header);
+  // Every view shares index.html and every view gets the same header: no view embeds a page.
+  assert.equal(meta[1], header);
+  assert.ok(header.includes("frame-src 'none';"), 'no view frames anything');
+  assert.doesNotMatch(assets, /SPLIT_RESPONSE_HEADERS|split_frame_may_navigate/, 'the start page has no frame exception any more');
   for (const directive of ['frame-ancestors', 'report-uri', 'sandbox']) {
     assert.ok(!meta[1].includes(directive), `${directive} is not valid in a meta CSP`);
   }

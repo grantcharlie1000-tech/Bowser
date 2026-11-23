@@ -7,7 +7,7 @@
 //!   reordering a dial is the bookmark store's own add, update, delete and reorder, so the Bookmarks
 //!   panel and the start page always agree. A dial's tile is its cached favicon, or an image the user
 //!   chose (re-encoded small, `speeddial-thumbs/<id>.jpg`).
-//! - Widgets are listed, ordered and configured in `start-widgets.txt`.
+//! - Bookmark widgets (a folder's sites) are listed, ordered and configured in `start-widgets.txt`.
 //! - The settings are flat `settings.txt` keys (`start_*`, `homepage`, `startup`, `startup_pages`),
 //!   parsed and written by [`StartSettings`], which `settings.rs` holds as one field.
 
@@ -45,9 +45,8 @@ pub const MAX_STARTUP_PAGES: usize = 8;
 pub const MAX_URL_CHARS: usize = 2048;
 /// Largest custom thumbnail kept (after the re-encode) and sent to the page.
 pub const MAX_THUMB_BYTES: usize = 96 * 1024;
-/// Most widgets, and the longest sticky note.
+/// Most widgets.
 pub const MAX_WIDGETS: usize = 12;
-pub const MAX_NOTE_CHARS: usize = 2000;
 /// Most rows a widget lists.
 pub const MAX_WIDGET_ROWS: usize = 12;
 /// `start_wallpaper_dim`: the darkening laid over a wallpaper, in percent.
@@ -1100,25 +1099,18 @@ pub fn thumb_data_uri(config: &SpeedDialConfig, dir: &Path, id: u64) -> Option<S
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WidgetKind {
-    TopSites,
+    /// A bookmark folder's sites, as a row of shortcuts or a list. The only widget: the clock, top
+    /// sites, privacy statistics, sticky note and web page cards were removed, and a saved file that
+    /// names one of them just skips that line.
     Bookmarks,
-    Notes,
-    Date,
-    Privacy,
-    Webpage,
 }
 
 impl WidgetKind {
-    pub const ALL: [Self; 6] = [Self::TopSites, Self::Bookmarks, Self::Notes, Self::Date, Self::Privacy, Self::Webpage];
+    pub const ALL: [Self; 1] = [Self::Bookmarks];
 
     pub fn key(self) -> &'static str {
         match self {
-            Self::TopSites => "topsites",
             Self::Bookmarks => "bookmarks",
-            Self::Notes => "notes",
-            Self::Date => "date",
-            Self::Privacy => "privacy",
-            Self::Webpage => "webpage",
         }
     }
 
@@ -1163,18 +1155,15 @@ pub struct Widget {
     pub folder: u64,
     /// Bookmarks: how it is drawn.
     pub view: BookmarksView,
-    /// Webpage: the embedded address (http or https).
-    pub url: String,
-    /// Notes: the sticky note's text.
-    pub text: String,
 }
 
 impl Widget {
     fn new(id: u32, kind: WidgetKind) -> Self {
-        Self { id, kind, folder: 0, view: BookmarksView::Tiles, url: String::new(), text: String::new() }
+        Self { id, kind, folder: 0, view: BookmarksView::Tiles }
     }
 }
 
+/// A profile with no `start-widgets.txt` has no widgets.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WidgetSet {
     pub items: Vec<Widget>,
@@ -1182,10 +1171,8 @@ pub struct WidgetSet {
 }
 
 impl Default for WidgetSet {
-    /// What a profile with no `start-widgets.txt` shows: the date, top sites and privacy statistics.
     fn default() -> Self {
-        let kinds = [WidgetKind::Date, WidgetKind::TopSites, WidgetKind::Privacy];
-        Self { items: kinds.iter().enumerate().map(|(i, k)| Widget::new(i as u32 + 1, *k)).collect(), next_id: kinds.len() as u32 + 1 }
+        Self { items: Vec::new(), next_id: 1 }
     }
 }
 
@@ -1210,8 +1197,6 @@ impl WidgetSet {
             let mut widget = Widget::new(id, kind);
             widget.folder = fields.next().and_then(|f| f.parse().ok()).unwrap_or(0);
             widget.view = fields.next().and_then(BookmarksView::parse).unwrap_or_default();
-            widget.url = fields.next().map(unescape).and_then(|u| web_address(&u)).unwrap_or_default();
-            widget.text = fields.next().map(unescape).unwrap_or_default().chars().take(MAX_NOTE_CHARS).collect();
             set.next_id = set.next_id.max(id.saturating_add(1));
             set.items.push(widget);
         }
@@ -1221,7 +1206,7 @@ impl WidgetSet {
     pub fn serialize(&self) -> String {
         let mut out = format!("{WIDGETS_HEADER}\n");
         for w in &self.items {
-            out.push_str(&format!("w\t{}\t{}\t{}\t{}\t{}\t{}\n", w.id, w.kind.key(), w.folder, w.view.key(), escape(&w.url), escape(&w.text)));
+            out.push_str(&format!("w\t{}\t{}\t{}\t{}\n", w.id, w.kind.key(), w.folder, w.view.key()));
         }
         out
     }
@@ -1277,53 +1262,6 @@ impl WidgetSet {
 
 // ----- widget data -----
 
-/// One of the most visited sites.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TopSite {
-    pub host: String,
-    pub title: String,
-    pub url: String,
-}
-
-/// The most visited sites from history entries (`(timestamp, url, title)`, one line per address): hosts
-/// ranked by how many of their pages were visited, ties by the newest visit. Each site links to the
-/// host's most recently visited page.
-pub fn top_sites(history: &[(u64, String, String)], limit: usize) -> Vec<TopSite> {
-    struct Tally {
-        count: usize,
-        newest: u64,
-        url: String,
-        title: String,
-    }
-    // One hash lookup per row: a linear scan per row was quadratic over 5000 history rows.
-    let mut tallies: std::collections::HashMap<String, Tally> = std::collections::HashMap::new();
-    for (stamp, url, title) in history {
-        let Ok(parsed) = url::Url::parse(url) else { continue };
-        if !matches!(parsed.scheme(), "http" | "https") {
-            continue;
-        }
-        let Some(host) = parsed.host_str() else { continue };
-        let host = host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase();
-        match tallies.get_mut(&host) {
-            Some(tally) => {
-                tally.count += 1;
-                if *stamp >= tally.newest {
-                    tally.newest = *stamp;
-                    tally.url.clone_from(url);
-                    tally.title.clone_from(title);
-                }
-            }
-            None => {
-                tallies.insert(host, Tally { count: 1, newest: *stamp, url: url.clone(), title: title.clone() });
-            }
-        }
-    }
-    // The sort is total (the host breaks every tie), so the map's order never shows.
-    let mut hosts: Vec<(String, Tally)> = tallies.into_iter().collect();
-    hosts.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(b.1.newest.cmp(&a.1.newest)).then(a.0.cmp(&b.0)));
-    hosts.into_iter().take(limit).map(|(host, t)| TopSite { host, title: t.title, url: t.url }).collect()
-}
-
 /// The links of bookmark folder `folder` (0 = the root), for the bookmarks widget.
 pub fn widget_links(store: &BookmarkStore, folder: u64) -> Vec<(u64, String, String, String)> {
     let parent = (folder != 0).then_some(folder);
@@ -1336,12 +1274,6 @@ pub fn widget_links(store: &BookmarkStore, folder: u64) -> Vec<(u64, String, Str
         })
         .take(MAX_WIDGET_ROWS)
         .collect()
-}
-
-/// The title a sticky note gets when it is saved as a note: its first line, trimmed and shortened.
-pub fn note_title(text: &str) -> String {
-    let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("Sticky note");
-    first.chars().take(60).collect()
 }
 
 pub mod service;

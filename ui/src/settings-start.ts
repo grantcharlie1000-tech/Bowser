@@ -1,8 +1,8 @@
 import { el, icon } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
-  DIM_STEPS, GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_CHOICES, WALL_ART, WIDGET_BGS, WIDGET_HEIGHTS, dimStep, normaliseAddress, startupChoice,
-  type GroupReopen, type StartSettings, type StartupChoice, type StartupMode, type TitleMode, type Wallpaper, type WidgetBg, type WidgetHeight,
+  DIM_STEPS, GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_CHOICES, WALL_ART, WIDGET_BGS, dimStep, normaliseAddress, startupChoice,
+  type GroupReopen, type StartSettings, type StartupChoice, type StartupMode, type TitleMode, type Wallpaper, type WidgetBg,
 } from './start-page-logic';
 import type { TabOptionValues } from './tab-options-logic';
 
@@ -32,7 +32,6 @@ export const STARTUP_LABELS: Readonly<Record<StartupChoice, string>> = {
   specific_pages: 'Tabs + pages',
 };
 export const THUMB_LABELS: readonly string[] = ['Tiny', 'Small', 'Medium', 'Large', 'Huge'];
-export const HEIGHT_LABELS: Readonly<Record<WidgetHeight, string>> = { regular: 'Regular', tall: 'Tall' };
 export const BG_LABELS: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Tinted', transparent: 'Clear', custom: 'Custom' };
 export const BG_ARIA: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Semi-transparent', transparent: 'Transparent', custom: 'Custom' };
 
@@ -208,15 +207,13 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   const widgetsOn = host.switchControl((on) => host.change((s) => { s.widgets = on; }));
   const widgetsRow = host.row(widgets, 'startWidgets', widgetsOn.root).root;
   const widgetsNote = rowNote(widgetsRow, 'startWidgets', START_OFF_NOTE);
-  const wcols = host.segmentedControl<string>('Widget columns', ['1', '2', '3', '4'].map((n) => [n, n] as const), (value) => host.change((s) => { s.widgetColumns = Number(value); }));
+  const wcols = host.segmentedControl<string>('List columns', ['1', '2', '3', '4'].map((n) => [n, n] as const), (value) => host.change((s) => { s.widgetColumns = Number(value); }));
   const wcolsRow = host.row(widgets, 'startWidgetColumns', wcols.root).root;
-  const wheight = host.segmentedControl<WidgetHeight>('Widget height', WIDGET_HEIGHTS.map((key) => [key, HEIGHT_LABELS[key]] as const), (value) => host.change((s) => { s.widgetHeight = value; }));
-  const wheightRow = host.row(widgets, 'startWidgetHeight', wheight.root).root;
-  const wbg = host.segmentedControl<WidgetBg>('Widget background', WIDGET_BGS.map((key) => [key, BG_LABELS[key], BG_ARIA[key]] as const), (value) => host.change((s) => { s.widgetBg = value; }));
+  const wbg = host.segmentedControl<WidgetBg>('List background', WIDGET_BGS.map((key) => [key, BG_LABELS[key], BG_ARIA[key]] as const), (value) => host.change((s) => { s.widgetBg = value; }));
   const wbgRow = host.row(widgets, 'startWidgetBg', wbg.root).root;
   const wcolor = el('input', 'sp-color');
   wcolor.type = 'color';
-  wcolor.setAttribute('aria-label', 'Custom widget colour');
+  wcolor.setAttribute('aria-label', 'Custom list colour');
   wcolor.addEventListener('change', () => host.change((s) => { s.widgetColor = wcolor.value.toLowerCase(); }));
   const wcolorRow = host.row(widgets, 'startWidgetColor', wcolor).root;
   const wdrag = host.switchControl((on) => host.change((s) => { s.widgetDrag = on; }));
@@ -251,7 +248,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       if (document.activeElement !== pages) pages.value = start.startupPages.join('\n');
       widgetsOn.set(start.widgets);
       wcols.set(String(start.widgetColumns));
-      wheight.set(start.widgetHeight);
       wbg.set(start.widgetBg);
       wcolor.value = start.widgetColor;
       wdrag.set(start.widgetDrag);
@@ -275,8 +271,8 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
         away(row, readable && !dialsLive);
       }
       const widgetsLive = live && start.widgets;
-      for (const control of [wcols, wheight, wbg, wdrag]) control.disable(!widgetsLive);
-      for (const row of [wcolsRow, wheightRow, wbgRow, wdragRow]) {
+      for (const control of [wcols, wbg, wdrag]) control.disable(!widgetsLive);
+      for (const row of [wcolsRow, wbgRow, wdragRow]) {
         rest(row, readable && !widgetsLive);
         away(row, readable && !widgetsLive);
       }

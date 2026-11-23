@@ -1,7 +1,7 @@
 //! What the start page does with the profile's files (docs/design/start-page.md): builds the page's
 //! snapshot and carries out each validated command. Pure over a folder of files, so every command is
 //! tested end to end (command, file, snapshot) without a window; `win32/start_ui.rs` only adds what
-//! needs a window (opening an address, the image picker, the Notes panel).
+//! needs a window (opening an address, searching, the image pickers, saving a setting).
 
 use std::{
     cell::{Cell, RefCell},
@@ -12,27 +12,21 @@ use std::{
 
 use crate::{
     bookmarks::{BookmarkKind, BookmarkStore},
-    chrome_host::start_page::{self as wire, Ack, Action, PrivacySummary, Snapshot},
-    privacy_stats::{self, PrivacyStats},
-    productivity,
+    chrome_host::start_page::{self as wire, Ack, Action, Snapshot},
 };
 
-use super::{
-    self as model, SpeedDialConfig, StartSettings, WidgetKind, WidgetSet, MAX_WIDGET_ROWS,
-};
+use super::{self as model, SpeedDialConfig, StartSettings, WidgetKind, WidgetSet};
 
 /// The profile files the page reads and writes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Paths {
-    /// The profile folder: bookmarks, `speeddial.txt`, `start-widgets.txt`, thumbnails.
+    /// The profile folder: bookmarks, `speeddial.txt`, `start-widgets.txt`, thumbnails, the background.
     pub dir: PathBuf,
-    pub history: PathBuf,
-    pub privacy: PathBuf,
 }
 
 impl Paths {
     pub fn in_dir(dir: &Path) -> Self {
-        Self { dir: dir.to_owned(), history: dir.join("history.txt"), privacy: dir.join(privacy_stats::FILE_NAME) }
+        Self { dir: dir.to_owned() }
     }
 }
 
@@ -79,8 +73,6 @@ pub fn stamp(paths: &Paths) -> Stamp {
         paths.dir.join("bookmarks-v2.txt"),
         paths.dir.join(model::FILE_NAME),
         paths.dir.join(model::WIDGETS_FILE),
-        paths.history.clone(),
-        paths.privacy.clone(),
         paths.dir.join(model::WALLPAPER_FILE),
     ]
     .iter()
@@ -98,10 +90,6 @@ pub struct Page {
     ack_at: Option<usize>,
     /// Profile-relative names of this page's images: at most 264 favicons and 264 thumbnails.
     files: Vec<(PathBuf, Option<(u64, u128)>)>,
-    /// At most twelve bounded rows, including visits that are still queued for persistence.
-    top: Option<Vec<model::TopSite>>,
-    history_dependency: Cell<Option<productivity::HistoryDependency>>,
-    privacy_day: Option<String>,
     cacheable: bool,
     /// Hosts on the page with no cached icon yet: the window fetches them from the sites.
     pub missing_icons: Vec<String>,
@@ -112,28 +100,11 @@ impl Page {
         requested.unwrap_or(self.default_folder) == self.folder
     }
 
-    /// File metadata alone misses queued history visits and a privacy widget crossing midnight.
+    /// Whether the files this page was built from are unchanged (an unreadable input is read again
+    /// whenever the page appears).
     pub(crate) fn inputs_current(&self, paths: Option<&Paths>, appeared: bool) -> bool {
         (self.cacheable || !appeared)
-            && self.privacy_day.as_ref().is_none_or(|day| *day == privacy_stats::today_utc())
             && self.files.iter().all(|(path, stamp)| paths.is_some_and(|paths| file_stamp(&paths.dir.join(path)) == *stamp))
-            && self.top.as_ref().is_none_or(|top| {
-                paths.is_some_and(|paths| {
-                    match productivity::read_history_if_changed(&paths.history, self.history_dependency.get()) {
-                        Ok(None) => true,
-                        Ok(Some((history, dependency))) => {
-                            let fresh = bounded_top_sites(model::top_sites(&history, MAX_WIDGET_ROWS));
-                            if fresh != *top { return false; }
-                            self.history_dependency.set(dependency);
-                            true
-                        }
-                        Err(_) => {
-                            self.history_dependency.set(None);
-                            !appeared
-                        }
-                    }
-                })
-            })
     }
 
     /// Change only the wire's final acknowledgement fields, keeping one cached page model.
@@ -152,17 +123,6 @@ impl Page {
 }
 
 const NO_ACK: &str = r#""ack":"none","error":""}}"#;
-
-fn bounded_top_sites(mut top: Vec<model::TopSite>) -> Vec<model::TopSite> {
-    // Keep all valid favicon hosts (253 bytes), plus one character distinguishing an invalid long
-    // host. Only titles/URLs use the wire's display bounds; rendering still receives the full input.
-    for site in &mut top {
-        site.host = crate::chrome_host::json::capped(&site.host, 254).to_owned();
-        site.title = crate::chrome_host::json::capped(site.title.trim(), 120).to_owned();
-        site.url = crate::chrome_host::json::capped(&site.url, 400).to_owned();
-    }
-    top
-}
 
 fn missing(path: &Path) -> bool {
     fs::metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
@@ -217,36 +177,6 @@ pub fn page_with(
         model::dial_view(&loaded.store, &loaded.config, settings.group_reopen, None).folder
     };
     let widgets_on = settings.widgets;
-    let has = |kind: WidgetKind| widgets_on && loaded.widgets.items.iter().any(|w| w.kind == kind);
-    let history_dependency = Cell::new(None);
-    let top = match paths {
-        Some(paths) if has(WidgetKind::TopSites) && !guest => Some(productivity::read_history_with_dependency(&paths.history)
-            .map(|(history, dependency)| {
-                history_dependency.set(dependency);
-                model::top_sites(&history, MAX_WIDGET_ROWS)
-            }).unwrap_or_else(|_| {
-            cacheable.set(false);
-            Vec::new()
-        })),
-        _ => None,
-    };
-    let privacy_day = (has(WidgetKind::Privacy) && !guest && paths.is_some()).then(privacy_stats::today_utc);
-    let privacy = match paths {
-        Some(paths) if has(WidgetKind::Privacy) && !guest => {
-            if fs::File::open(&paths.privacy).is_err() && !missing(&paths.privacy) {
-                cacheable.set(false);
-            }
-            let stats = PrivacyStats::load(&paths.privacy);
-            let worst = stats.top_sites(1).into_iter().next().map(|(host, count)| (host.to_owned(), count));
-            Some(PrivacySummary {
-                today: stats.day_total(privacy_day.as_deref().unwrap_or_default()),
-                total: stats.all_time_total(),
-                top_host: worst.as_ref().map(|w| w.0.clone()).unwrap_or_default(),
-                top_count: worst.map_or(0, |w| w.1),
-            })
-        }
-        _ => None,
-    };
     // The chosen background picture: its stamp in the page, its bytes in `wall` messages after it.
     let wallpaper = match paths {
         Some(paths) if !guest && settings.wallpaper == "custom" => {
@@ -262,7 +192,7 @@ pub fn page_with(
     };
     let wall_stamp = wallpaper.as_ref().map(|(stamp, _)| stamp.as_str()).unwrap_or_default();
     let json = wire::snapshot_json_with(
-        &Snapshot { guest, settings, view: &view, store: &loaded.store, config: &loaded.config, widgets: &loaded.widgets, top: top.as_deref().unwrap_or_default(), privacy: privacy.as_ref(), wall: wall_stamp, ack: Ack::None },
+        &Snapshot { guest, settings, view: &view, store: &loaded.store, config: &loaded.config, widgets: &loaded.widgets, wall: wall_stamp, ack: Ack::None },
         |host| {
             let path = paths.filter(|_| !guest).and_then(|_| favicon_path(host));
             let stamp = path.as_deref().and_then(|path| paths.and_then(|paths| file_stamp(&paths.dir.join(path))));
@@ -310,7 +240,7 @@ pub fn page_with(
     let ack_at = json.strip_suffix(NO_ACK).map(str::len);
     let mut page = Page {
         json, thumbs, folder: view.folder, default_folder, ack_at,
-        files: files.into_inner(), top: top.map(bounded_top_sites), history_dependency, privacy_day, cacheable: cacheable.get(),
+        files: files.into_inner(), cacheable: cacheable.get(),
         missing_icons: missing_icons.into_inner(),
     };
     if let Ack::Failed(error) = ack { page.json = page.json_with_ack(Some(&error)); }
@@ -326,8 +256,6 @@ pub enum Effect {
     Open { url: url::Url, new_tab: bool },
     /// Ask for an image for dial `id`, then [`set_thumbnail`].
     PickThumb(u64),
-    /// Add this text to the Notes panel.
-    SaveNote { title: String, body: String },
     /// Open Settings at the Start page section.
     Settings,
     /// Search for (or go to) the typed text in the shown tab.
@@ -508,26 +436,6 @@ pub fn apply(paths: &Paths, requested: &mut Option<u64>, action: Action) -> Resu
             widget.view = view;
             widgets.save(dir).map_err(err)?;
         }
-        Action::WidgetUrl { id, url } => {
-            let widget = widgets.get_mut(id).filter(|w| w.kind == WidgetKind::Webpage).ok_or_else(|| "That widget is gone.".to_owned())?;
-            widget.url = url;
-            widgets.save(dir).map_err(err)?;
-        }
-        Action::WidgetNote { id, text } => {
-            let widget = widgets.get_mut(id).filter(|w| w.kind == WidgetKind::Notes).ok_or_else(|| "That widget is gone.".to_owned())?;
-            if widget.text == text {
-                return Ok(Effect::None);
-            }
-            widget.text = text;
-            widgets.save(dir).map_err(err)?;
-        }
-        Action::WidgetSaveNote(id) => {
-            let widget = widgets.items.iter().find(|w| w.id == id && w.kind == WidgetKind::Notes).ok_or_else(|| "That widget is gone.".to_owned())?;
-            if widget.text.trim().is_empty() {
-                return Err("The note is empty.".to_owned());
-            }
-            return Ok(Effect::SaveNote { title: model::note_title(&widget.text), body: widget.text.clone() });
-        }
         Action::Settings => return Ok(Effect::Settings),
         Action::Refresh => {}
         Action::Search(text) => return Ok(Effect::Search(text)),
@@ -577,21 +485,6 @@ pub fn set_thumbnail(paths: &Paths, id: u64, jpeg: &[u8]) -> Result<(), String> 
     }
     model::set_thumb(&mut loaded.config, &paths.dir, id, jpeg).map_err(|_| "That image could not be used. Choose a smaller picture.".to_owned())?;
     loaded.config.save(&paths.dir).map_err(|e| friendly(&e))
-}
-
-/// Adds a sticky note's text to the profile's notes (the Notes panel's own file).
-pub fn save_note(notes_file: &Path, title: &str, body: &str) -> Result<(), String> {
-    let existing = productivity::read_note_list(notes_file);
-    let next = existing
-        .iter()
-        .map(|n| n.id)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1)
-        .max(std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64);
-    productivity::add_note(notes_file, productivity::Note { id: next, title: title.to_owned(), body: body.to_owned() }).map_err(|e| {
-        if e.to_string().contains("too many notes") { "Notes are full.".to_owned() } else { "That note could not be saved.".to_owned() }
-    })
 }
 
 #[cfg(test)]

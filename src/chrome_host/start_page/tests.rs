@@ -13,8 +13,6 @@ struct World {
     config: SpeedDialConfig,
     settings: StartSettings,
     widgets: WidgetSet,
-    top: Vec<TopSite>,
-    privacy: PrivacySummary,
 }
 
 fn world() -> World {
@@ -28,28 +26,17 @@ fn world() -> World {
     let config = SpeedDialConfig { groups: vec![work, play], last: None, thumbs: HashMap::new() };
     let mut widgets = WidgetSet::default();
     let marks = widgets.add(crate::start_page::WidgetKind::Bookmarks).unwrap();
-    let note = widgets.add(crate::start_page::WidgetKind::Notes).unwrap();
-    let page = widgets.add(crate::start_page::WidgetKind::Webpage).unwrap();
     {
         let w: &mut Widget = widgets.get_mut(marks).unwrap();
         w.folder = work;
         w.view = BookmarksView::Tiles;
     }
-    widgets.get_mut(note).unwrap().text = "buy milk\nand <script>".to_owned();
-    widgets.get_mut(page).unwrap().url = "https://widget.example/clock".to_owned();
-    World {
-        store,
-        config,
-        settings: StartSettings { widgets: true, ..StartSettings::default() },
-        widgets,
-        top: vec![TopSite { host: "docs.rs".to_owned(), title: "Docs.rs".to_owned(), url: "https://docs.rs/".to_owned() }],
-        privacy: PrivacySummary { today: 7, total: 1234, top_host: "tracker.example".to_owned(), top_count: 99 },
-    }
+    World { store, config, settings: StartSettings { widgets: true, ..StartSettings::default() }, widgets }
 }
 
 fn json_of(w: &World, view: &DialView, ack: Ack, favicon: impl Fn(&str) -> Option<Vec<u8>>) -> String {
     snapshot_json_with(
-        &Snapshot { guest: false, settings: &w.settings, view, store: &w.store, config: &w.config, widgets: &w.widgets, top: &w.top, privacy: Some(&w.privacy), wall: "", ack },
+        &Snapshot { guest: false, settings: &w.settings, view, store: &w.store, config: &w.config, widgets: &w.widgets, wall: "", ack },
         favicon,
     )
 }
@@ -64,11 +51,10 @@ fn the_snapshot_carries_groups_dials_settings_widgets_and_stays_text() {
     assert!(json.contains(r#""group":1,"folder":1,"path":[{"id":1,"title":"Work"}]"#), "{json}");
     assert!(json.contains(r#"{"id":3,"title":"Docs \"quoted\"","kind":"link","url":"https://docs.rs/","host":"docs.rs","n":0,"thumb":false}"#), "{json}");
     assert!(json.contains(r#""kind":"folder","url":"","host":"","n":0,"thumb":false}"#), "{json}");
-    assert!(json.contains(r#""kind":"topsites","sites":[{"host":"docs.rs","title":"Docs.rs","url":"https://docs.rs/"}]"#), "{json}");
-    assert!(json.contains(r#""kind":"bookmarks","folder":1,"view":"tiles","links":["#), "{json}");
-    assert!(json.contains(r#""kind":"privacy","today":7,"total":1234,"topHost":"tracker.example","topCount":99"#), "{json}");
-    assert!(json.contains(r#""kind":"webpage","url":"https://widget.example/clock""#), "{json}");
-    assert!(json.contains(r#""kind":"date""#), "{json}");
+    assert!(json.contains(r#""widgets":[{"id":1,"kind":"bookmarks","folder":1,"view":"tiles","links":["#), "{json}");
+    for gone in ["topsites", "privacy", "webpage", "notes", "\"date\""] {
+        assert!(!json.contains(gone), "{gone}: only bookmark widgets are left");
+    }
     // Page-controlled text is escaped, never raw markup.
     assert!(!json.contains('<'), "{json}");
     assert!(json.ends_with(r#""favs":{},"wall":"","ack":"none","error":""}}"#), "{json}");
@@ -161,23 +147,25 @@ fn every_command_is_accepted_with_exactly_its_own_fields() {
     assert_eq!(map_command(&mv), Some(Action::Move { id: 4, before: Some(9) }));
 
     let mut wadd = f("wadd");
-    wadd.text = Some("webpage".to_owned());
-    assert_eq!(map_command(&wadd), Some(Action::WidgetAdd(WidgetKind::Webpage)));
+    wadd.text = Some("bookmarks".to_owned());
+    assert_eq!(map_command(&wadd), Some(Action::WidgetAdd(WidgetKind::Bookmarks)));
+    for gone in ["webpage", "notes", "date", "privacy", "topsites"] {
+        wadd.text = Some(gone.to_owned());
+        assert_eq!(map_command(&wadd), None, "{gone} was removed");
+    }
     let mut wnote = f("wnote");
     wnote.id = Some(2);
-    wnote.text = Some("a\nb".to_owned());
-    assert_eq!(map_command(&wnote), Some(Action::WidgetNote { id: 2, text: "a\nb".to_owned() }));
+    wnote.text = Some("a".to_owned());
+    assert_eq!(map_command(&wnote), None, "the note widget was removed");
     let mut wurl = f("wurl");
     wurl.id = Some(2);
-    wurl.url = Some(String::new());
-    assert_eq!(map_command(&wurl), Some(Action::WidgetUrl { id: 2, url: String::new() }), "an empty address clears the widget");
     wurl.url = Some("https://x.example/".to_owned());
-    assert_eq!(map_command(&wurl), Some(Action::WidgetUrl { id: 2, url: "https://x.example/".to_owned() }));
+    assert_eq!(map_command(&wurl), None, "the web page widget was removed");
 
     for bare in ["settings", "refresh"] {
         assert!(map_command(&f(bare)).is_some(), "{bare}");
     }
-    for with_id in ["show", "flaggroup", "removegroup", "remove", "thumb", "thumbclear", "wremove", "wsavenote"] {
+    for with_id in ["show", "flaggroup", "removegroup", "remove", "thumb", "thumbclear", "wremove"] {
         let mut c = f(with_id);
         c.id = Some(7);
         assert!(map_command(&c).is_some(), "{with_id}");
@@ -209,10 +197,6 @@ fn bad_fields_unknown_actions_and_extras_are_refused() {
     assert_eq!(map_command(&add), None, "title too long");
     add.text = Some("bad\u{1}title".to_owned());
     assert_eq!(map_command(&add), None, "control character");
-    let mut note = f("wnote");
-    note.id = Some(1);
-    note.text = Some("n".repeat(MAX_TEXT_INPUT + 1));
-    assert_eq!(map_command(&note), None);
     let mut wid = f("wremove");
     wid.id = Some(u64::from(u32::MAX) + 1);
     assert_eq!(map_command(&wid), None, "widget ids are 32 bit");

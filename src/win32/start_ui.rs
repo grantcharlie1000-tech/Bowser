@@ -4,13 +4,13 @@
 //! shows the private landing, so a new tab costs no extra WebView2) and asks this module two things:
 //! when a fresh page snapshot is due ([`due`]) and what to do with the page's commands ([`run_queued`]).
 //! The data, the commands and the snapshot are `crate::start_page` (`service.rs`, tested without a
-//! window); this module adds only what needs one: opening an address, the image picker and re-encode,
-//! the Notes panel and the settings page.
+//! window); this module adds only what needs one: opening an address, searching, the image pickers
+//! and re-encodes, saving a setting and the settings page.
 //!
 //! A new tab must not wait on this page. [`due`] reads nothing when the tab shows an unchanged page:
 //! it checks the settings and, at most every [`STAMP_EVERY`] or on appearance, the model's file,
 //! image and widget inputs. Tab identity and delivery retries reuse the model. Every function runs
-//! on the UI thread; top sites still consult history for visits not yet persisted.
+//! on the UI thread.
 
 use std::{
     cell::RefCell,
@@ -165,7 +165,7 @@ fn paths() -> (Option<Paths>, bool) {
     match profile::active() {
         Ok(profile) => {
             let guest = profile.is_guest();
-            (Some(Paths { dir: profile.root().to_owned(), history: profile.history_file(), privacy: profile.privacy_stats_file() }), guest)
+            (Some(Paths { dir: profile.root().to_owned() }), guest)
         }
         Err(_) => (None, true),
     }
@@ -352,7 +352,7 @@ fn run(owner: HWND, app: &AppRef, action: wire::Action) {
         return;
     }
     let mut requested = with(owner, |rt| rt.requested).flatten();
-    let changes_model = !matches!(action, Action::Show(_) | Action::Open { .. } | Action::OpenUrl { .. } | Action::Settings | Action::WidgetSaveNote(_) | Action::Search(_) | Action::Wallpaper);
+    let changes_model = !matches!(action, Action::Show(_) | Action::Open { .. } | Action::OpenUrl { .. } | Action::Settings | Action::Search(_) | Action::Wallpaper);
     let result = service::apply(&paths, &mut requested, action);
     match result {
         Ok(effect) => {
@@ -388,12 +388,6 @@ fn carry_out(owner: HWND, app: &AppRef, paths: &Paths, effect: Effect) {
                 .ok_or_else(|| "That image could not be used. Choose a PNG, JPEG, GIF or BMP picture.".to_owned())
                 .and_then(|jpeg| service::set_thumbnail(paths, id, &jpeg));
             if let Err(message) = outcome {
-                fail(owner, &message);
-            }
-        }
-        Effect::SaveNote { title, body } => {
-            let Ok(profile) = profile::active() else { return };
-            if let Err(message) = service::save_note(&profile.notes_file(), &title, &body) {
                 fail(owner, &message);
             }
         }

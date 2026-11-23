@@ -12,7 +12,7 @@ use super::json::{capped, Json};
 use super::protocol::{favicon_data_uri, snap_json, PanelFields};
 use crate::bookmarks::BookmarkStore;
 use crate::start_page::{
-    self as model, BookmarksView, DialKind, DialView, SpeedDialConfig, StartSettings, TopSite, WidgetKind, WidgetSet,
+    self as model, BookmarksView, DialKind, DialView, SpeedDialConfig, StartSettings, WidgetKind, WidgetSet,
 };
 
 const MAX_TITLE_CHARS: usize = 120;
@@ -25,9 +25,8 @@ const MAX_FAV_BYTES: usize = 150 * 1024;
 pub const MAX_SNAPSHOT_BYTES: usize = 200 * 1024;
 /// Largest `thumbs` message.
 pub const MAX_THUMBS_BYTES: usize = 160 * 1024;
-/// Longest title, note and address the page may send.
+/// Longest title and address the page may send.
 pub const MAX_TITLE_INPUT: usize = 200;
-pub const MAX_TEXT_INPUT: usize = model::MAX_NOTE_CHARS;
 pub const MAX_URL_INPUT: usize = model::MAX_URL_CHARS;
 /// Most folders offered in the group and widget pickers.
 const MAX_FOLDERS: usize = 200;
@@ -40,15 +39,6 @@ pub enum Ack {
     Failed(String),
 }
 
-/// The blocking statistics the privacy widget shows.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PrivacySummary {
-    pub today: u64,
-    pub total: u64,
-    pub top_host: String,
-    pub top_count: u64,
-}
-
 /// Everything one `page` snapshot reports.
 pub struct Snapshot<'a> {
     /// A guest window keeps nothing, so the page offers no editing.
@@ -59,8 +49,6 @@ pub struct Snapshot<'a> {
     /// Which bookmarks have a chosen image (`thumbs`).
     pub config: &'a SpeedDialConfig,
     pub widgets: &'a WidgetSet,
-    pub top: &'a [TopSite],
-    pub privacy: Option<&'a PrivacySummary>,
     /// The custom wallpaper's stamp (its parts follow in `wall` messages), or empty for none.
     pub wall: &'a str,
     pub ack: Ack,
@@ -90,9 +78,7 @@ pub fn snapshot_json_with(s: &Snapshot<'_>, favicon_of: impl Fn(&str) -> Option<
     if s.settings.widgets {
         for widget in &s.widgets.items {
             match widget.kind {
-                WidgetKind::TopSites => s.top.iter().for_each(|site| want(&site.host)),
                 WidgetKind::Bookmarks => model::widget_links(s.store, widget.folder).iter().for_each(|link| want(&link.3)),
-                _ => {}
             }
         }
     }
@@ -208,15 +194,6 @@ fn build(s: &Snapshot<'_>, favs: &[(String, String)]) -> String {
                     o.uint("id", u64::from(widget.id));
                     o.string("kind", widget.kind.key());
                     match widget.kind {
-                        WidgetKind::TopSites => o.array("sites", |rows| {
-                            for site in s.top.iter().take(model::MAX_WIDGET_ROWS) {
-                                rows.object(|row| {
-                                    row.string("host", capped(&site.host, MAX_HOST_CHARS));
-                                    row.string("title", capped(site.title.trim(), MAX_TITLE_CHARS));
-                                    row.string("url", capped(&site.url, MAX_URL_CHARS));
-                                });
-                            }
-                        }),
                         WidgetKind::Bookmarks => {
                             o.uint("folder", widget.folder);
                             o.string("view", widget.view.key());
@@ -232,16 +209,6 @@ fn build(s: &Snapshot<'_>, favs: &[(String, String)]) -> String {
                                 }
                             });
                         }
-                        WidgetKind::Notes => o.string("text", capped(&widget.text, MAX_TEXT_INPUT)),
-                        WidgetKind::Date => {}
-                        WidgetKind::Privacy => {
-                            let stats = s.privacy.cloned().unwrap_or_default();
-                            o.uint("today", stats.today);
-                            o.uint("total", stats.total);
-                            o.string("topHost", capped(&stats.top_host, MAX_HOST_CHARS));
-                            o.uint("topCount", stats.top_count);
-                        }
-                        WidgetKind::Webpage => o.string("url", capped(&widget.url, MAX_URL_INPUT)),
                     }
                 });
             }
@@ -349,7 +316,7 @@ pub const PAGE_SETTABLE_KEYS: [&str; 13] = [
 pub enum Action {
     /// Open dial `id` here, or in a new tab (Ctrl or middle click).
     Open { id: u64, new_tab: bool },
-    /// Open an address from a widget (top site, bookmark): http(s) only.
+    /// Open an address from a widget (a bookmark): http(s) only.
     OpenUrl { url: String, new_tab: bool },
     /// Show folder `id` (a group, or a folder inside one).
     Show(u64),
@@ -375,12 +342,6 @@ pub enum Action {
     /// The bookmarks widget lists folder `folder` (0 = the root).
     WidgetFolder { id: u32, folder: u64 },
     WidgetView { id: u32, view: BookmarksView },
-    /// The webpage widget embeds `url` (empty clears it).
-    WidgetUrl { id: u32, url: String },
-    /// The sticky note's text, saved as it is edited.
-    WidgetNote { id: u32, text: String },
-    /// Save the sticky note as a note in the Notes panel.
-    WidgetSaveNote(u32),
     /// Open Settings at the start page section.
     Settings,
     /// The page wants a fresh snapshot.
@@ -454,12 +415,6 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "wmove" if only(&["id"], &["before"]) => Action::WidgetMove { id: narrow(f.id?)?, before: match f.before { Some(b) => Some(narrow(b)?), None => None } },
         "wfolder" if only(&["id", "parent"], &[]) => Action::WidgetFolder { id: narrow(f.id?)?, folder: f.parent? },
         "wview" if only(&["id", "text"], &[]) => Action::WidgetView { id: narrow(f.id?)?, view: BookmarksView::parse(f.text.as_deref()?)? },
-        "wurl" if only(&["id", "url"], &[]) => {
-            let url = f.url.as_deref()?;
-            Action::WidgetUrl { id: narrow(f.id?)?, url: if url.is_empty() { String::new() } else { web(&f.url)? } }
-        }
-        "wnote" if only(&["id", "text"], &[]) => Action::WidgetNote { id: narrow(f.id?)?, text: text(MAX_TEXT_INPUT)?.to_owned() },
-        "wsavenote" if only(&["id"], &[]) => Action::WidgetSaveNote(narrow(f.id?)?),
         "settings" if only(&[], &[]) => Action::Settings,
         "refresh" if only(&[], &[]) => Action::Refresh,
         "search" if only(&["text"], &[]) => Action::Search(text(MAX_URL_INPUT).map(str::trim).filter(|t| !t.is_empty())?.to_owned()),

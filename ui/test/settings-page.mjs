@@ -1167,7 +1167,7 @@ test('the Start page section: the snapshot parses, every row exists once and the
   const ids = logic.ROWS.filter((row) => row.section === 'startpage').map((row) => row.id);
   assert.deepEqual(ids, [
     'startGroupReopen', 'startTitles', 'startDials', 'startAddButton', 'startColumns', 'startThumbSize', 'startClock', 'startSearch', 'startWallpaper',
-    'startWallpaperDim', 'startDragReorder', 'startWidgets', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
+    'startWallpaperDim', 'startDragReorder', 'startWidgets', 'startWidgetColumns', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
   ]);
   assert.deepEqual(['startHomepage', 'startupMode', 'startupPages'].map((id) => logic.placementOf(id, 'startpage').group.key), ['startup', 'startup', 'startup']);
   for (const row of logic.ROWS.filter((r) => r.section === 'startpage' || r.id.startsWith('startup') || r.id === 'startHomepage')) {
@@ -1257,7 +1257,6 @@ test('the Start page section: each control saves its own key, and a snapshot mov
   assert.equal(value('start_columns'), 'start_columns=9');
   deliver({ ...fixture.snap, d: widgetsOn });
   for (const [i, n] of [[0, '1'], [2, '3'], [3, '4']]) pick('startWidgetColumns', i, 'start_widget_columns', n);
-  pick('startWidgetHeight', 1, 'start_widget_height', 'tall');
   assert.deepEqual(radios('startWidgetBg').map((b) => b.textContent), ['Solid', 'Tinted', 'Clear', 'Custom']);
   for (const [i, bg] of [[0, 'solid'], [2, 'transparent'], [3, 'custom']]) pick('startWidgetBg', i, 'start_widget_bg', bg);
 
@@ -1306,7 +1305,7 @@ test('the Start page section: each control saves its own key, and a snapshot mov
   assert.equal(sent.length, 0);
 
   // The rows are found by search.
-  for (const [query, id] of [['speed dial columns', 'startColumns'], ['homepage', 'startHomepage'], ['where you left off', 'startupMode'], ['sticky note', 'startWidgets'], ['widget background', 'startWidgetBg']]) {
+  for (const [query, id] of [['speed dial columns', 'startColumns'], ['homepage', 'startHomepage'], ['where you left off', 'startupMode'], ['bookmark rows', 'startWidgets'], ['list background', 'startWidgetBg']]) {
     assert.ok(logic.matchRows(query).has(id), query);
   }
   deliver(fixture.snap);
@@ -1341,7 +1340,7 @@ test('the Start page section: a row that cannot act rests (disabled, dimmed) unt
     return disabled;
   };
   const dialRows = ['startTitles', 'startThumbSize', 'startColumns', 'startAddButton', 'startGroupReopen', 'startDragReorder'];
-  const widgetRows = ['startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetDrag', 'startWidgetColor'];
+  const widgetRows = ['startWidgetColumns', 'startWidgetBg', 'startWidgetDrag', 'startWidgetColor'];
   const snap = (start, tabOptions = {}) => deliver({ ...fixture.snap, d: { ...fixture.snap.d, start: { ...fixture.snap.d.start, ...start }, tabOptions: { ...fixture.snap.d.tabOptions, ...tabOptions } } });
 
   // The Rust defaults: speed dials and widgets off, so only their two switches act.
@@ -1388,8 +1387,8 @@ test('the Start page section: a row that cannot act rests (disabled, dimmed) unt
   assert.equal(logic.placementOf('startWidgetBg', 'startpage').group.rows[0], 'startWidgets');
   assert.equal(logic.anchorGroup('startpage').key, 'startLook', 'bowser://settings/startpage lands on the start page group');
   // The labels say what the row is, without the group around it.
-  assert.equal(row('startWidgets').querySelector('.sp-label').textContent, 'Widgets', 'not "Dashboard", the Privacy dashboard’s name');
-  assert.equal(row('startWidgetBg').querySelector('.sp-label').textContent, 'Widget background');
+  assert.equal(row('startWidgets').querySelector('.sp-label').textContent, 'Bookmark rows', 'what the rows are: bookmarks, the one widget left');
+  assert.equal(row('startWidgetBg').querySelector('.sp-label').textContent, 'List background');
   deliver(fixture.snap);
 });
 

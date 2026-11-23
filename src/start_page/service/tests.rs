@@ -4,124 +4,6 @@
 use super::*;
 use crate::start_page::{GroupReopen, TitleMode};
 
-#[test]
-fn top_site_freshness_includes_visits_queued_for_the_history_writer() {
-    let paths = temp("pending-visit");
-    let settings = StartSettings { widgets: true, ..StartSettings::default() };
-    let built = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
-    assert!(built.inputs_current(Some(&paths), true));
-    productivity::add_history_entry_at(&paths.history, 100, "https://pending.example/", "Pending visit").unwrap();
-    assert!(!built.inputs_current(Some(&paths), true), "the existing page's widget input changed");
-    assert!(json(&paths, &settings, None).contains("Pending visit"));
-    productivity::flush_pending_history();
-    let _ = fs::remove_dir_all(&paths.dir);
-}
-
-#[test]
-fn privacy_counts_are_refreshed_after_the_cached_day_ends() {
-    let paths = temp("privacy-day");
-    let mut built = page_with(Some(&paths), false, &StartSettings { widgets: true, ..StartSettings::default() }, None, Ack::None, |_| None);
-    assert!(built.inputs_current(Some(&paths), true));
-    built.privacy_day = Some("2000-01-01".into());
-    assert!(!built.inputs_current(Some(&paths), true));
-    let _ = fs::remove_dir_all(&paths.dir);
-}
-
-#[test]
-fn top_site_revisits_refresh_titles_and_ranking_without_changing_the_entry_count() {
-    let paths = temp("dependency-revisit");
-    let settings = StartSettings { widgets: true, ..StartSettings::default() };
-    fs::write(&paths.history, "1\thttps://a.example/\tBefore\n2\thttps://b.example/\tBee\n").unwrap();
-    let built = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
-    assert!(built.inputs_current(Some(&paths), true));
-    productivity::add_history_entry_at(&paths.history, 3, "https://a.example/", "After").unwrap();
-    assert!(!built.inputs_current(Some(&paths), true));
-    let fresh = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
-    assert_eq!(fresh.top.as_ref().unwrap().iter().map(|site| site.title.as_str()).collect::<Vec<_>>(), ["After", "Bee"]);
-    assert!(fresh.json.contains("After"));
-    assert!(!fresh.json.contains("Before"));
-    productivity::flush_pending_history();
-    assert!(fresh.inputs_current(Some(&paths), true), "a flush with the same rows does not change the page");
-    let _ = fs::remove_dir_all(&paths.dir);
-}
-
-#[test]
-fn history_deletions_ranges_hosts_and_clear_refresh_the_visible_top_sites() {
-    let paths = temp("dependency-removals");
-    let settings = StartSettings { widgets: true, ..StartSettings::default() };
-    fs::write(&paths.history, "1\thttps://a.example/old\tOld\n2\thttps://a.example/new\tNew\n3\thttps://b.example/\tBee\n4\thttps://c.example/\tSee\n").unwrap();
-    let build = || page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
-    let before = build();
-    assert!(productivity::delete_history_entry(&paths.history, "https://c.example/").unwrap());
-    assert!(!before.inputs_current(Some(&paths), true));
-    let before = build();
-    assert!(!before.json.contains("See"));
-    assert_eq!(crate::history_retention::prune(&paths.history, crate::settings::HistoryRetention::Day, 86_402).unwrap(), 1);
-    assert!(!before.inputs_current(Some(&paths), true));
-    let before = build();
-    assert_eq!(productivity::delete_history_for_host(&paths.history, "a.example").unwrap(), 1);
-    assert!(!before.inputs_current(Some(&paths), true));
-    let before = build();
-    assert_eq!(before.top.as_ref().unwrap().iter().map(|site| site.host.as_str()).collect::<Vec<_>>(), ["b.example"]);
-    productivity::add_history_entry_at(&paths.history, 5, "https://queued.example/", "Queued").unwrap();
-    productivity::clear_history(&paths.history).unwrap();
-    assert!(!before.inputs_current(Some(&paths), true));
-    let after = build();
-    assert_eq!(after.top, Some(Vec::new()));
-    productivity::flush_pending_history();
-    assert!(productivity::read_history(&paths.history).is_empty(), "a cleared queued visit never returns");
-    let _ = fs::remove_dir_all(&paths.dir);
-}
-
-#[test]
-fn missing_unreadable_and_repaired_history_keep_the_existing_retry_policy() {
-    let paths = temp("dependency-repair");
-    let settings = StartSettings { widgets: true, ..StartSettings::default() };
-    let build = || page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
-    let empty = build();
-    assert_eq!(empty.top, Some(Vec::new()));
-    assert!(empty.inputs_current(Some(&paths), true));
-    fs::create_dir(&paths.history).unwrap();
-    assert!(!empty.inputs_current(Some(&paths), true));
-    assert!(empty.inputs_current(Some(&paths), false), "an already visible page retains its error fallback");
-    let unreadable = build();
-    assert!(!unreadable.inputs_current(Some(&paths), true));
-    fs::remove_dir(&paths.history).unwrap();
-    fs::write(&paths.history, "1\thttps://repaired.example/\tRepaired\n").unwrap();
-    assert!(!unreadable.inputs_current(Some(&paths), true));
-    let repaired = build();
-    assert!(repaired.json.contains("Repaired"));
-    assert!(repaired.inputs_current(Some(&paths), true));
-    fs::remove_file(&paths.history).unwrap();
-    assert!(!repaired.inputs_current(Some(&paths), true));
-    assert_eq!(build().top, Some(Vec::new()));
-    let _ = fs::remove_dir_all(&paths.dir);
-}
-
-#[test]
-fn another_profile_and_disabled_widgets_do_not_change_the_pages_output() {
-    let paths = temp("dependency-profile");
-    let other = temp("dependency-other-profile");
-    let settings = StartSettings { widgets: true, ..StartSettings::default() };
-    fs::write(&paths.history, "1\thttps://own.example/\tOwn profile\n").unwrap();
-    let built = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
-    productivity::add_history_entry_at(&other.history, 2, "https://other.example/", "Other profile").unwrap();
-    assert!(built.inputs_current(Some(&paths), true));
-    assert_eq!(built.json, json(&paths, &settings, None));
-    assert!(!built.inputs_current(Some(&other), true));
-    let disabled = page_with(Some(&paths), false, &StartSettings::default(), None, Ack::None, |_| None);
-    let guest = page_with(Some(&paths), true, &settings, None, Ack::None, |_| None);
-    assert!(disabled.top.is_none());
-    assert!(guest.top.is_none());
-    fs::remove_file(&paths.history).unwrap();
-    fs::create_dir(&paths.history).unwrap();
-    assert!(disabled.inputs_current(Some(&paths), true));
-    assert!(guest.inputs_current(Some(&paths), true));
-    productivity::flush_pending_history();
-    let _ = fs::remove_dir_all(&paths.dir);
-    let _ = fs::remove_dir_all(&other.dir);
-}
-
 fn temp(name: &str) -> Paths {
     let dir = std::env::temp_dir().join(format!("bowser-start-svc-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -343,60 +225,36 @@ fn a_bookmark_widget_shows_a_chosen_image_and_any_bookmark_can_have_one() {
 }
 
 #[test]
-fn widgets_are_added_rearranged_configured_and_their_data_comes_from_the_profile() {
+fn bookmark_widgets_are_added_rearranged_configured_and_list_the_folders_sites() {
     let paths = temp("widgets");
     let mut shown = None;
     let work = add_group(&paths, &mut shown, "Work");
     add_site(&paths, &mut shown, work, "A", "https://a.example/");
     let on = StartSettings { widgets: true, ..StartSettings::default() };
-    // History for top sites, statistics for the privacy widget.
-    fs::write(&paths.history, "100\thttps://a.example/1\tA one\n200\thttps://a.example/2\tA two\n300\thttps://b.example/\tB\n").unwrap();
-    let mut stats = PrivacyStats::default();
-    stats.record_blocked(&privacy_stats::today_utc(), "tracker.example");
-    stats.record_blocked(&privacy_stats::today_utc(), "tracker.example");
-    stats.record_blocked("2020-01-01", "ads.example");
-    stats.save(&paths.privacy).unwrap();
+    assert!(json(&paths, &on, shown).contains(r#""widgets":[]"#), "no widgets until one is added");
 
-    let page = json(&paths, &on, shown);
-    assert!(page.contains(r#""kind":"topsites","sites":[{"host":"a.example","title":"A two","url":"https://a.example/2"}"#), "{page}");
-    assert!(page.contains(r#""kind":"privacy","today":2,"total":3,"topHost":"tracker.example","topCount":2"#), "{page}");
-    assert!(page.contains(r#""kind":"date""#));
-
-    run(&paths, &mut shown, Action::WidgetAdd(WidgetKind::Notes));
-    run(&paths, &mut shown, Action::WidgetAdd(WidgetKind::Webpage));
+    run(&paths, &mut shown, Action::WidgetAdd(WidgetKind::Bookmarks));
     run(&paths, &mut shown, Action::WidgetAdd(WidgetKind::Bookmarks));
     let set = load(&paths).widgets;
-    let note = set.items.iter().find(|w| w.kind == WidgetKind::Notes).unwrap().id;
-    let web = set.items.iter().find(|w| w.kind == WidgetKind::Webpage).unwrap().id;
-    let marks = set.items.iter().find(|w| w.kind == WidgetKind::Bookmarks).unwrap().id;
-
-    run(&paths, &mut shown, Action::WidgetNote { id: note, text: "buy milk\nand eggs".to_owned() });
-    run(&paths, &mut shown, Action::WidgetUrl { id: web, url: "https://widget.example/clock".to_owned() });
+    let (marks, other) = (set.items[0].id, set.items[1].id);
     run(&paths, &mut shown, Action::WidgetFolder { id: marks, folder: work });
     run(&paths, &mut shown, Action::WidgetView { id: marks, view: model::BookmarksView::Tiles });
     let page = json(&paths, &on, shown);
-    assert!(page.contains(r#""kind":"notes","text":"buy milk\nand eggs""#), "{page}");
-    assert!(page.contains(r#""kind":"webpage","url":"https://widget.example/clock""#), "{page}");
     assert!(page.contains(&format!(r#""kind":"bookmarks","folder":{work},"view":"tiles","links":[{{"id":2,"title":"A","url":"https://a.example/","host":"a.example","thumb":false}}"#)), "{page}");
 
-    run(&paths, &mut shown, Action::WidgetMove { id: marks, before: Some(1) });
-    assert_eq!(load(&paths).widgets.items[0].id, marks, "rearranging widgets is saved");
-    run(&paths, &mut shown, Action::WidgetRemove(web));
-    assert!(!load(&paths).widgets.items.iter().any(|w| w.id == web));
-    assert!(apply(&paths, &mut shown, Action::WidgetUrl { id: note, url: "https://x.example/".to_owned() }).is_err(), "a note has no address");
+    run(&paths, &mut shown, Action::WidgetMove { id: other, before: Some(marks) });
+    assert_eq!(load(&paths).widgets.items[0].id, other, "rearranging widgets is saved");
+    run(&paths, &mut shown, Action::WidgetRemove(other));
+    assert!(!load(&paths).widgets.items.iter().any(|w| w.id == other));
     assert!(apply(&paths, &mut shown, Action::WidgetFolder { id: marks, folder: 9999 }).is_err(), "no such folder");
+    assert!(apply(&paths, &mut shown, Action::WidgetRemove(other)).is_err(), "already gone");
 
-    // The sticky note goes to the Notes file on request, empty notes are refused.
-    let Effect::SaveNote { title, body } = run(&paths, &mut shown, Action::WidgetSaveNote(note)) else { panic!("a save note effect") };
-    assert_eq!((title.as_str(), body.as_str()), ("buy milk", "buy milk\nand eggs"));
-    let notes = paths.dir.join("notes.txt");
-    save_note(&notes, &title, &body).unwrap();
-    let saved = productivity::read_note_list(&notes);
-    assert_eq!(saved.len(), 1);
-    assert_eq!(saved[0].title, "buy milk");
-    assert_eq!(saved[0].body, "buy milk\nand eggs");
-    run(&paths, &mut shown, Action::WidgetNote { id: note, text: "  ".to_owned() });
-    assert!(apply(&paths, &mut shown, Action::WidgetSaveNote(note)).unwrap_err().contains("empty"));
+    // A widget file from before the other kinds were removed shows only its bookmark widgets.
+    let old = format!("bowser-start-widgets 1\nw\t1\tdate\t0\tlist\t\t\nw\t2\tbookmarks\t{work}\ttiles\t\t\nw\t3\tnotes\t0\tlist\t\tbuy milk\n");
+    fs::write(paths.dir.join(model::WIDGETS_FILE), old).unwrap();
+    let page = json(&paths, &on, shown);
+    assert!(page.contains(r#""widgets":[{"id":2,"kind":"bookmarks""#), "{page}");
+    assert!(!page.contains("buy milk") && !page.contains(r#""kind":"date""#), "{page}");
     let _ = fs::remove_dir_all(&paths.dir);
 }
 
@@ -482,12 +340,10 @@ fn a_new_tab_costs_little_on_the_ui_thread_even_with_a_large_profile() {
     config.last = config.groups.first().copied();
     config.save(&paths.dir).unwrap();
     let mut widgets = WidgetSet::default();
-    for kind in [WidgetKind::Bookmarks, WidgetKind::Notes, WidgetKind::Webpage] {
-        widgets.add(kind).unwrap();
+    for _ in 0..3 {
+        widgets.add(WidgetKind::Bookmarks).unwrap();
     }
     widgets.save(&paths.dir).unwrap();
-    let history: String = (0..500).map(|i| format!("{}\thttps://site{}.example/p{i}\tPage {i}\n", 1_700_000_000 + i, i % 40)).collect();
-    fs::write(&paths.history, history).unwrap();
     let on = StartSettings { widgets: true, ..StartSettings::default() };
 
     // Where a first build spends its time (printed, not asserted).
@@ -497,10 +353,7 @@ fn a_new_tab_costs_little_on_the_ui_thread_even_with_a_large_profile() {
     let t = Instant::now();
     let view = model::dial_view(&loaded.store, &loaded.config, GroupReopen::Last, None);
     let t_view = t.elapsed();
-    let t = Instant::now();
-    let _ = productivity::read_history(&paths.history);
-    let t_history = t.elapsed();
-    println!("  load {t_load:?} (store, config, widgets), dial_view {t_view:?}, history {t_history:?}, {} dials", view.dials.len());
+    println!("  load {t_load:?} (store, config, widgets), dial_view {t_view:?}, {} dials", view.dials.len());
     let t = Instant::now();
     let first = page_with(Some(&paths), false, &on, None, Ack::None, |_| None);
     let cold = t.elapsed();

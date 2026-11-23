@@ -145,25 +145,15 @@ fn settings_and_explicit_refresh_invalidate_the_model() {
 }
 
 #[test]
-fn polling_refreshes_history_privacy_and_widget_edits() {
+fn polling_refreshes_widget_edits() {
     let mut f = Fixture::new();
     f.settings.widgets = true;
     f.due(1, true).unwrap();
     f.settle();
-    fs::write(&f.paths.history, "100\thttps://visited.example/\tVisited today\n").unwrap();
+    service::apply(&f.paths, &mut None, Action::WidgetAdd(model::WidgetKind::Bookmarks)).unwrap();
     f.now += STAMP_EVERY;
-    assert!(f.due(1, false).unwrap().contains("Visited today"));
-    f.settle();
-    let mut stats = crate::privacy_stats::PrivacyStats::default();
-    stats.record_blocked(&crate::privacy_stats::today_utc(), "tracker.example");
-    stats.save(&f.paths.privacy).unwrap();
-    f.now += STAMP_EVERY;
-    assert!(f.due(1, false).unwrap().contains(r#""today":1,"total":1"#));
-    f.settle();
-    service::apply(&f.paths, &mut None, Action::WidgetAdd(model::WidgetKind::Notes)).unwrap();
-    f.now += STAMP_EVERY;
-    assert!(f.due(1, false).unwrap().contains(r#""kind":"notes""#));
-    assert_eq!(f.builds.get(), 4);
+    assert!(f.due(1, false).unwrap().contains(r#""kind":"bookmarks""#));
+    assert_eq!(f.builds.get(), 2);
 }
 
 #[test]
