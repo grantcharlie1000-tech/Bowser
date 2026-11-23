@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "bowser"
-version = "0.0.41"
+version = "0.0.42"
 dependencies = [
  "ed25519-compact",
  "psl",
