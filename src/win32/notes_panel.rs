@@ -14,7 +14,7 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
             InvalidateRect, PAINTSTRUCT, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
@@ -392,7 +392,7 @@ fn register_class() -> Option<()> {
             lpszClassName: CLASS,
             ..Default::default()
         };
-        if unsafe { RegisterClassW(&class) } == 0 {
+        if unsafe { RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS } {
             return None;
         }
         registered.set(true);
