@@ -8,12 +8,13 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     ffi::c_void,
     fs,
 };
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
             InvalidateRect, PAINTSTRUCT, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
@@ -80,7 +81,7 @@ struct Panel {
     html_only: bool,
 }
 
-thread_local! { static HTML_ONLY: Cell<bool> = const { Cell::new(false) }; static REGISTERED: Cell<bool> = const { Cell::new(false) }; static OPEN: Cell<isize> = const { Cell::new(0) }; static GUEST_WIDTH: Cell<i32> = const { Cell::new(DEFAULT_WIDTH_DIP) }; static GUEST_DATA: RefCell<(Vec<data::Note>, Vec<data::Task>)> = const { RefCell::new((Vec::new(), Vec::new())) }; }
+thread_local! { static HTML_ONLY: Cell<bool> = const { Cell::new(false) }; static REGISTERED: Cell<bool> = const { Cell::new(false) }; static OPEN: RefCell<HashMap<isize, isize>> = RefCell::new(HashMap::new()); static GUEST_WIDTH: Cell<i32> = const { Cell::new(DEFAULT_WIDTH_DIP) }; static GUEST_DATA: RefCell<(Vec<data::Note>, Vec<data::Task>)> = const { RefCell::new((Vec::new(), Vec::new())) }; }
 
 pub(crate) fn width_px(width_dip: i32, dpi: u32, available: i32) -> i32 {
     let width_dip = width_dip.clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
@@ -97,15 +98,17 @@ pub(crate) fn sidebar_rect(viewport: RECT, width_dip: i32, dpi: u32) -> RECT {
     }
 }
 
+fn open_panel(owner: HWND) -> Option<HWND> {
+    let raw = OPEN.with(|panels| panels.borrow().get(&(owner.0 as isize)).copied())?;
+    let hwnd = HWND(raw as *mut c_void);
+    unsafe { panel(hwnd).filter(|p| p.owner == owner)?; }
+    Some(hwnd)
+}
+
 pub(crate) fn adjust_viewport(viewport: RECT, owner: HWND, dpi: u32) -> RECT {
-    let width = OPEN.with(Cell::get);
-    if width == 0 {
-        return viewport;
-    }
-    let width_dip =
-        unsafe { panel(HWND(width as *mut c_void)).map_or(DEFAULT_WIDTH_DIP, |p| p.width_dip) };
+    let Some(hwnd) = open_panel(owner) else { return viewport; };
+    let Some(width_dip) = (unsafe { panel(hwnd).map(|p| p.width_dip) }) else { return viewport; };
     let rect = sidebar_rect(viewport, width_dip, dpi);
-    let _ = owner;
     RECT {
         right: rect.left,
         ..viewport
@@ -113,11 +116,7 @@ pub(crate) fn adjust_viewport(viewport: RECT, owner: HWND, dpi: u32) -> RECT {
 }
 
 pub(crate) fn sync(owner: HWND, viewport: RECT, dpi: u32) {
-    let raw = OPEN.with(Cell::get);
-    if raw == 0 {
-        return;
-    }
-    let hwnd = HWND(raw as *mut c_void);
+    let Some(hwnd) = open_panel(owner) else { return; };
     if let Some(state) = unsafe { panel(hwnd) } {
         let mut origin = windows::Win32::Foundation::POINT {
             x: 0,
@@ -153,7 +152,7 @@ pub(crate) fn sync(owner: HWND, viewport: RECT, dpi: u32) {
 /// --- wave-1 fixes --- shows the panel without toggling it: a note picked in Quick commands while the
 /// panel is already open leaves it open (`open` closes an open panel, as its button does).
 pub(crate) fn show(owner: HWND) {
-    if OPEN.with(Cell::get) == 0 {
+    if open_panel(owner).is_none() {
         open(owner);
     }
 }
@@ -165,8 +164,7 @@ pub(crate) fn show_note(owner: HWND, id: u64) {
     if super::html_dialog::html_only(owner) {
         return;
     }
-    let Some(raw) = OPEN.with(Cell::get).checked_sub(0).filter(|raw| *raw != 0) else { return };
-    let hwnd = HWND(raw as *mut c_void);
+    let Some(hwnd) = open_panel(owner) else { return; };
     if let Some(s) = unsafe { panel(hwnd) } {
         let Some(picked) = picked_note(&s.notes, id) else { return };
         s.tab = Tab::Notes;
@@ -183,9 +181,9 @@ fn picked_note(notes: &[data::Note], id: u64) -> Option<u64> {
 }
 
 pub(crate) fn open(owner: HWND) {
-    if let Some(raw) = OPEN.with(Cell::get).checked_sub(0).filter(|raw| *raw != 0) {
+    if let Some(hwnd) = open_panel(owner) {
         unsafe {
-            let _ = DestroyWindow(HWND(raw as *mut c_void));
+            let _ = DestroyWindow(hwnd);
         }
         return;
     }
@@ -253,7 +251,7 @@ pub(crate) fn open(owner: HWND) {
     ) else {
         return;
     };
-    OPEN.with(|slot| slot.set(hwnd.0 as isize));
+    OPEN.with(|panels| { panels.borrow_mut().insert(owner.0 as isize, hwnd.0 as isize); });
     super::window::attach_html_dialog(owner, hwnd, super::html_dialog::Kind::Notes);
     sync(
         owner,
@@ -394,7 +392,7 @@ fn register_class() -> Option<()> {
             lpszClassName: CLASS,
             ..Default::default()
         };
-        if unsafe { RegisterClassW(&class) } == 0 {
+        if unsafe { RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS } {
             return None;
         }
         registered.set(true);
@@ -1096,6 +1094,26 @@ mod tests {
     }
 
     #[test]
+    fn notes_reserve_space_only_in_their_own_window() {
+        let root = std::env::temp_dir().join(format!("bowser-notes-owner-{}", std::process::id()));
+        assert!(register_class().is_some());
+        let owner = HWND(1usize as *mut c_void);
+        let other = HWND(2usize as *mut c_void);
+        let bounds = RECT { left: -32000, top: -32000, right: -31660, bottom: -31400 };
+        let mut state = guest_panel(&root, 340);
+        state.owner = owner;
+        let hwnd = create_panel_window(Box::new(state), bounds, None).expect("notes window");
+        OPEN.with(|panels| { panels.borrow_mut().insert(owner.0 as isize, hwnd.0 as isize); });
+        let viewport = RECT { left: 0, top: 63, right: 1920, bottom: 1080 };
+        assert_eq!(adjust_viewport(viewport, owner, 96).right, 1580);
+        assert_eq!(adjust_viewport(viewport, other, 96), viewport);
+        assert!(open_panel(other).is_none());
+        unsafe { DestroyWindow(hwnd).expect("destroy"); }
+        assert_eq!(adjust_viewport(viewport, owner, 96), viewport);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn what_the_native_panel_paints_is_inside_it_and_is_what_a_click_hits_at_every_dpi() {
         for dpi in [96, 120, 144, 192] {
             let width = width_px(340, dpi, 4000);
@@ -1331,10 +1349,8 @@ unsafe extern "system" fn proc(
             }
             WM_NCDESTROY => {
                 super::html_dialog::close(hwnd);
-                OPEN.with(|slot| {
-                    if slot.get() == hwnd.0 as isize {
-                        slot.set(0);
-                    }
+                OPEN.with(|panels| {
+                    panels.borrow_mut().retain(|_, raw| *raw != hwnd.0 as isize);
                 });
                 if let Some(s) = panel(hwnd) {
                     save_width(&s.profile, s.width_dip);
