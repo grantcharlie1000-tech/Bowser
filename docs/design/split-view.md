@@ -156,11 +156,11 @@ conflict). Hidden and `TrySuspend`ed when no empty side is shown.
 | Part | Spec |
 |---|---|
 | Surface | opaque `--bw-window`, rounded 9 DIP by the overlay's pane mask |
-| Column | max 520px, centred, top 12% (min 24px), `tw:gap-4` |
-| Heading | Subtitle 20/28 strong: "Choose a tab for this side" |
-| Close | `.bw-icon-btn.is-lg` top-right, 12px inset, `close` glyph, "Close this side" |
-| Search | `.bw-input` 32px with a `search` glyph: "Search tabs or enter an address" |
-| Lists | "Open tabs" and "Recently closed" `.bw-section-header`; rows `.bw-row` 32px with 16px favicon (globe fallback), title, host in `--bw-text-2`; selected row `--bw-selection` wash |
+| Column | max 480px, centred, top 14% (min 24px), 16px gaps; follows the start page drawn by the same host (November 2026 redesign) |
+| Heading | a 44px `--bw-accent-soft` badge with the pane's place glyph (`split-right`, `split-bottom-left`...), then 15/22 strong: "Choose a tab for the right side" |
+| Search | a 42px pill (`--bw-field`, `--bw-field-edge`, `--bw-sh-tip`; focus: `--bw-focus` edge) with a `search` glyph: "Search tabs or type an address" |
+| Lists | no card round them; "Open tabs" and "Recently closed" Caption headers in `--bw-text-2`; 40px rows with the favicon in a 28px `--bw-tile` square (globe or clock fallback), the title and then the host on one line; hover `--bw-hover`, selected `--bw-island`; a private tab carries a "Private" chip; a tab with no title shows its host, else "New tab" |
+| Actions | two quiet 30px pills under the list: "Cut out this space" (`window` glyph) and "Close this side" (`close`) |
 | Empty | "No other tabs in this workspace" Caption in `--bw-text-2` |
 
 Keyboard: the search field is focused when the side appears; typing filters (title and host,
