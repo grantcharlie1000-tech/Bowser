@@ -82,6 +82,7 @@ test('outbound split commands carry exactly their fields and stay in range', () 
     { v: 1, t: 'split', a: 'reopen', n: 7 },
     { v: 1, t: 'split', a: 'go', text: 'example.com' },
     { v: 1, t: 'split', a: 'close' },
+    { v: 1, t: 'split', a: 'cutout' },
     { v: 1, t: 'split', a: 'focus' },
     { v: 1, t: 'split', a: 'closeprivate' },
     { v: 1, t: 'split', a: 'over', id: 2, x: 0, y: 16384 },

@@ -776,8 +776,10 @@ export function createSidebarRenderer(root: HTMLElement): {
     const [ox, oy] = outcome === 'reorder' ? slotOffset(current) : [0, 0];
     if (ghost) {
       if (ghost.live) ghostLand = { session: ghost, node: current.node };
-      if (matchMedia('(prefers-reduced-motion: reduce)').matches) ghost.end('none');
-      else if (outcome === 'split') ghost.end('drop', home.x, home.y);
+      // A release off the sidebar is a drop: Rust opens a split there, moves the tab to another
+      // window (off the sidebar and the page), or glides the ghost home.
+      if (commit && current.phase === 'floating') ghost.end('drop', home.x, home.y);
+      else if (matchMedia('(prefers-reduced-motion: reduce)').matches) ghost.end('none');
       else ghost.end('settle', home.x + ox, home.y + oy);
     }
     // The hidden copy goes home without a transition, so its slot can be measured when the host re-lays it.

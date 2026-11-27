@@ -51,6 +51,11 @@
 
 .sv-close { flex: none; }
 
+.sv-cut {
+  flex: none;
+  gap: var(--bw-space-1);
+}
+
 .sv-search {
   position: relative;
   display: block;

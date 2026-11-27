@@ -82,6 +82,10 @@ pub struct TabExtra {
     pub hibernated: bool,
     /// A pinned tab may be hibernated this once ("Minimise instead of close").
     pub allow_pinned_sleep: bool,
+    /// "Never hibernate": the tab is never suspended or unloaded in the background. Saved with the session.
+    pub keep_awake: bool,
+    /// A blank split pane left as a hole in the window (`App::split_cut_out`). Not saved.
+    pub cut_out: bool,
     /// A name the user gave the tab; shown instead of the page title.
     pub custom_title: Option<String>,
     /// The site (registrable host) the tab was pinned on, for "restrict pinned tabs to the site".

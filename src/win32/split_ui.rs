@@ -511,7 +511,7 @@ fn wanted(owner: HWND, app: &AppRef) -> Shown {
     // One host: the first empty pane (in tree order) gets the picker; any other empty pane keeps
     // the overlay's opaque fill until this one is filled.
     for (pane, tab) in split.panes() {
-        if !App::tab_is_blank(app, tab) {
+        if !App::tab_is_blank(app, tab) || App::split_cut_out(app, tab) {
             continue;
         }
         let rect = match App::split_bounds(app) {
@@ -765,6 +765,9 @@ fn picker_command(owner: HWND, app: &AppRef, command: SplitCommand) {
         SplitCommand::Close => {
             let _ = App::close_tab(app, empty);
         }
+        SplitCommand::CutOut => {
+            let _ = App::set_split_cut_out(app, empty, true);
+        }
         SplitCommand::Focus => {
             let _ = App::focus_split_tab(app, empty);
         }
@@ -932,6 +935,12 @@ const TURN: usize = 5;
 const SWAP_CROSS: usize = 6;
 /// Close the tab of a pane of a larger layout (`CLOSE_PANE + Pane::index`).
 const CLOSE_PANE: usize = 0x10;
+/// Cut a quarter out of the half under it (`CUT_QUADRANT + Quadrant::index`).
+const CUT_QUADRANT: usize = 0x20;
+/// Cut an empty pane out of the window (`CUT_PANE + Pane::index`).
+const CUT_PANE: usize = 0x30;
+/// Give a cut-out pane its picker again (`FILL_PANE + Pane::index`).
+const FILL_PANE: usize = 0x40;
 
 /// The menu labels and glyphs that name the two sides, per orientation.
 struct SideWords {
@@ -1032,12 +1041,42 @@ fn layout_entries(view: split_view::SplitView, divider: Option<Divider>) -> Vec<
     entries
 }
 
+/// The cut-out rows of the split menu: "Cut out" each quarter of a whole half (a new empty quarter
+/// that shows the window behind Bowser), "Cut out" an empty pane, and "Fill" a cut-out pane.
+fn cut_out_entries(app: &AppRef, view: split_view::SplitView) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    for q in split_view::Quadrant::ALL {
+        if view.quadrants(view.pane_at(q)).len() == 2 {
+            entries.push(Entry::Item(Item::new(CUT_QUADRANT + q.index(), format!("Cut out {}", zone_word(q.zone())), Icon::None).glyph(zone_glyph(q.zone()))));
+        }
+    }
+    for (pane, tab) in view.panes() {
+        let zone = view.zone_of(pane);
+        if App::split_cut_out(app, tab) {
+            entries.push(Entry::Item(Item::new(FILL_PANE + pane.index(), format!("Fill {} space", zone_word(zone)), Icon::None).glyph(zone_glyph(zone))));
+        } else if App::tab_is_blank(app, tab) {
+            entries.push(Entry::Item(Item::new(CUT_PANE + pane.index(), format!("Cut out {}", zone_word(zone)), Icon::None).glyph(zone_glyph(zone))));
+        }
+    }
+    if !entries.is_empty() {
+        entries.insert(0, Entry::Separator);
+    }
+    entries
+}
+
+/// Cuts quadrant `q` out of the shown layout (`App::cut_out_split_quadrant`).
+pub(crate) fn cut_out_quadrant(owner: HWND, app: &AppRef, q: split_view::Quadrant) {
+    let _ = App::cut_out_split_quadrant(app, q, |view| super::window::split_rects_for_view(owner, view));
+    refresh_bounds(owner, app);
+}
+
 /// The split menu at `anchor` (screen). A pair: Separate views, Swap sides, Show top and bottom
 /// (or Show side by side), Close left/top tab, Close right/bottom tab. A larger layout:
 /// [`layout_entries`] for `divider`. Each pick re-checks that the same layout is still shown.
 pub(crate) fn show_menu(owner: HWND, app: &AppRef, anchor: POINT, placement: menu::Placement, kind: &str, divider: Option<Divider>) {
     let Some(split) = App::split_view(app) else { return };
-    let entries = if split.is_pair() { arrange_entries(split.orientation) } else { layout_entries(split, divider) };
+    let mut entries = if split.is_pair() { arrange_entries(split.orientation) } else { layout_entries(split, divider) };
+    entries.extend(cut_out_entries(app, split));
     menu::show(
         owner,
         anchor,
@@ -1053,6 +1092,18 @@ pub(crate) fn show_menu(owner: HWND, app: &AppRef, anchor: POINT, placement: men
             match chosen.id {
                 id if (SWAP_CROSS..SWAP_CROSS + 2).contains(&id) => {
                     let _ = App::swap_split_cross(app, id - SWAP_CROSS);
+                }
+                id if (CUT_QUADRANT..CUT_QUADRANT + 4).contains(&id) => {
+                    if let Some(q) = split_view::Quadrant::ALL.into_iter().find(|q| q.index() == id - CUT_QUADRANT) {
+                        cut_out_quadrant(owner, app, q);
+                    }
+                    return;
+                }
+                id if (CUT_PANE..CUT_PANE + 4).contains(&id) || (FILL_PANE..FILL_PANE + 4).contains(&id) => {
+                    let (base, cut) = if id >= FILL_PANE { (FILL_PANE, false) } else { (CUT_PANE, true) };
+                    if let Some(tab) = Pane::ALL.into_iter().find(|pane| pane.index() == id - base).and_then(|pane| now.tab_at(pane)) {
+                        let _ = App::set_split_cut_out(app, tab, cut);
+                    }
                 }
                 id if (CLOSE_PANE..CLOSE_PANE + 4).contains(&id) => {
                     if let Some(pane) = Pane::ALL.into_iter().find(|pane| pane.index() == id - CLOSE_PANE) {

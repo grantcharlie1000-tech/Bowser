@@ -85,7 +85,7 @@ fn session(urls: &[&str]) -> crate::session::Session {
     crate::session::Session {
         tabs: urls
             .iter()
-            .map(|url| crate::session::SessionTab { url: (*url).into(), title: String::new(), pinned: false, used: 0, group: None })
+            .map(|url| crate::session::SessionTab { url: (*url).into(), title: String::new(), pinned: false, used: 0, group: None, awake: false })
             .collect(),
         active: 0,
         split: None,

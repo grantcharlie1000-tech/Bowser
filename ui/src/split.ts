@@ -49,7 +49,13 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
   close.setAttribute('aria-label', 'Close this side');
   close.dataset.tip = 'Close this side';
   close.append(icon('close'));
-  head.append(title, close);
+  // Leaves the space empty: the window gets a hole there, so another app's window can sit in it.
+  const cut = el('button', 'bw-button is-subtle sv-cut');
+  cut.type = 'button';
+  cut.append(icon('window'), document.createTextNode('Cut out'));
+  cut.setAttribute('aria-label', 'Cut out this space to show the window behind');
+  cut.dataset.tip = 'Cut out this space to show the window behind';
+  head.append(title, cut, close);
 
   const search = el('label', 'sv-search');
   search.append(icon('search', { className: 'sv-search-icon' }));
@@ -185,6 +191,7 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
     }
   });
   close.addEventListener('click', () => sendSplit({ v: 1, t: 'split', a: 'close' }));
+  cut.addEventListener('click', () => sendSplit({ v: 1, t: 'split', a: 'cutout' }));
 
   return {
     show(msg: SplitPickMsg, first: boolean): void {

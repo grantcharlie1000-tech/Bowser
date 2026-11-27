@@ -2366,11 +2366,12 @@ impl EngineCore {
         &self,
         now: Instant,
         after: Duration,
+        keep_awake: &HashSet<TabId>,
     ) -> Option<(TabId, SuspendDocument)> {
         if self.suspend_slot_wait(now).is_some() {
             return None;
         }
-        self.hidden_suspend_order().find_map(|id| {
+        self.hidden_suspend_order().filter(|id| !keep_awake.contains(id)).find_map(|id| {
             let (due, document) = self.suspend_due(id, after)?;
             (due <= now).then_some((id, document))
         })
@@ -5372,13 +5373,13 @@ impl EngineAdapter for WebView2Engine {
         );
     }
 
-    fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
+    fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64, keep_awake: &HashSet<TabId>) -> Result<()> {
         let after = Duration::from_millis(hidden_for_ms);
         for _ in 0..SUSPEND_BUDGET {
             let candidate = self
                 .core
                 .borrow()
-                .next_suspend_candidate(Instant::now(), after);
+                .next_suspend_candidate(Instant::now(), after, keep_awake);
             let Some((id, document)) = candidate else {
                 break;
             };
@@ -5388,16 +5389,29 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
 
-    fn next_hidden_suspend(&self, after: Duration) -> Option<Instant> {
+    fn next_hidden_suspend(&self, after: Duration, keep_awake: &HashSet<TabId>) -> Option<Instant> {
         let state = self.core.try_borrow().ok()?;
         let now = Instant::now();
         let next = state
             .hidden_since
             .keys()
+            .filter(|id| !keep_awake.contains(id))
             .filter_map(|&id| state.suspend_due(id, after).map(|(due, _)| due))
             .min()?;
         let slot_available = state.suspend_slot_wait(now).unwrap_or(now);
         Some(next.max(slot_available).max(now + SUSPEND_NEXT_BATCH))
+    }
+
+    fn resume_tab(&mut self, tab_id: TabId) -> Result<()> {
+        let webview = {
+            let mut state = self.core.borrow_mut();
+            state.suspended.remove(&tab_id);
+            state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone())
+        };
+        match webview {
+            Some(webview) => unsafe { webview.cast::<ICoreWebView2_3>()?.Resume() },
+            None => Ok(()),
+        }
     }
 
     fn take_suspended_tabs(&mut self) -> Vec<TabId> {
@@ -10339,7 +10353,7 @@ mod tests {
         assert!(core.borrow().hidden_since.contains_key(&TabId(2)));
 
         // 30s suspend sweep runs:
-        let _ = engine.suspend_hidden_tabs(30_000);
+        let _ = engine.suspend_hidden_tabs(30_000, &HashSet::new());
         // Active tab is not suspended:
         assert!(!core.borrow().suspended.contains(&TabId(1)));
     }

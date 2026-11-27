@@ -505,6 +505,31 @@ pub(super) fn command(owner: HWND, command: TabDragCommand) {
     }
 }
 
+/// Whether `owner`'s ghost holds tab `id` off the strip (the last `move` said floating).
+pub(super) fn floating(owner: HWND, id: u32) -> bool {
+    GHOSTS.with(|all| all.borrow().get(&key(owner)).is_some_and(|ghost| ghost.id == id && ghost.phase == Phase::Held && ghost.floating))
+}
+
+/// The held tab went to another window (`tear_off`): the ghost fades where it is, as on a split drop.
+pub(super) fn torn_off(owner: HWND, id: u32) {
+    let mut signals = Vec::new();
+    GHOSTS.with(|all| {
+        let mut all = all.borrow_mut();
+        let Some(ghost) = all.get_mut(&key(owner)) else { return };
+        if ghost.id != id || ghost.phase != Phase::Held {
+            return;
+        }
+        if super::menu::animations_enabled() {
+            ghost.phase = Phase::Fade { start: Instant::now() };
+        } else {
+            land(ghost, &mut signals);
+        }
+    });
+    for (signal, id) in signals {
+        send(owner, signal, id);
+    }
+}
+
 fn send(owner: HWND, signal: GhostSignal, id: u32) {
     super::window::tab_ghost_post(owner, &ghost_json(signal, id));
 }

@@ -3784,6 +3784,71 @@ impl App {
         shown
     }
 
+    /// A pane cut out of the window: a blank pane of the shown layout that the person chose to
+    /// leave empty. The window has a hole there (`win32::cut_out`), so the windows behind Bowser
+    /// show through it and take its clicks. A page loaded into the pane ends the cut-out.
+    pub fn split_cut_out(app: &AppRef, id: TabId) -> bool {
+        let state = app.borrow();
+        state.split_view.is_some_and(|split| split.contains(id))
+            && state.tabs.iter().any(|tab| tab.id == id && tab.extra.cut_out && !tab.controller_created && tab.url.is_none())
+    }
+
+    /// Cuts the blank pane `id` out of the window, or fills it again (its picker shows). At least
+    /// one pane of the layout stays a page, and the focus moves off a pane that is cut out.
+    pub fn set_split_cut_out(app: &AppRef, id: TabId, cut: bool) -> bool {
+        let Some(split) = app.borrow().split_view else {
+            return false;
+        };
+        if !split.contains(id) || !Self::tab_is_blank(app, id) {
+            return false;
+        }
+        let others: Vec<TabId> = split.tabs().filter(|tab| *tab != id && !Self::split_cut_out(app, *tab)).collect();
+        if cut && others.is_empty() {
+            return false;
+        }
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.extra.cut_out = cut;
+        }
+        if cut && split.focused_tab() == id {
+            let _ = Self::focus_split_tab(app, others[0]);
+        }
+        let hwnd = app.borrow().hwnd;
+        Self::post_tab_changed_kind(hwnd, id, false, false);
+        true
+    }
+
+    /// Cuts quadrant `q` out of the window: a new blank pane takes that quarter of the half under
+    /// it (the half's page keeps the other quarter) and is cut out at once. `bounds` gives the pane
+    /// rectangles of the new layout.
+    pub fn cut_out_split_quadrant(
+        app: &AppRef,
+        q: crate::split_view::Quadrant,
+        bounds: impl FnOnce(SplitView) -> Option<SplitBounds>,
+    ) -> bool {
+        use crate::split_view::DropPlan;
+        let Some(view) = app.borrow().split_view else {
+            return false;
+        };
+        let under = view.pane_at(q);
+        if view.quadrants(under).len() != 2 {
+            return false;
+        }
+        let keep = view.focused_tab();
+        let blank = Self::new_tab_in_mode(app, crate::private::inherits_privacy(Self::tab_private(app, view.tab(under))));
+        let Some(DropPlan::Layout { view: mut next, leaving }) = crate::split_view::plan_layout_drop(view, None, blank, q.zone()) else {
+            let _ = Self::close_tab(app, blank);
+            return false;
+        };
+        if let Some(pane) = next.pane_for(keep) {
+            next.focused = pane;
+        }
+        if !Self::apply_split_drop(app, DropPlan::Layout { view: next, leaving }, bounds(next)) {
+            let _ = Self::close_tab(app, blank);
+            return false;
+        }
+        Self::set_split_cut_out(app, blank, true)
+    }
+
     /// "Separate views": both tabs stay open as normal tabs and the focused one stays shown.
     pub fn separate_split(app: &AppRef) -> bool {
         let (shown, hwnd) = {
@@ -4124,6 +4189,7 @@ impl App {
             return false;
         };
         state.tab_model.active() != id
+            && !tab.extra.keep_awake
             && !state
                 .split_view
                 .is_some_and(|split| split.pane_for(id).is_some())
@@ -4137,6 +4203,38 @@ impl App {
                 .url
                 .as_ref()
                 .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+    }
+
+    pub fn tab_keep_awake(app: &AppRef, id: TabId) -> bool {
+        app.borrow().tabs.iter().any(|tab| tab.id == id && tab.extra.keep_awake)
+    }
+
+    /// "Never hibernate": the tab is never suspended or unloaded while hidden. Turning it on wakes
+    /// a tab that is already suspended, so it keeps running in the background from now on.
+    pub fn set_tab_keep_awake(app: &AppRef, id: TabId, keep_awake: bool) {
+        let wake = {
+            let mut state = app.borrow_mut();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            tab.extra.keep_awake = keep_awake;
+            let wake = keep_awake && tab.suspended && !tab.discarded;
+            if keep_awake {
+                tab.suspended = false;
+                tab.extra.hibernated = false;
+            }
+            wake
+        };
+        if wake {
+            let _ = Self::with_engine(app, |engine| engine.resume_tab(id));
+        }
+        let hwnd = app.borrow().hwnd;
+        Self::post_tab_changed_kind(hwnd, id, false, true);
+        Self::schedule_background_maintenance(app);
+    }
+
+    fn keep_awake_tabs(state: &App) -> std::collections::HashSet<TabId> {
+        state.tabs.iter().filter(|tab| tab.extra.keep_awake).map(|tab| tab.id).collect()
     }
 
     /// Suspends one inactive tab after the same unsaved-input/media check used by automatic
@@ -5901,6 +5999,11 @@ impl App {
                         tab.extra.last_used = saved.used;
                     }
                 }
+                if saved.awake
+                    && let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id)
+                {
+                    tab.extra.keep_awake = true;
+                }
                 if saved.pinned {
                     state.tab_model.set_pinned(id, true);
                 }
@@ -6141,6 +6244,7 @@ impl App {
                 && let Some(saved_tab) = session.tabs.get_mut(saved)
             {
                 saved_tab.used = tab.extra.last_used;
+                saved_tab.awake = tab.extra.keep_awake;
             }
         }
         // --- end tab options ---
@@ -8397,8 +8501,9 @@ impl App {
             }
         }
         let suspend_after = Self::background_policy(app).suspend_after;
+        let keep_awake = Self::keep_awake_tabs(&app.borrow());
         let _ = Self::with_engine(app, |engine| {
-            engine.suspend_hidden_tabs(suspend_after.as_millis() as u64)
+            engine.suspend_hidden_tabs(suspend_after.as_millis() as u64, &keep_awake)
         });
         Self::record_suspended_tabs(app);
         let forced = app.borrow().benchmark_memory_pressure;
@@ -8709,10 +8814,11 @@ impl App {
         let timer = {
             let state = app.borrow();
             let suspend_after = Self::policy_of(&state).suspend_after;
+            let keep_awake = Self::keep_awake_tabs(&state);
             state
                 .engine
                 .as_ref()
-                .and_then(|engine| engine.next_hidden_suspend(suspend_after))
+                .and_then(|engine| engine.next_hidden_suspend(suspend_after, &keep_awake))
                 .map(|deadline| {
                     let wait = deadline
                         .saturating_duration_since(Instant::now())
@@ -8752,6 +8858,7 @@ impl App {
             .iter()
             .filter(|tab| {
                 tab.id != active
+                    && !tab.extra.keep_awake
                     && tab.controller_created
                     && tab.suspended
                     && !tab.discarded
@@ -8904,7 +9011,7 @@ impl App {
 
     fn discard_candidate(app: &AppRef, id: TabId) -> Option<DiscardCandidate> {
         let state = app.borrow();
-        let tab = state.tabs.iter().find(|tab| tab.id == id)?;
+        let tab = state.tabs.iter().find(|tab| tab.id == id && !tab.extra.keep_awake)?;
         Some(DiscardCandidate {
             active: state.tab_model.active() == id,
             pinned: state.tab_model.get(id).is_some_and(|model| model.pinned),
@@ -9751,6 +9858,24 @@ mod tests {
     }
 
     #[test]
+    fn a_never_hibernate_tab_is_neither_hibernated_nor_unloaded() {
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        App::set_tab_keep_awake(&app, hidden, true);
+        assert!(App::tab_keep_awake(&app, hidden));
+        assert!(!App::tab_hibernate_eligible(&app, hidden));
+        assert!(!App::hibernate_tab(&app, hidden));
+        App::discard_one_hidden_tab_if(&app, || true);
+        assert!(closed_tabs(&calls).is_empty());
+        assert!(!app.borrow().tabs.iter().any(|t| t.id == hidden && t.discarded));
+
+        App::set_tab_keep_awake(&app, hidden, false);
+        // Turning it on woke the tab; the engine suspends it again once it is off.
+        app.borrow_mut().tabs.iter_mut().find(|t| t.id == hidden).unwrap().suspended = true;
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", hidden.0)]);
+    }
+
+    #[test]
     fn hidden_tab_sleeps_after_the_configured_delay_without_memory_pressure() {
         let (app, hidden, _active, calls) = sleeping_app(300);
         App::discard_one_hidden_tab_if(&app, || false);
@@ -10006,6 +10131,7 @@ mod tests {
             pinned,
             used: 0,
             group: None,
+            awake: false,
         };
         app.borrow_mut().pending_restore = Some(crate::session::Session {
             tabs: vec![
@@ -11339,7 +11465,7 @@ mod tests {
         fn take_suspended_tabs(&mut self) -> Vec<TabId> {
             SUSPENSION_COMPLETIONS.with(|completed| std::mem::take(&mut *completed.borrow_mut()))
         }
-        fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> windows::core::Result<()> {
+        fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64, _keep_awake: &std::collections::HashSet<TabId>) -> windows::core::Result<()> {
             self.calls
                 .borrow_mut()
                 .push(format!("suspend:{hidden_for_ms}"));
@@ -11723,6 +11849,7 @@ mod tests {
                     pinned: true,
                     used: 202,
                     group: None,
+                    awake: false,
                 },
                 crate::session::SessionTab {
                     url: "https://example.test/first".into(),
@@ -11730,6 +11857,7 @@ mod tests {
                     pinned: false,
                     used: 101,
                     group: None,
+                    awake: false,
                 },
             ]
         );

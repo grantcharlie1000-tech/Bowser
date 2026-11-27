@@ -1274,8 +1274,10 @@ export function startTabs(strip: HTMLElement): void {
     const releaseGhost = (slotX: number): void => {
       if (!ghost) return;
       if (ghost.live) ghostLand = { session: ghost, node: d.node };
-      if (reduced()) ghost.end('none');
-      else if (outcome === 'split') ghost.end('drop', homeX, homeY);
+      // A release off the strip is a drop: Rust opens a split there, moves the tab to another window
+      // (off the strip and the page), or glides the ghost home.
+      if (commit && d.phase === 'floating') ghost.end('drop', homeX, homeY);
+      else if (reduced()) ghost.end('none');
       else ghost.end('settle', slotX, homeY);
     };
     // --- split view ---

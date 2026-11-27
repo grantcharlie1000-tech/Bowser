@@ -84,7 +84,7 @@ fn the_launch_target_is_a_command_line_address_a_benchmark_url_a_reopened_window
     app.borrow_mut().benchmark_url = Some(url::Url::parse("https://bench.example/").unwrap());
     assert!(App::launch_has_target(&app));
     app.borrow_mut().benchmark_url = None;
-    let tab = crate::session::SessionTab { url: "https://a.example/".into(), title: "A".into(), pinned: false, used: 0, group: None };
+    let tab = crate::session::SessionTab { url: "https://a.example/".into(), title: "A".into(), pinned: false, used: 0, group: None, awake: false };
     app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: vec![tab], active: 0, split: None, groups: Vec::new() });
     assert!(!App::launch_has_target(&app), "restored tabs do not decide: the startup pages open in front of them");
     assert!(App::launch_restores(&app));
@@ -103,7 +103,7 @@ fn the_launch_target_is_a_command_line_address_a_benchmark_url_a_reopened_window
 #[test]
 fn the_homepage_and_specific_pages_open_in_front_of_restored_tabs() {
     let restored = |app: &AppRef, list: &[&str], active: usize| {
-        let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0, group: None };
+        let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0, group: None, awake: false };
         app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: list.iter().map(|url| tab(url)).collect(), active, split: None, groups: Vec::new() });
         let (decided, restores) = (App::launch_has_target(app), App::launch_restores(app));
         App::restore_pending_session(app);
@@ -144,7 +144,7 @@ fn the_homepage_and_specific_pages_open_in_front_of_restored_tabs() {
 fn a_link_launch_restores_the_last_session_and_opens_the_link_beside_it() {
     let dir = std::env::temp_dir().join(format!("bowser-start-link-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0, group: None };
+    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0, group: None, awake: false };
     {
         let (mut store, _) = crate::session::SessionStore::open(&dir).unwrap();
         store.begin_run(None);

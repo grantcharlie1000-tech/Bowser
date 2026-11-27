@@ -485,6 +485,8 @@ pub enum SplitCommand {
     Go(String),
     /// Close the empty side (its tab), which ends the split.
     Close,
+    /// Cut the empty side out of the window (`App::set_split_cut_out`).
+    CutOut,
     /// The empty side was clicked: it becomes the focused side.
     Focus,
     /// The private landing's "Close all private tabs" (docs/design/private-tabs.md).
@@ -505,7 +507,7 @@ fn split_command(fields: &[(String, Value)]) -> Result<SplitCommand, ProtocolErr
         "pick" | "drop" | "end" => &["id"],
         "reopen" => &["n"],
         "go" => &["text"],
-        "close" | "focus" | "closeprivate" => &[],
+        "close" | "cutout" | "focus" | "closeprivate" => &[],
         "over" => &["id", "x", "y"],
         _ => return Err(ProtocolError::InvalidValue("a")),
     };
@@ -534,6 +536,7 @@ fn split_command(fields: &[(String, Value)]) -> Result<SplitCommand, ProtocolErr
             SplitCommand::Go(text)
         }
         "close" => SplitCommand::Close,
+        "cutout" => SplitCommand::CutOut,
         "focus" => SplitCommand::Focus,
         "closeprivate" => SplitCommand::ClosePrivate,
         _ => SplitCommand::DragOver { id: uint_field(fields, "id")?, x: coord("x")?, y: coord("y")? },

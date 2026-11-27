@@ -1978,6 +1978,7 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     }
     // --- split view ---
     super::split_ui::sync(hwnd, app);
+    super::cut_out::sync(hwnd, app);
     super::settings_page::sync(hwnd, app);
     super::history_page::sync(hwnd, app);
     super::downloads_page::sync(hwnd, app);
@@ -2600,6 +2601,30 @@ fn app_icon(instance: HINSTANCE, size: i32) -> HICON {
     }
 }
 
+/// A window opened for a tab dragged out of another window starts where the tab was dropped
+/// (`profile::WINDOW_AT_ENV`), kept inside that monitor's work area.
+fn place_dropped_window(hwnd: HWND) {
+    let Some((x, y)) = crate::profile::window_at_from_env() else { return };
+    let mut rect = RECT::default();
+    unsafe {
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return;
+        }
+    }
+    let size = (rect.right - rect.left, rect.bottom - rect.top);
+    let probe = RECT { left: x, top: y, right: x + 1, bottom: y + 1 };
+    let (x, y) = match monitor_work_area_of_rect(probe) {
+        Some(work) => (
+            x.min(work.right - size.0).max(work.left),
+            y.min(work.bottom - size.1).max(work.top),
+        ),
+        None => (x, y),
+    };
+    unsafe {
+        let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
 pub fn run(app: App) -> windows::core::Result<()> {
     // Overlaps font realization with window creation; the first paint otherwise waits for it.
     let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() };
@@ -2695,6 +2720,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             0,
             WINEVENT_OUTOFCONTEXT,
         );
+        place_dropped_window(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOW);
         app.borrow().log.record("window_visible").ok();
         if !app.borrow().edit.is_invalid() {
@@ -5723,6 +5749,11 @@ pub(super) fn split_viewport(hwnd: HWND) -> Option<RECT> {
     (viewport.right > viewport.left && viewport.bottom > viewport.top).then_some(viewport)
 }
 
+/// The chrome overlay (the layered popup over the page), if it exists.
+pub(super) fn overlay_of(hwnd: HWND) -> Option<HWND> {
+    with_chrome(hwnd, |state| state.overlay).filter(|overlay| !overlay.is_invalid())
+}
+
 /// `dip` logical pixels at the window's DPI.
 pub(super) fn split_px(hwnd: HWND, dip: i32) -> i32 {
     with_chrome(hwnd, |state| state.layout.metrics.px(dip)).unwrap_or(dip)
@@ -6479,6 +6510,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     const CLOSE_RIGHT: usize = 15;
     const PICTURE_IN_PICTURE: usize = 18;
     const ERASE_SITE_DATA: usize = 19;
+    const KEEP_AWAKE: usize = 20;
     let targets = App::selection_targets(app, id); // --- tab options ---
     let pinned = App::tab_pinned(app, id);
     let private = App::tab_private(app, id);
@@ -6493,6 +6525,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         return;
     };
     let can_hibernate = App::tab_hibernate_eligible(app, id);
+    let keep_awake = App::tab_keep_awake(app, id);
     // The tab's group (a site's or one made by hand) and whether it is folded.
     let group_collapsed = App::tab_group_collapsed(app, id);
     let muted = App::tab_muted(app, id);
@@ -6631,6 +6664,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             .disabled_if(!can_mute_site),
         ),
         Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).glyph("clock").disabled_if(!can_hibernate)),
+        Entry::Item(Item::new(KEEP_AWAKE, "Never hibernate", Icon::None).glyph("clock").checked(keep_awake)),
         Entry::Item(
             // A new window is a new process that would not be private, so a private tab stays put.
             Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None)
@@ -6784,6 +6818,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                     show_error_message("Bowser could not hibernate this tab.");
                 }
             }
+            KEEP_AWAKE => App::set_tab_keep_awake(app, id, !keep_awake),
             MOVE_WINDOW => {
                 if let Some(url) = url.as_ref() {
                     let profile = crate::profile::active();
@@ -9884,6 +9919,7 @@ fn close_html_chrome(hwnd: HWND) {
     html_panel::close(hwnd);
     // --- end panel host ---
     super::split_ui::close(hwnd); // --- split view ---
+    super::cut_out::forget(hwnd);
     super::settings_page::close(hwnd);
     super::history_page::close(hwnd);
     super::downloads_page::close(hwnd);
@@ -10977,6 +11013,15 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
         // --- end split view ---
         // --- tab ghost --- the held tab's native ghost (docs/design/tab-drag.md)
         ChromeCommand::TabDrag(command) => {
+            // Released off the strip and off the page: the tab moves to another window.
+            if let chrome_host::tab_drag::TabDragCommand::End { id, end: chrome_host::tab_drag::GhostEnd::Drop { .. } } = command
+                && super::tab_ghost::floating(hwnd, id)
+                && let Some(app) = app_of(hwnd)
+                && super::tear_off::release(hwnd, &app, id)
+            {
+                super::tab_ghost::torn_off(hwnd, id);
+                return;
+            }
             super::tab_ghost::command(hwnd, command);
             return;
         }

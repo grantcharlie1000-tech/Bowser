@@ -1778,7 +1778,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogToolbar => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Toolbar, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
-        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate))
+        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::CutOut | SplitCommand::Focus | SplitCommand::ClosePrivate))
             // --- start page --- the start page's own family (`spage`), nothing else of the panel family
             || matches!(command, Command::Panel { kind: PanelType::StartPage, .. }),
         // --- end split view ---

@@ -3,7 +3,9 @@
 Owner: split view lane. Status: design accepted, implemented on `feat/split`. Audit and
 verification results are at the end of this file. Product rules come from `PRODUCT.md`, tokens and
 components from `ui/STYLEGUIDE.md`, and pixel targets from `docs/design/reference-spec.md`
-("Split view": 8px page radius, 2px accent edge on the focused pane, 8px divider hit width).
+("Split view": 8px page radius, 8px divider hit width). The focused pane has no accent edge
+(November 2026, owner request): every pane has the same hairline, and the strip's active half and
+the toolbar split glyph show which pane has focus.
 
 ## 1. What Chrome does (research, October 2026)
 
@@ -105,8 +107,7 @@ Behaviour summary:
 |---|---|---|
 | Page gap (divider width and hit width) | 8 DIP | `--bw-space-2`, reference-spec 8px hit |
 | Page corner radius | 9 DIP, both panes, all four corners | `--bw-r-tab` (same as a single page) |
-| Active pane edge | 2 DIP accent ring inside the rounded edge | `--bw-accent` (`omnibox_focus_border`) |
-| Inactive pane edge | 1 DIP hairline | `--bw-border` (`omnibox_border`) |
+| Pane edge | 1 DIP hairline on every pane, focused or not (no focus box) | `--bw-border` (`omnibox_border`) |
 | Grip | 4 x 32 DIP pill centred in the gap; lying flat (32 x 4) in a top-and-bottom pair's gap | `--bw-r-pill`; idle text 22% (`--bw-pill-edge`), hover text 60%, drag accent |
 | Minimum pane width | 240 DIP; below 2 x 240 + 8 the split collapses to the focused pane | |
 | Minimum pane height (top and bottom) | 160 DIP (`MIN_PANE_HEIGHT_DIP`); below 2 x 160 + 8 the same collapse | |
@@ -259,6 +260,25 @@ names it: "Choose a tab for the top side" / "... bottom side".
 empty pane in tree order ("Choose a tab for the top-left pane" for a quarter); a second empty pane,
 which only arises in odd sequences, keeps the overlay's opaque fill until the first is filled.
 
+### 2.3a Cut-out panes (November 2026)
+
+A blank pane can be left as a hole in the window, so another app's window can sit in that part of
+the screen (for example a chat app in the bottom-left quarter, with two pages in the rest).
+
+- **Make one.** The split menu (toolbar button or divider) lists *Cut out top-left* (and the other
+  quarters) for each quarter of a whole half: a new blank pane takes that quarter, the half's page
+  keeps the other quarter, and the new pane is cut out at once. An empty pane (its picker showing)
+  lists *Cut out left* and so on, and the picker has a **Cut out** button. A cut-out pane lists
+  *Fill left space*, which brings its picker back.
+- **What it does.** `win32::cut_out` sets a window region on the main window and on the chrome
+  overlay that leaves the pane out, so the window behind Bowser shows through and takes the clicks
+  there. A hole at the page's left, right or bottom edge runs on to the window edge (not past a
+  vertical tab sidebar); the toolbar is never cut. The region is set only when the holes or the
+  window size change, and removed when no hole is left (the split is separated, parked or a page
+  loads into the pane).
+- **Rules.** At least one pane stays a page. The focus moves off a pane when it is cut out. A
+  cut-out pane is a blank tab like any empty side, so it is not saved with the session.
+
 ### 2.4 Entry points
 
 | Entry | Result |
@@ -304,7 +324,7 @@ Ctrl+Shift+Left/Right, or selecting either half in the strip.
   ("Choose a tab for the right side") with a combobox and listbox.
 - Focus ring: the shared `.bw-focus-ring` on the picker's buttons; rows show the selection wash.
 - Contrast: titles `--bw-text` (>= 4.5:1, guaranteed by `theme.rs`), meta `--bw-text-2`; the
-  active pane accent edge is >= 3:1 against the window colour (accent tokens are validated).
+  pane hairline is the same token as a single page's edge.
 - Keyboard: everything in section 2.4 has a keyboard path (shortcuts, the toolbar button via Tab,
   the tab menu via Shift+F10 on a focused tab, the picker fully). A top-and-bottom pair, which a drag
   creates, is also reachable from the split menu (Show top and bottom).
