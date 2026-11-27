@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, copyFile
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { minifyJs, assertParses } from "./minify.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHECK = process.argv.includes("--check");
@@ -57,6 +58,29 @@ function withSnapshot(engine) {
   return engine.slice(0, next) + fragment + engine.slice(next);
 }
 
+// The Bowser bundle is parsed and compiled in every document and frame (AddScriptToExecuteOnDocumentCreated gets no code
+// cache), so its engine text is minified: comments and indentation go, tokens and line breaks stay (build/minify.mjs, which
+// checks its own output). Kept verbatim: the fragment markers (profiling tools map lines to modules by them), the lexicon's
+// `SFW.lexicon = (function () {\n  const VERSION = "..."` lines (src/spoiler_feed.rs builtin_lexicon_version reads the
+// built-in lexicon version from exactly that text) and, outside the engine, the banner, the config placeholder and the
+// Bowser host (src/spoiler.rs and its tests look for text in it). dist/node is built from the same minified engine, so the
+// unit, corpus and red-team text suites run exactly the code Bowser ships.
+const LEXICON_HEAD = /SFW\.lexicon = \(function \(\) \{\n {2}const VERSION = "[^"\n]*";\n/;
+export function minifyEngine(engine) {
+  const parts = engine.split(/^(\/\/ ---- [^\n]* ----)$/m);
+  let out = "";
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (i % 2 === 1) { out += p + "\n"; continue; } // a marker line
+    if (!p.trim()) continue;
+    const m = LEXICON_HEAD.exec(p);
+    if (m) out += minifyJs(p.slice(0, m.index)) + "\n" + m[0] + minifyJs(p.slice(m.index + m[0].length)) + "\n";
+    else out += minifyJs(p) + "\n";
+  }
+  if (!LEXICON_HEAD.test(out)) throw new Error("minify: the lexicon VERSION line was not kept");
+  return out;
+}
+
 // Every emitted script is pure ASCII: each non-ASCII UTF-16 code unit becomes a \uXXXX escape.
 // Chrome rejects content scripts containing noncharacters (e.g. raw U+FFFF), and Bowser passes the
 // bundle through a wide-string API. Escapes are semantics-preserving in string literals, template
@@ -85,9 +109,10 @@ const BANNER = `/* Spoiler Firewall for GTA VI ${VERSION} — unofficial, not af
 
 function outputs() {
   const engine = engineSource();
+  const engineMin = minifyEngine(engine);
   const files = new Map();
 
-  files.set("dist/node/engine.cjs", BANNER + "module.exports = " + closure(engine, "return SFW;") + ";\n");
+  files.set("dist/node/engine.cjs", BANNER + "module.exports = " + closure(engineMin, "return SFW;") + ";\n");
 
   // Chrome: isolated-world content script = engine + chrome host, one file.
   const chromeHost = read("hosts/chrome/content.js");
@@ -121,10 +146,9 @@ function outputs() {
 
   // Bowser: one IIFE. Native code replaces the placeholder with a JSON config object.
   const bowserHost = read("hosts/bowser/bowser-host.js");
-  files.set(
-    "dist/bowser/spoiler-firewall.js",
-    BANNER + closure(engine, `// ---- hosts/bowser/bowser-host.js ----\n${bowserHost}`) + ";\n",
-  );
+  const bowser = BANNER + closure(engineMin, `// ---- hosts/bowser/bowser-host.js ----\n${bowserHost}`) + ";\n";
+  assertParses(bowser, "dist/bowser/spoiler-firewall.js");
+  files.set("dist/bowser/spoiler-firewall.js", bowser);
   return files;
 }
 

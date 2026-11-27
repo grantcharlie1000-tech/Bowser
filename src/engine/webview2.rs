@@ -791,6 +791,100 @@ fn renderer_memory(infos: &ICoreWebView2ProcessExtendedInfoCollection, sources: 
     best.into_iter().collect()
 }
 
+/// Benchmark log only (`events.renderer_pid_event`, opt-in): one row per renderer frame (process
+/// id, and the frame's scheme and host as the token) under `label`, from the environment's extended
+/// process info, which is delivered asynchronously. Process kinds other than renderers are logged
+/// once each as `kind<N>`. Shows which controller or navigation each renderer serves.
+fn log_renderer_pids(
+    environment: &ICoreWebView2Environment,
+    log: Option<&super::RendererPidEventCallback>,
+    label: &'static str,
+    tab_id: TabId,
+) {
+    let Some(log) = log.cloned() else { return };
+    let Ok(environment13) = environment.cast::<ICoreWebView2Environment13>() else {
+        log(label, tab_id, 0, "no_environment13");
+        return;
+    };
+    let handler = webview2_com::GetProcessExtendedInfosCompletedHandler::create(Box::new(move |status, infos| {
+        let Some(infos) = infos.filter(|_| status.is_ok()) else {
+            log(label, tab_id, 0, "no_infos");
+            return Ok(());
+        };
+        let mut count = 0u32;
+        if unsafe { infos.Count(&mut count) }.is_err() {
+            return Ok(());
+        }
+        for index in 0..count.min(512) {
+            let Ok(info) = (unsafe { infos.GetValueAtIndex(index) }) else { continue };
+            let Ok(process) = (unsafe { info.ProcessInfo() }) else { continue };
+            let mut kind = COREWEBVIEW2_PROCESS_KIND::default();
+            let mut pid = 0i32;
+            if unsafe { process.Kind(&mut kind) }.is_err() || unsafe { process.ProcessId(&mut pid) }.is_err() || pid <= 0 {
+                continue;
+            }
+            if kind != COREWEBVIEW2_PROCESS_KIND_RENDERER {
+                log(label, tab_id, pid as u64, &format!("kind{}", kind.0));
+                continue;
+            }
+            let mut any = false;
+            if let Ok(frames) = unsafe { info.AssociatedFrameInfos() }
+                && let Ok(iterator) = unsafe { frames.GetIterator() }
+            {
+                loop {
+                    let mut has = BOOL::default();
+                    if unsafe { iterator.HasCurrent(&mut has) }.is_err() || !has.as_bool() {
+                        break;
+                    }
+                    if let Ok(frame) = unsafe { iterator.GetCurrent() } {
+                        let mut source = PWSTR::null();
+                        if unsafe { frame.Source(&mut source) }.is_ok() {
+                            let source = CoTaskMemPWSTR::from(source).to_string();
+                            log(label, tab_id, pid as u64, &frame_token(&source));
+                            any = true;
+                        }
+                    }
+                    let mut more = BOOL::default();
+                    if unsafe { iterator.MoveNext(&mut more) }.is_err() || !more.as_bool() {
+                        break;
+                    }
+                }
+            }
+            if !any {
+                log(label, tab_id, pid as u64, "renderer_no_frames");
+            }
+        }
+        Ok(())
+    }));
+    let _ = unsafe { environment13.GetProcessExtendedInfos(&handler) };
+}
+
+/// A log-safe name for a frame address: scheme and host only, no path, query or fragment.
+fn frame_token(source: &str) -> String {
+    let token = match Url::parse(source) {
+        Ok(url) => format!("{}_{}", url.scheme(), url.host_str().unwrap_or("")),
+        Err(_) => source.chars().take(16).collect(),
+    };
+    token.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' }).collect()
+}
+
+/// `log_renderer_pids` now and again `delay_ms` later (benchmark log only).
+fn log_renderer_pids_twice(
+    environment: &ICoreWebView2Environment,
+    log: Option<&super::RendererPidEventCallback>,
+    now: &'static str,
+    later: &'static str,
+    tab_id: TabId,
+    delay_ms: u32,
+) {
+    if log.is_none() {
+        return;
+    }
+    log_renderer_pids(environment, log, now, tab_id);
+    let (environment, log) = (environment.clone(), log.cloned());
+    hold_for(delay_ms, Box::new(move || log_renderer_pids(&environment, log.as_ref(), later, tab_id)));
+}
+
 /// The working set of process `pid` in bytes, when the process can be queried.
 fn process_working_set(pid: u32) -> Option<u64> {
     use windows::Win32::{
@@ -856,6 +950,9 @@ struct TabBlockState {
     doc_filter: RefCell<Option<(String, crate::blocker::Level, bool, u32)>>,
     /// `Fetch.requestPaused` is subscribed, so `Fetch.enable` will not pause requests nobody answers.
     fetch_listener: Cell<bool>,
+    /// `Fetch.enable` has been sent to this tab (with patterns, or empty after a YouTube page), so
+    /// an empty pattern list must still be sent to switch it off. Never sent: nothing to switch off.
+    fetch_enabled: Cell<bool>,
     player_responses: Rc<player_response::Responses>,
     /// `Network.enable` has been accepted, so later refreshes only update `setBlockedURLs`.
     network_enabled: Cell<bool>,
@@ -1029,6 +1126,16 @@ fn sync_request_filters(
     }
     *block.request_filters.borrow_mut() = Some((generation, wanted));
     Ok(added)
+}
+
+/// The blocker host of a queued navigation, spelled as NavigationStarting spells it (no trailing
+/// dot). Only http(s) destinations are judged by the blocker there, so only they have one.
+fn pending_navigation_host(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    Some(host.strip_suffix('.').unwrap_or(host).to_owned())
 }
 
 fn blocker_detail(block: &TabBlockState, name: &'static str, count: u64) {
@@ -1655,8 +1762,18 @@ fn refresh_blocked_urls(
         if page_host.is_none() && (responses.is_empty() || response_policy_changed) {
             block.player_responses.cancel_all();
         }
-        call_devtools(webview, "Fetch.enable", &fetch_enable_params(responses));
+        if fetch_enable_needed(responses.is_empty(), block.fetch_enabled.get()) {
+            block.fetch_enabled.set(true);
+            call_devtools(webview, "Fetch.enable", &fetch_enable_params(responses));
+        }
     }
+}
+
+/// Whether a refresh must send `Fetch.enable`. An empty pattern list pauses nothing, so it is only
+/// worth a DevTools round trip to switch off patterns an earlier page installed; a tab that never
+/// paused anything skips the domain altogether.
+fn fetch_enable_needed(responses_empty: bool, fetch_enabled: bool) -> bool {
+    !responses_empty || fetch_enabled
 }
 
 /// The cosmetic script for a new document: install `css`, or remove the style when the page has
@@ -1825,7 +1942,7 @@ unsafe fn install_spoiler_script(
         }
         let credentials = ocr.credentials();
         let Some(script) =
-            crate::spoiler::script_for(&crate::spoiler::current(), private, credentials.as_ref())
+            crate::spoiler::script_wide_for(&crate::spoiler::current(), private, credentials.as_ref())
         else {
             // Protection is off: nothing to register, so a tab in the protective state is released.
             resume_after_protection(webview, slot);
@@ -1869,18 +1986,19 @@ unsafe fn protect_tab(webview: &ICoreWebView2, slot: &SpoilerScript, log: Option
 unsafe fn register_spoiler_script(
     webview: &ICoreWebView2,
     slot: &Rc<SpoilerScript>,
-    script: Rc<String>,
+    script: Rc<Vec<u16>>,
     epoch: u64,
     attempt: u8,
     log: Option<Rc<dyn Fn(&'static str)>>,
 ) -> Result<()> {
     unsafe {
-        let text = CoTaskMemPWSTR::from(script.as_str());
+        // `script` is the NUL-terminated UTF-16 text, built once per process (`script_wide_for`).
+        let text = PCWSTR(script.as_ptr());
         let done_slot = slot.clone();
         let remover = webview.clone();
         let retry_script = script.clone();
         webview.AddScriptToExecuteOnDocumentCreated(
-            *text.as_ref().as_pcwstr(),
+            text,
             &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
                 move |status, id| {
                     let registered = status.is_ok() && !id.is_empty();
@@ -1941,11 +2059,16 @@ unsafe extern "system" fn title_hold_fired(_hwnd: HWND, _message: u32, timer: us
 /// Runs `job` after the title hold, on this thread's message loop. When no timer can be had the job
 /// runs at once: a title is never lost.
 fn hold_title(job: Box<dyn FnOnce()>) {
+    hold_for(crate::spoiler::TITLE_HOLD_MS, job);
+}
+
+/// `hold_title` for any delay.
+fn hold_for(delay_ms: u32, job: Box<dyn FnOnce()>) {
     let timer = unsafe {
         windows::Win32::UI::WindowsAndMessaging::SetTimer(
             None,
             0,
-            crate::spoiler::TITLE_HOLD_MS,
+            delay_ms,
             Some(title_hold_fired),
         )
     };
@@ -2761,6 +2884,11 @@ impl WebView2Engine {
                     log("webview_configure_started");
                 }
                 let cleanup = controller.clone();
+                let pending_host = core
+                    .borrow()
+                    .pending
+                    .get(&tab_id)
+                    .and_then(pending_navigation_host);
                 let configured = unsafe {
                     configure_controller(
                         &controller_environment,
@@ -2780,6 +2908,7 @@ impl WebView2Engine {
                         permissions.clone(),
                         visible,
                         private,
+                        pending_host.clone(),
                     )
                 };
                 if let Some(log) = completion_events.policy_event.as_ref() {
@@ -2855,6 +2984,15 @@ impl WebView2Engine {
                 if let Some(log) = completion_events.policy_event.as_ref() {
                     log("controller_ready");
                 }
+                log_renderer_pids(
+                    &controller_environment,
+                    completion_events.renderer_pid_event.as_ref(),
+                    "renderer_pid_controller_ready",
+                    tab_id,
+                );
+                if let Some(log) = completion_events.renderer_pid_event.as_ref() {
+                    log("controller_ready_tab", tab_id, u64::from(tab_id.0), "controller");
+                }
                 // Extensions live in the browsing profile only: a private tab's webview is in the
                 // private profile and must never be taken for it.
                 let first_webview = core
@@ -2878,7 +3016,6 @@ impl WebView2Engine {
                 {
                     failed(error);
                 }
-                Self::start_waiting_prewarm(&core);
                 let current = {
                     let state = core.borrow();
                     state.controller_request_current(tab_id, generation)
@@ -2905,6 +3042,10 @@ impl WebView2Engine {
                         failed(tab_id, generation, error.code().0);
                     }
                 }
+                // After the first navigation: starting the next waiting controller is another
+                // browser-process request that would otherwise sit between this tab's setup and
+                // its Navigate.
+                Self::start_waiting_prewarm(&core);
                 Ok(())
             },
         ));
@@ -6047,6 +6188,8 @@ unsafe fn configure_controller(
     permissions: Option<PermissionsHandle>,
     visible: bool,
     private: bool,
+    // Host of the http(s) navigation that follows this configuration in the same callback turn.
+    pending_host: Option<String>,
 ) -> Result<WebView2Tab> {
     unsafe {
         let detail = |name, count| {
@@ -6428,6 +6571,8 @@ unsafe fn configure_controller(
         let content_block_tab = block_tab.clone();
         let content_blocked = events.blocked_changed.clone();
         let content_blocker = blocker.clone();
+        let content_environment = environment.clone();
+        let content_pid_log = events.renderer_pid_event.clone();
         webview.add_ContentLoading(
             &ContentLoadingEventHandler::create(Box::new(move |sender, args| {
                 if let Some(sender) = sender.as_ref() {
@@ -6453,6 +6598,14 @@ unsafe fn configure_controller(
                         if let Some(log) = content_log.as_ref() {
                             log("content_loading");
                         }
+                        log_renderer_pids_twice(
+                            &content_environment,
+                            content_pid_log.as_ref(),
+                            "renderer_pid_content_loading",
+                            "renderer_pid_content_loading_later",
+                            tab_id,
+                            1000,
+                        );
                     }
                 }
                 Ok(())
@@ -6492,6 +6645,10 @@ unsafe fn configure_controller(
         let completed_page_loaded = events.page_loaded.clone();
         let completed_failed = events.navigation_failed.clone();
         let completed_document = document_gate.clone();
+        // A tab hidden while it was still loading has no completed document, so the maintenance
+        // timer found nothing to schedule for it. Its completion is the moment it becomes
+        // suspendable: wake maintenance (queued, coalesced, handled outside this callback).
+        let completed_maintenance = events.background_maintenance.clone();
         let (completed_block_tab, completed_blocker) = (block_tab.clone(), blocker.clone());
         webview.add_NavigationCompleted(
             &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
@@ -6500,6 +6657,11 @@ unsafe fn configure_controller(
                     let mut id = 0; let mut success = BOOL::default();
                     if args.NavigationId(&mut id).is_ok() && args.IsSuccess(&mut success).is_ok() {
                         completed_document.borrow_mut().completed(id, success.as_bool());
+                        if success.as_bool()
+                            && let Some(wake) = completed_maintenance.as_ref()
+                        {
+                            wake();
+                        }
                     } else { completed_document.borrow_mut().unreadable_event(); }
                     let mut navigation_id = 0;
                     if args.NavigationId(&mut navigation_id).is_ok() {
@@ -7230,7 +7392,10 @@ unsafe fn configure_controller(
             // Installed now, with the tab's still-empty top host, so every listed host is blocked
             // at the network layer before the first navigation commits.
             detail("configure_blocker_refresh_started", 0);
-            refresh_blocked_urls(&webview, &block_tab, &blocker, private, None);
+            // With a navigation pending, the destination host is passed, which is exactly what its
+            // NavigationStarting would push (and then finds already sent), so the list is built and
+            // queued once, not twice. No pending navigation: the empty host, as before.
+            refresh_blocked_urls(&webview, &block_tab, &blocker, private, pending_host.as_deref());
             detail("configure_blocker_refresh_finished", 0);
             // A later build that changes them registers them again (`refresh_blocked_urls`).
             let (request_filters, filter_generation) = {
@@ -8766,6 +8931,24 @@ mod tests {
         );
         assert!(!blocked_urls_params(&["*://doubleclick.net/*".to_owned()]).contains("\"urls\""));
         assert_eq!(fetch_enable_params(&[]), r#"{"patterns":[]}"#);
+    }
+
+    #[test]
+    fn fetch_is_enabled_only_to_pause_responses_or_to_switch_them_off() {
+        assert!(!fetch_enable_needed(true, false), "a tab that never paused anything skips the domain");
+        assert!(fetch_enable_needed(false, false), "a YouTube page pauses its player responses");
+        assert!(fetch_enable_needed(false, true));
+        assert!(fetch_enable_needed(true, true), "leaving YouTube sends the empty list that stops pausing");
+    }
+
+    #[test]
+    fn a_queued_navigation_names_the_host_its_navigation_starting_would() {
+        let host = |text: &str| pending_navigation_host(&Url::parse(text).unwrap());
+        assert_eq!(host("https://example.com/a?b").as_deref(), Some("example.com"));
+        assert_eq!(host("http://www.example.com./").as_deref(), Some("www.example.com"));
+        assert_eq!(host("about:blank"), None);
+        assert_eq!(host("file:///C:/a.html"), None);
+        assert_eq!(host("bowser://start/"), None);
     }
 
     #[test]

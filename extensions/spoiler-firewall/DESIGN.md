@@ -330,9 +330,11 @@ in the value or its parent / grandparent text) still takes the full path, so "GT
   The Chrome host implements it with Tesseract.js in an offscreen document (hosts/chrome/offscreen.js, vendor/).
 
 ### 5.4 Other guards
-- Shadow DOM: `attachShadow` is wrapped (MAIN world) to mark hosts with `data-sfw-sr`; the isolated
-  world reaches closed roots via `chrome.dom.openOrClosedShadowRoot`; each root gets the page sheet
-  and its own observer. Declarative shadow roots are found on insertion.
+- Shadow DOM: `attachShadow` is wrapped to remember every root and report it synchronously. For the Chrome host (MAIN-world
+  hook, isolated-world runtime) it also marks hosts with `data-sfw-sr`, and the isolated world reaches closed roots via
+  `chrome.dom.openOrClosedShadowRoot`; Bowser and the test host share the hook's world and read its map instead (no mark,
+  §13). Each root gets its own observer, and the page sheet when a mark is first written in it (§13). Declarative shadow
+  roots are found on insertion.
 - Iframes: `all_frames`, `match_about_blank`, `match_origin_as_fallback`; each frame runs its own
   engine. The top frame shares page context with child frames through `postMessage` (best effort).
 - Title guard: if `document.title` classifies ≥ mention, the title becomes "Spoiler-protected page"
@@ -501,3 +503,92 @@ protection off.
 Still open: a container whose own text really changes every frame (text pop-ups appearing and disappearing inside one
 small block) is re-read in full each time; `extract()` walks every descendant of a deep unit. An incremental extract
 would be the next step if that shows up on real sites.
+
+## 12. App-page cost (2026-11-20, Speedometer 3.1)
+
+Speedometer 3.1 runs each suite in an iframe, so the engine judged every DOM change of TodoMVC, the editors and the charts.
+With protection on, Bowser scored 6.53 against 15.13 off. Profiles (CPU profile of the injected bundle in Chromium,
+headless, interleaved off / on runs) showed where the time went. Every change below is exact: the same units are judged
+on the same text, with the same verdicts, at the same moments (no allowlist, no skipped frame, nothing deferred past the
+MutationObserver callback or rAF). The corpus, red-team and e2e suites check that.
+
+- **Leftover-work covers (`coverLeft`).** `S.shield.hasEditor()` is a querySelector over the element's subtree. Past
+  `MARK_MAX` every mark is redirected to `<html>`; a page with any text field answers "editor" there, so `<html>` was never
+  marked and was searched again for every remaining node (one TodoMVC step: 110k whole-document searches, 700M nodes).
+  The answers are now kept for one `coverLeft()` call (nothing it does can create or disable a text field), and once
+  `<html>` has been tried past `MARK_MAX` the remaining marks of that call are skipped as the no-ops they are. Nodes no
+  longer in the document are not marked (re-rendering lists left thousands of them). The "Checking" covers' themes are read
+  before any cover is written, so they no longer force a style recalculation each.
+- **Verdict memo.** For a text of at most one classifier window (no time budget applies), `classify.text` is a pure
+  function of the text, the context fields it reads and the lexicon version; `decide()` remembers those results per
+  document (bounded by characters). The canary and the health check still call the classifier itself.
+- **Classifier.** The fuzzy-name scan visits token starts only (once per view, not once per fuzzy term) and tests the
+  token-end condition a hit needs before the edit distance. 40-45 % less classifier time on Speedometer's texts; identical
+  results on the corpora (test/unit/minify.test.mjs, test/unit/lexicon-snapshot.test.mjs, test/corpus).
+- **Unit resolution and extraction.** `resolveUnit()` no longer runs `useGenericItem()`'s bounded text walk when the block
+  is the generic item itself (the unit is the same either way: every list row and table row). `extract()` tests the five
+  text attributes with one selector match first (only after the start-up canary has seen the captured `matches()` answer
+  correctly), skips the editability test for nested blocks a shallow unit skips anyway, and tests the generic media
+  selector by local name.
+- **SPA navigation.** A URL change re-judged the whole document, inside the page's own `pushState`. A unit's verdict depends
+  on the URL only through the adapter, its thread rules, the page heat and the live state; the whole-document rescan now
+  runs when one of those changed (content changes arrive as records anyway).
+- **Shadow hosts.** The `data-sfw-sr` mark the hook sets a microtask after `attachShadow` re-queued its host for a second
+  judgement; when the root is already observed (the same-world hook reported it synchronously), that record is skipped.
+- **Big insertions.** Only nodes still in the document count towards `BIG_INSERT` (a list rebuilt a hundred times in one
+  task is not a big insertion).
+- **Per-document start.** The Bowser bundle's engine text is minified by `build/minify.mjs` (comments and indentation;
+  every token and every line break between tokens kept, checked by re-tokenizing; markers native code reads are kept
+  verbatim): 522 KB -> 401 KB. The snapshot revive builds terms from per-shape templates, and boot no longer runs the
+  health check right after the canary in the same synchronous start.
+
+Measured (Playwright Chromium headless on the development laptop, Speedometer 3.1 pinned revision, 5 iterations, 3
+interleaved runs per variant): off 13.8, before 6.9, after 8.9 (the engine's share of measured time went from +99 % to
++53 %). The Complex-DOM TodoMVC suites improved most (Svelte 181 -> 69 ms, Preact 210 -> 76 ms, ES6-Webpack 222 -> 102 ms).
+
+Still open: shadow-DOM apps (Web Components, Lit) and the Complex-DOM TodoMVC pages. `textLen()` counts light-DOM text
+only, so ladder and deep-unit caps do not bound containers whose content lives in shadow roots, and their whole app is
+re-extracted per ladder level; and the parser-inserted complex DOM (750 tree rows, 770 SVG icons) leaves a backlog that
+the budgeted slices are still working through when the first measured step starts. Both would need a change to what a
+unit reads (shadow-aware caps) or to the rAF safety pass; they are left for a design decision.
+
+## 13. Boot floor (2026-11-21)
+
+What every document pays before there is anything to protect. No benchmark was run for this round: each change is argued
+from the code below and checked by the correctness suites (unit, corpus, e2e, red-team reveal / zero-flash / hostile).
+
+- **Shadow-host mark only across worlds.** `SFW.hooks.install(win, { sameWorld: true })` (Bowser, test host) no longer
+  queues the `data-sfw-sr` attribute after every `attachShadow` (a microtask, an attribute mutation, a record for every
+  observer of the page and a style invalidation per shadow host). The Chrome MAIN-world bundle installs without the option
+  and keeps the mark. The same-world readers of the mark read the hook's map instead: `discoverShadowAndTouch` notes a host
+  whose root is in the map (it noted hosts carrying the mark, which the hook set on exactly those hosts), and
+  `S.shield.deepAll` walks into a closed root of a built-in element found in the map. The record for the mark was a no-op
+  for a same-world runtime (the root is observed synchronously from inside `attachShadow`).
+- **Descendant rules only once a mark needs them.** The rules whose rightmost compound is universal
+  (`[data-sfw~="shield"] *` with its `::before` / `::after` and `:host()` forms, `[data-sfw-defer] *` and its pseudo-elements,
+  `html[data-sfw-page~="shield"] > body *`) moved, unchanged, from `PAGE_CSS` to `S.styles.DESC`. They fill a third
+  constructable sheet, adopted between the page sheet and the quarantine sheet, that stays empty until `ensureMark(kind, el)`
+  runs: synchronously before the first write of a mark of that kind (`S.shield.apply / reblur / repair` before
+  `data-sfw="shield"`, `applyPage` before `data-sfw-page`, `markEl` before `data-sfw-defer`), and as soon as the engine meets
+  a `data-sfw` that a page wrote itself (expansion walk, attribute records: `extract()` skips what is under such an element,
+  so its rules matter for protection). Once in, they stay for the life of the sheet. No style is computed between
+  `ensureMark` and the write. Cascade: an automated comparison of every tie (same property, both `!important`, equal
+  specificity, same box, different values) between the round-1 sheet and the new layout finds the same winner for all of
+  them; the one tie whose order would have flipped (the fallback label of a shield nested under a shielded shadow host)
+  is restated after the `:host()` rule in `DESC.shield`.
+- **Page sheet in shadow roots at mark time.** No rule of `PAGE_CSS` matches without one of our marks or overlays, so a
+  shadow root gets the page and descendant sheets from `ensureMark` (the mark's own tree scope, and for a shield the
+  element's own root, where its `:host()` rules apply and its overlay is appended) instead of when it is first observed.
+  Sites with a quarantine sheet still adopt all sheets into every root on sight (the quarantine hides media from the
+  start). The check runs at every mark, so a root whose page replaced `adoptedStyleSheets` after ours were adopted gets
+  them back before its next mark (before, it never did). When one of our sheets is missing from a scope, all of them are
+  appended again in order.
+- **Overlay sheet on first use.** `SHIELD_CSS` (9 KB) is parsed when the first overlay is built, with the constructor and
+  `replaceSync` captured at load, instead of by every document at start.
+- **Event guards and play().** The capture listeners for hover / press / click skip the ancestor search while no `data-sfw`
+  mark can exist in the document (`shieldMarks`, set by `ensureMark`). The same-world `play()` hook walks the ancestors only
+  while a `data-sfw-hold` that `S.shield` wrote is still in place (`SFW.hooks.noteHold`; the Set methods are captured and
+  probed at load, and any failure makes it walk every time again). A hold attribute a page writes itself is honoured only
+  while one of ours exists; it never guarded anything the engine decided.
+- **Left alone.** The start-up canary, the classifier warm-up, the per-root observer and the rAF pass: moving their cost
+  into the first batch would change when the first content can be judged.

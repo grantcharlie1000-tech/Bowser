@@ -1,0 +1,22 @@
+[
+  ["https://en.wikipedia.org/wiki/Computer", "Computer"],
+  ["https://developer.mozilla.org/en-US/docs/Web/JavaScript", "JavaScript"],
+  ["https://github.com/rust-lang/rust", "rust-lang/rust"],
+  ["https://www.bbc.co.uk/news", "BBC News"],
+  ["https://www.theguardian.com/uk", "The Guardian"],
+  ["https://news.ycombinator.com/", "Hacker News"],
+  ["https://stackoverflow.com/questions/927358/how-do-i-undo-the-most-recent-local-commits-in-git", "most recent local commits"],
+  ["https://www.blender.org/", "Blender"],
+  ["https://www.reddit.com/r/programming/", "programming"],
+  ["https://www.mozilla.org/en-GB/firefox/", "Firefox"],
+  ["https://www.apple.com/uk/", "Apple"],
+  ["https://learn.microsoft.com/en-us/windows/apps/", "Windows apps"],
+  ["https://docs.python.org/3/", "Python"],
+  ["https://www.openstreetmap.org/", "OpenStreetMap"],
+  ["https://www.bbc.co.uk/sport", "BBC Sport"],
+  ["https://en.wikipedia.org/wiki/History_of_the_Internet", "History of the Internet"],
+  ["https://www.nasa.gov/", "NASA"],
+  ["https://www.w3.org/", "W3C"],
+  ["https://www.gnu.org/software/bash/", "Bash"],
+  ["https://en.wikisource.org/wiki/Pride_and_Prejudice", "Pride and Prejudice"]
+]

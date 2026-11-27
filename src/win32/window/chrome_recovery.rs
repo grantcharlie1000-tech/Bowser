@@ -346,7 +346,7 @@ pub(super) fn document_command(hwnd: HWND, index: usize, command: ChromeCommand)
                 if !edit.is_invalid() { unsafe { let _ = ShowWindow(edit, SW_HIDE); } }
                 perf_event(hwnd, "html_toolbar_ready");
                 if let Some(app) = app_of(hwnd) { let _ = app.borrow().log.record("html_chrome_shown"); }
-                request_popup_prewarm(hwnd);
+                defer_popup_prewarm(hwnd);
             }
             sync_html_host_bounds(hwnd);
             if stale { resend_live(hwnd, index); }

@@ -357,6 +357,72 @@ pub fn script_for(
         .then(|| build_script_with_feed(&active_bundle(), settings, private, ocr, feed.as_deref()))
 }
 
+/// [`BUNDLE`] as UTF-16 around its one placeholder, built once: every tab's script is these two
+/// halves with that tab's small config between them, not a fresh copy and re-encoding of ~0.5 MB.
+struct WideBundle {
+    prefix: Vec<u16>,
+    /// `None` when the bundle has no single placeholder: it is then injected unmodified (see
+    /// [`build_script_with_feed`]) and `prefix` holds all of it.
+    suffix: Option<Vec<u16>>,
+}
+
+fn wide_bundle() -> &'static WideBundle {
+    static WIDE: std::sync::OnceLock<WideBundle> = std::sync::OnceLock::new();
+    WIDE.get_or_init(|| {
+        if BUNDLE.matches(PLACEHOLDER).count() != 1 {
+            return WideBundle { prefix: BUNDLE.encode_utf16().collect(), suffix: None };
+        }
+        let at = BUNDLE.find(PLACEHOLDER).unwrap_or(0);
+        WideBundle {
+            prefix: BUNDLE[..at].encode_utf16().collect(),
+            suffix: Some(BUNDLE[at + PLACEHOLDER.len()..].encode_utf16().collect()),
+        }
+    })
+}
+
+/// [`script_for`] as a NUL-terminated UTF-16 buffer, ready for WebView2. Identical text to
+/// `script_for(..)` encoded with `encode_utf16`, but the bundle part is encoded once per process.
+pub fn script_wide_for(
+    settings: &SpoilerSettings,
+    private: bool,
+    ocr: Option<&OcrCredentials>,
+) -> Option<Vec<u16>> {
+    if !settings.enabled {
+        return None;
+    }
+    let feed = crate::spoiler_feed::current_lexicon_json();
+    #[cfg(debug_assertions)]
+    if std::env::var_os("BOWSER_SPOILER_BUNDLE").is_some() {
+        let mut wide: Vec<u16> =
+            build_script_with_feed(&active_bundle(), settings, private, ocr, feed.as_deref()).encode_utf16().collect();
+        wide.push(0);
+        return Some(wide);
+    }
+    Some(wide_script(wide_bundle(), bundle_version(BUNDLE), settings, private, ocr, feed.as_deref()))
+}
+
+fn wide_script(
+    bundle: &WideBundle,
+    version: &str,
+    settings: &SpoilerSettings,
+    private: bool,
+    ocr: Option<&OcrCredentials>,
+    feed: Option<&str>,
+) -> Vec<u16> {
+    let Some(suffix) = bundle.suffix.as_ref() else {
+        let mut wide = bundle.prefix.clone();
+        wide.push(0);
+        return wide;
+    };
+    let config = config_json_with_feed(settings, version, private, ocr, feed);
+    let mut wide = Vec::with_capacity(bundle.prefix.len() + suffix.len() + config.len() + 1);
+    wide.extend_from_slice(&bundle.prefix);
+    wide.extend(config.encode_utf16());
+    wide.extend_from_slice(suffix);
+    wide.push(0);
+    wide
+}
+
 // ---- the live setting, shared by every tab ----
 
 static CURRENT: Mutex<Option<SpoilerSettings>> = Mutex::new(None);
@@ -858,6 +924,22 @@ mod tests {
             assert_eq!(script.len(), BUNDLE.len() - PLACEHOLDER.len() + json.len());
             assert!(!script.contains('\u{2028}') || BUNDLE.contains('\u{2028}'));
         }
+    }
+
+    #[test]
+    fn the_cached_wide_script_is_the_same_text_as_the_string_script() {
+        let off = SpoilerSettings { enabled: false, ..SpoilerSettings::default() };
+        assert!(script_wide_for(&off, false, None).is_none());
+        for private in [false, true] {
+            let text = script_for(&SpoilerSettings::default(), private, None).unwrap();
+            let wide = script_wide_for(&SpoilerSettings::default(), private, None).unwrap();
+            assert_eq!(wide.last(), Some(&0), "NUL-terminated");
+            assert_eq!(&wide[..wide.len() - 1], text.encode_utf16().collect::<Vec<u16>>().as_slice());
+        }
+        // A bundle without exactly one placeholder is injected unmodified.
+        let plain = WideBundle { prefix: "no placeholder \u{1F600}".encode_utf16().collect(), suffix: None };
+        let wide = wide_script(&plain, "unknown", &SpoilerSettings::default(), false, None, None);
+        assert_eq!(&wide[..wide.len() - 1], "no placeholder \u{1F600}".encode_utf16().collect::<Vec<u16>>().as_slice());
     }
 
     #[test]

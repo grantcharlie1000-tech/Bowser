@@ -29,6 +29,7 @@ SFW.runtime = (function () {
   const CRUDE_WORDS = ["gta", "grand theft", "grandtheft", "vice city", "vicecity", "leonida", "rockstar"]; // crude hotness test, no RegExp
   const RAF_WATCH_MS = 2000; // rAF safety pass keeps running this long after load / a big insertion (DESIGN §5.1 step 3)
   const BIG_INSERT = 1500; // a callback that delivers more added nodes than this only covers them (O(1)) and continues in slices
+  const CMEMO_CHARS = 262144; // classifyMemo(): characters of remembered text per document at most
   // An unverifiable embedded frame (sandboxed without scripts: the engine cannot run inside it) is covered in Strict on
   // cold pages too once it is large enough to show one line of text; only tracking-pixel sized frames stay clear.
   const FRAME_MIN_W = 48;
@@ -46,7 +47,11 @@ SFW.runtime = (function () {
   const SKIP = mkSet(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SFW-SHIELD", "HEAD", "TITLE", "META", "LINK"]);
   const MEDIA_TAGS = mkSet(["IMG", "VIDEO", "PICTURE", "CANVAS", "OBJECT", "EMBED"]);
   const LISTISH = mkSet(["LI", "TR", "DD", "DT", "BLOCKQUOTE", "FIGURE"]);
+  // extract(): local names the generic media selector matches by type (its "svg image" part is the localName "image" test)
+  const GENERIC_MEDIA_LN = mkSet(["img", "picture", "video", "canvas", "object", "embed"]);
+  const DESC_ORDER = ["shield", "defer", "page"]; // S.styles.DESC groups, in sheet order (ensureMark)
   const ATTR_TEXT = ["alt", "title", "aria-label", "aria-description", "placeholder"];
+  const ATTR_TEXT_SEL = "[alt],[title],[aria-label],[aria-description],[placeholder]"; // extract(): any of ATTR_TEXT present
   // inert() (handleRecords): elements whose arrival or removal can change what a unit says even when empty
   const INERT_DENY = mkSet(["a", "area", "iframe", "frame", "frameset", "input", "textarea", "select", "option", "button", "image", "svg", "math", "slot", "template", "source", "track", "audio", "br", "wbr", "html", "head", "body", "title", "meta", "link", "base"]);
   const INERT_ATTR_DENY = ["alt", "title", "aria-label", "aria-description", "placeholder", "href", "src", "srcset", "data-src", "poster", "srcdoc", "sandbox", "value", "data-sfw", "data-sfw-sr", "data-sfw-hold", "data-sfw-defer"];
@@ -110,6 +115,11 @@ SFW.runtime = (function () {
   const aJoin = uncurry(ArrP, "join");
   const aFilter = uncurry(ArrP, "filter");
   const aSort = uncurry(ArrP, "sort");
+  // classifyMemo(): its Map is used through the methods captured here, so a page cannot answer for the classifier later
+  const MAP_CTOR = typeof G.Map === "function" ? G.Map : null;
+  const mGet = uncurry(MAP_CTOR && MAP_CTOR.prototype, "get");
+  const mSet = uncurry(MAP_CTOR && MAP_CTOR.prototype, "set");
+  const mClear = uncurry(MAP_CTOR && MAP_CTOR.prototype, "clear");
   const nGetCS = typeof G.getComputedStyle === "function" ? G.getComputedStyle.bind(G) : null;
   const MO_CTOR = typeof G.MutationObserver === "function" ? G.MutationObserver : null;
   const MO_OBSERVE = uncurry(MO_CTOR && MO_CTOR.prototype, "observe");
@@ -387,6 +397,11 @@ SFW.runtime = (function () {
     let booted = false;
     let stopped = false;
     let pageSheet = null, shieldSheet = null, quarSheet = null;
+    // descSheet: S.styles.DESC groups, empty until ensureMark() enables one (see there); adopted next to pageSheet everywhere
+    let descSheet = null;
+    let descOn = { shield: false, defer: false, page: false };
+    let shieldMarks = false; // a data-sfw mark (ours, or one a page wrote) may exist in this document: the event guards look
+    const lazyRoots = new Set(); // shadow roots the page sheet went into at mark time without being observed (for teardown)
     let sheetsOk = false;
     let opaqueRule = false;
     let pageHot = 0;
@@ -429,6 +444,12 @@ SFW.runtime = (function () {
     try { inertSeen = typeof WeakSet === "function" ? new WeakSet() : null; } catch (e) { inertSeen = null; }
     let noteFresh = true;
     const marks = new Set(); // elements carrying data-sfw-defer (region cover for work that did not fit in the budget)
+    let edMemo = null; // hasEd(): S.shield.hasEditor answers kept for one coverLeft() call
+    let markFull = false; // markEl(): past MARK_MAX, <html> was tried in this coverLeft() call; further marks are no-ops
+    let cmemo = null, cmemoChars = 0, cmemoVer = null; // classifyMemo()
+    let attrPre = false; // extract(): the ATTR_TEXT_SEL pre-check is trusted (runCanary)
+    // extract(): adapter.media of the generic adapter (GENERIC_MEDIA only), tested by local name instead of matches()
+    const GENERIC_MEDIA_SEL = S.adapters.GENERIC_MEDIA && S.adapters.GENERIC_MEDIA.length === 7 && S.adapters.GENERIC_MEDIA.join(",") === "img,picture,video,canvas,object,embed,svg image" ? "img,picture,video,canvas,object,embed,svg image" : null;
     const longJobs = new Map(); // unit -> windowed classification in progress
     let overflow = false;
     let titleDirty = true;
@@ -533,7 +554,7 @@ SFW.runtime = (function () {
       launchWindow = Math.abs(DATE_NOW() - LAUNCH) <= 56 * 864e5;
       makeSheets();
       S.shield.configure({
-        sheet: shieldSheet, rootOf, reduced: cfg.reducedEffects,
+        sheet: overlaySheet, ensure: ensureMark, rootOf, reduced: cfg.reducedEffects,
         onReveal: onShieldReveal, onReblur: onShieldReblur,
       });
       applyReducedEffects();
@@ -563,7 +584,9 @@ SFW.runtime = (function () {
         scanSubtree(doc.documentElement, true);
         findExistingRoots(doc.documentElement);
       }
-      runWork(now(), BUDGET_MS);
+      // runCanary() checked the classifier earlier in this same synchronous boot (no page script can have run since), so
+      // this first slice skips the health check that would repeat it; healthN stays 0 and the next slices all check.
+      runWork(now(), BUDGET_MS, true);
       if (moMode === "poll") startPoll();
       armSwapWatch();
       schedule();
@@ -576,6 +599,13 @@ SFW.runtime = (function () {
         const r = S.classify.text("GTA 6 ending spoiler leaked", { hot: 0, source: "text" });
         detectionBroken = !(r && (r.level === "spoiler" || r.level === "mention"));
       } catch (e) { detectionBroken = true; noteError(e); }
+      // extract()'s attribute pre-check relies on the captured Element.prototype.matches: only when it answers a probe right
+      attrPre = false;
+      try {
+        const p = nCreateEl(doc, "i"), q = nCreateEl(doc, "i");
+        nSetAttr(p, "aria-label", "x");
+        attrPre = nMatches(p, ATTR_TEXT_SEL) === true && nMatches(q, ATTR_TEXT_SEL) === false;
+      } catch (e) { attrPre = false; }
       let ok = false;
       try {
         if (MO_CTOR) {
@@ -691,7 +721,9 @@ SFW.runtime = (function () {
       rootList.clear();
       doc = nd;
       booted = false;
-      pageSheet = shieldSheet = quarSheet = null;
+      pageSheet = shieldSheet = quarSheet = descSheet = null;
+      lazyRoots.clear();
+      shieldMarks = false;
       sheetsOk = false;
       lastHref = loc.href;
       titleOriginal = null;
@@ -710,8 +742,9 @@ SFW.runtime = (function () {
       if (!SHEET_CTOR || !SHEET_REPLACE || !DOC_SHEETS.doc || !DOC_SHEETS.doc.set || !DOC_SHEETS.doc.get) throw new Error("no constructable stylesheets");
       pageSheet = new SHEET_CTOR();
       SHEET_REPLACE(pageSheet, S.styles.PAGE_CSS);
-      shieldSheet = new SHEET_CTOR();
-      SHEET_REPLACE(shieldSheet, S.styles.SHIELD_CSS);
+      descSheet = new SHEET_CTOR(); // empty until ensureMark()
+      descOn = { shield: false, defer: false, page: false };
+      shieldSheet = null; // the overlays' sheet is parsed when the first overlay is built (overlaySheet)
       if (adapter.highRisk) {
         quarSheet = new SHEET_CTOR();
         SHEET_REPLACE(quarSheet, quarantineCss());
@@ -735,13 +768,61 @@ SFW.runtime = (function () {
       try { return nMatches(m, adapter.avatars); } catch (e) { return false; }
     }
 
+    // Our sheets, in this order: page, descendant rules, quarantine (the order their rules had when the descendant rules were
+    // part of the page sheet, see S.styles.DESC). When one of them is missing, all are appended again in that order.
     function adoptInto(target) {
       const cur = getSheets(target);
       if (!cur) return;
-      const add = [];
-      if (pageSheet && aIndexOf(cur, pageSheet) < 0) add[add.length] = pageSheet;
-      if (quarSheet && aIndexOf(cur, quarSheet) < 0) add[add.length] = quarSheet;
-      if (add.length) setSheets(target, aConcat([], cur, add));
+      const ours = [];
+      if (pageSheet) ours[ours.length] = pageSheet;
+      if (descSheet) ours[ours.length] = descSheet;
+      if (quarSheet) ours[ours.length] = quarSheet;
+      let missing = false;
+      for (let i = 0; i < ours.length; i++) if (aIndexOf(cur, ours[i]) < 0) { missing = true; break; }
+      if (missing) setSheets(target, aConcat([], aFilter(cur, (x) => x !== pageSheet && x !== descSheet && x !== quarSheet), ours));
+    }
+
+    // The overlays' sheet (S.styles.SHIELD_CSS, adopted by every overlay's closed root): parsed when the first overlay is
+    // built, not by every document at start. Constructor and replaceSync are the ones captured at load.
+    function overlaySheet() {
+      if (!shieldSheet && SHEET_CTOR && SHEET_REPLACE) {
+        const sh = new SHEET_CTOR();
+        SHEET_REPLACE(sh, S.styles.SHIELD_CSS);
+        shieldSheet = sh;
+      }
+      return shieldSheet;
+    }
+
+    // Called synchronously before a mark is written (S.shield: "shield" before data-sfw="shield", "page" before data-sfw-page;
+    // markEl: "defer" before data-sfw-defer), and for a data-sfw that a page wrote itself as soon as the engine meets it
+    // (expand, attribute records). Makes everything that mark relies on active first, wherever it applies:
+    //  * the descendant rules of that kind (S.styles.DESC: their rightmost compound is universal, so they stay out of the
+    //    sheets while nothing can match them; once in, they stay for the life of the sheet);
+    //  * the page sheet in the mark's own tree scope and, for a shield, in the element's own shadow root (its :host() rules;
+    //    the overlay is appended there). Shadow roots get the page sheet here instead of when they are first seen (unless the
+    //    site has a quarantine sheet, which must hold from the start): none of its rules matches anything without a mark.
+    // No style is computed between this call and the write, so nothing is ever painted with a mark but without its rules.
+    function ensureMark(kind, el) {
+      if (kind === "shield") shieldMarks = true;
+      if (!pageSheet) return;
+      if (descSheet && descOn[kind] === false) {
+        const on = { shield: descOn.shield, defer: descOn.defer, page: descOn.page };
+        on[kind] = true;
+        let css = "";
+        for (let i = 0; i < DESC_ORDER.length; i++) if (on[DESC_ORDER[i]]) css += S.styles.DESC[DESC_ORDER[i]];
+        try { SHEET_REPLACE(descSheet, css); descOn = on; } catch (e) { noteError(e); }
+      }
+      if (!el || el.nodeType !== 1) return;
+      try {
+        const r = nGetRoot(el);
+        if (r === doc) adoptInto(doc);
+        else if (r && r.nodeType === 11) adoptRoot(r);
+        if (kind === "shield") { const own = rootOf(el); if (own) adoptRoot(own); }
+      } catch (e) { noteError(e); }
+    }
+    function adoptRoot(r) {
+      adoptInto(r);
+      if (!seenRoots.has(r)) lazyRoots.add(r);
     }
 
     function applyReducedEffects() {
@@ -774,8 +855,8 @@ SFW.runtime = (function () {
       restoreTitle();
       try { if (mo) MO_DISCONNECT(mo); } catch (e) { /* ignore */ }
       for (const f of cleanups.splice(0)) { try { f(); } catch (e) { /* ignore */ } }
-      for (const t of [doc].concat(Array.from(rootList))) {
-        try { const cur = getSheets(t); if (cur) setSheets(t, aFilter(cur, (s) => s !== pageSheet && s !== quarSheet)); } catch (e) { /* ignore */ }
+      for (const t of [doc].concat(Array.from(rootList), Array.from(lazyRoots))) {
+        try { const cur = getSheets(t); if (cur) setSheets(t, aFilter(cur, (x) => x !== pageSheet && x !== descSheet && x !== quarSheet)); } catch (e) { /* ignore */ }
       }
       clearMarks();
       booted = false;
@@ -948,7 +1029,8 @@ SFW.runtime = (function () {
       seenRoots.add(r);
       rootList.add(r);
       stats.roots++;
-      try { adoptInto(r); } catch (e) { /* ignore */ }
+      // the quarantine hides media from the start; the page sheet alone matches nothing until a mark (ensureMark adopts it then)
+      if (quarSheet) { try { adoptInto(r); } catch (e) { /* ignore */ } }
       if (mo) MO_OBSERVE(mo, r, ctrl.opts);
       // content may already exist (declarative shadow DOM, late discovery)
       scanSubtree(r);
@@ -1016,10 +1098,33 @@ SFW.runtime = (function () {
 
     // Region covers (data-sfw-defer, see PAGE_CSS): O(1) per region, independent of how many nodes it holds.
     function markEl(el) {
-      if (!el || el.nodeType !== 1 || marks.has(el)) return;
-      if (marks.size >= MARK_MAX) el = doc.documentElement || el;
-      if (!el || marks.has(el) || S.shield.hasEditor(el)) return;
+      if (markFull || !el || el.nodeType !== 1 || marks.has(el)) return;
+      if (marks.size >= MARK_MAX) {
+        const root = doc.documentElement;
+        if (root) {
+          el = root;
+          // Past MARK_MAX every call lands here, on <html>; marks only grow during coverLeft() and hasEd() keeps its answer
+          // for the call, so after this one attempt (marked, or left alone because it holds a text field) every further
+          // markEl() of this coverLeft() is a no-op: say so, and the loops stop walking the remaining nodes.
+          if (edMemo) markFull = true;
+        }
+      }
+      if (!el || marks.has(el) || hasEd(el)) return;
+      ensureMark("defer", el);
       try { nSetAttr(el, "data-sfw-defer", ""); marks.add(el); } catch (e) { /* ignore */ }
+    }
+
+    // S.shield.hasEditor() is a querySelector over the element's whole subtree. coverLeft() asks it about many elements and
+    // often about the same one again: a chunk target and then markEl() on it, a unit and then its mark, and above all every
+    // mark past MARK_MAX, which is redirected to <html> (a page with any text field answers "editor" there, so <html> is never
+    // marked and was searched again for each remaining node: 100k whole-document searches in one Speedometer step). Within one
+    // coverLeft() call nothing can change an answer (no page script runs; it only sets data-sfw-defer and applies pending
+    // covers, neither of which creates, removes or disables a text field), so the answers are kept for that call only.
+    function hasEd(el) {
+      if (!edMemo) return S.shield.hasEditor(el);
+      let v = edMemo.get(el);
+      if (v === undefined) { v = S.shield.hasEditor(el); edMemo.set(el, v); }
+      return v;
     }
 
     function underMark(el) {
@@ -1039,6 +1144,12 @@ SFW.runtime = (function () {
 
     // The budget ran out: everything not decided yet must stay hidden. Called once at the end of a slice.
     function coverLeft() {
+      edMemo = new Map();
+      markFull = false;
+      try { return coverLeftRun(); } finally { edMemo = null; markFull = false; }
+    }
+
+    function coverLeftRun() {
       let hit = false;
       // 1. subtrees not expanded yet (new content only; rescans of content that is already visible are not hidden)
       if (expandCur && expandCur.cover) { markEl(elOf(expandCur.root)); hit = true; }
@@ -1048,13 +1159,17 @@ SFW.runtime = (function () {
         const rem = ch.nodes.length - ch.i;
         if (rem <= 0) continue;
         hit = true;
-        if (rem >= GROUP_MIN && ch.target && ch.target.nodeType === 1 && !S.shield.hasEditor(ch.target)) { markEl(ch.target); continue; }
-        for (let k = ch.i; k < ch.nodes.length; k++) markEl(elOf(ch.nodes[k]));
+        if (markFull) break; // (hit is already set: every further markEl() is a no-op, see markEl)
+        if (rem >= GROUP_MIN && ch.target && ch.target.nodeType === 1 && !hasEd(ch.target)) { markEl(ch.target); continue; }
+        // A node that is no longer in the document is not painted, and putting it back is a new record that is covered or
+        // decided in that callback, before paint (expandRun skips it the same way). Re-rendering pages (a list rebuilt on
+        // every click) leave thousands of such nodes here, and each one cost an editor search.
+        for (let k = ch.i; k < ch.nodes.length && !markFull; k++) { const nd = ch.nodes[k]; if (nd && nd.isConnected) markEl(elOf(nd)); }
       }
       // 2. touched nodes (attributes / character data changed) not resolved yet
       if (queue.size) {
         if (queue.size > MARK_MAX) markEl(doc.documentElement);
-        else for (const n of queue) { if (!structOnly.has(n)) markEl(elOf(n)); } // a parent touched for its children: they are covered by step 1
+        else for (const n of queue) { if (markFull) break; if (!structOnly.has(n) && n.isConnected) markEl(elOf(n)); } // a parent touched for its children: they are covered by step 1
         hit = true;
       }
       // 3. resolved units waiting for a decision: a few get their own cover, the rest are covered by region
@@ -1062,6 +1177,7 @@ SFW.runtime = (function () {
         hit = true;
         let k = 0;
         const rest = [];
+        const pend = [];
         for (const u of unitQ) {
           if (!u.isConnected || pendingSet.has(u) || underMark(u)) continue; // already hidden by a region marker: no per-slice DOM churn
           // A page root is classified on its own text only (its blocks are units of their own), yet a cover over it hides the
@@ -1074,19 +1190,32 @@ SFW.runtime = (function () {
           // judged clear before and re-checked only because children came or went (those are covered as new content of
           // their own): it stays visible. App shells re-render constantly; covering them blinked whole regions.
           if (!freshUnits.has(u)) { const prev = U.get(u); if (prev && prev.dec === "clear") continue; }
-          if (S.shield.hasEditor(u)) continue;
-          if (k < PENDING_MAX) { k++; try { applyPlan({ u, dec: "pending", fp: "p", cfp: "p", hot: 0, budget: true }, [{ el: u, needPos: true }]); } catch (e) { markEl(u); } }
+          if (hasEd(u)) continue;
+          if (k < PENDING_MAX) { k++; aPush(pend, u); }
           else aPush(rest, u);
         }
+        // The covers' theme (light / dark, from the computed background behind each unit) is read for all of them before the
+        // first one is written: read after another cover's writes, every getComputedStyle forced a fresh style recalculation
+        // (a few ms each on a large page). Nothing these covers write changes a background colour, so the themes are the same.
+        warmThemes(pend);
+        for (let i = 0; i < pend.length; i++) {
+          const u = pend[i];
+          try { applyPlan({ u, dec: "pending", fp: "p", cfp: "p", hot: 0, budget: true }, [{ el: u, needPos: true }]); } catch (e) { markEl(u); }
+        }
         if (rest.length && rest.length <= UNIT_MARK_MAX) {
-          for (let i = 0; i < rest.length; i++) markEl(rest[i]); // one attribute per unit: cheap, layout untouched, no overlay
+          for (let i = 0; i < rest.length && !markFull; i++) markEl(rest[i]); // one attribute per unit: cheap, layout untouched, no overlay
         } else if (rest.length) {
           const per = new Map();
           for (let i = 0; i < rest.length; i++) { const p = parentOf(rest[i]); if (p) per.set(p, (per.get(p) || 0) + 1); }
-          for (let i = 0; i < rest.length; i++) { const p = parentOf(rest[i]); if (p && p.nodeType === 1 && per.get(p) >= GROUP_MIN) markEl(p); else markEl(rest[i]); }
+          for (let i = 0; i < rest.length && !markFull; i++) { const p = parentOf(rest[i]); if (p && p.nodeType === 1 && per.get(p) >= GROUP_MIN) markEl(p); else markEl(rest[i]); }
         }
       }
       return hit;
+    }
+
+    // Read the cover theme of these elements now (S.shield.theme keeps it for THEME_TTL), before any cover is written.
+    function warmThemes(els) {
+      for (let i = 0; i < els.length; i++) { try { S.shield.theme(els[i]); } catch (e) { /* the cover reads it itself */ } }
     }
 
     // Resolve a touched node to the unit that must be (re)classified, with the page / thread context hits that go with it.
@@ -1168,12 +1297,20 @@ SFW.runtime = (function () {
     }
 
     function discoverShadowAndTouch(el) {
-      const r = (S.hooks && S.hooks.rootOf(el)) || el.shadowRoot || (el.hasAttributes() && nHasAttr(el, "data-sfw-sr") ? rootOf(el) : null);
+      const hooked = S.hooks ? S.hooks.rootOf(el) : null;
+      const r = hooked || el.shadowRoot || (el.hasAttributes() && nHasAttr(el, "data-sfw-sr") ? rootOf(el) : null);
       if (r) observeRoot(r, el);
       const tag = el.tagName;
       if (MEDIA_TAGS.has(tag) || tag === "IFRAME") { noteNode(el); return; }
-      if (!el.hasAttributes()) return;
-      if (nHasAttr(el, "alt") || nHasAttr(el, "title") || nHasAttr(el, "aria-label") || nHasAttr(el, "placeholder") || nHasAttr(el, "poster") || nHasAttr(el, "data-sfw-sr")) noteNode(el);
+      if (!el.hasAttributes()) {
+        // a host whose root came through the attachShadow hook: data-sfw-sr marks it for a runtime in another world
+        // (Chrome); a same-world hook does not mark hosts, and its map says the same thing
+        if (hooked) noteNode(el);
+        return;
+      }
+      if (nHasAttr(el, "data-sfw")) ensureMark("shield", el); // ours, or one a page wrote: its rules must hold either way
+      if (hooked) noteNode(el);
+      else if (nHasAttr(el, "alt") || nHasAttr(el, "title") || nHasAttr(el, "aria-label") || nHasAttr(el, "placeholder") || nHasAttr(el, "poster") || nHasAttr(el, "data-sfw-sr")) noteNode(el);
       else if (el.localName === "a" && nHasAttr(el, "href")) noteNode(el);
       else if (sliceOcr && nHasAttr(el, "style") && BG_URL.test(nGetAttr(el, "style"))) noteNode(el);
     }
@@ -1220,8 +1357,16 @@ SFW.runtime = (function () {
         if (inertSeen) inertSeen.delete(t); // anything recorded on an element ends its inert status for good
         if (r.type === "attributes") {
           const a = r.attributeName;
-          if (a === "data-sfw") { repairSet.add(t); continue; }
-          if (a === "data-sfw-sr") { discoverRoot(t); touch(t); continue; }
+          if (a === "data-sfw") { ensureMark("shield", t); repairSet.add(t); continue; }
+          if (a === "data-sfw-sr") {
+            // The hook marks every shadow host a microtask after attachShadow. When this engine already observes that root
+            // (the same-world hook reported it synchronously, or it was found while walking), observeRoot() scanned it and
+            // touched the host then, and every later change inside it arrives as a record of its own: the mark itself
+            // changes nothing a unit says (extract() never reads it), so the host is not queued a second time.
+            const known = rootOf(t);
+            if (known && seenRoots.has(known)) continue;
+            discoverRoot(t); touch(t); continue;
+          }
           if (a !== "href" && a !== "src" && a !== "srcset" && a !== "poster" && a !== "srcdoc" && a !== "sandbox" && counterTick(r.oldValue, nGetAttr(t, a), "")) { stats.counterSkips = (stats.counterSkips | 0) + 1; continue; }
           touch(t);
         } else if (r.type === "characterData") {
@@ -1240,7 +1385,9 @@ SFW.runtime = (function () {
             if (rem[k].localName === "sfw-shield") repairSet.add(t.nodeType === 11 ? t.host : t);
           }
           const add = r.addedNodes;
-          addedBurst += add.length;
+          // only nodes still in the document count towards a big insertion: a list rebuilt a hundred times in one task leaves
+          // thousands of added-then-removed nodes in the records, which are no work at all (expandRun skips them)
+          for (let k = 0; k < add.length; k++) if (add[k].isConnected) addedBurst++;
           if (add.length) pushList(t.nodeType === 11 && t.host ? t.host : t, add, true);
           if (t.nodeType === 9) titleDirty = true;
           if (t.nodeType === 1) { touchStruct(t); if (t.nodeName === "TITLE" || t === doc.head) titleDirty = true; }
@@ -1404,9 +1551,9 @@ SFW.runtime = (function () {
 
     // ---- processing --------------------------------------------------------------------------------------------
     // One budgeted slice of work. Returns nothing; leaves whatever did not fit covered and scheduled.
-    function runWork(t0, budget) {
+    function runWork(t0, budget, canaryJustRan) {
       if (!booted) return;
-      healthCheck(t0);
+      if (canaryJustRan !== true) healthCheck(t0);
       sliceDeadline = t0 + budget;
       if (sheetsOk) { try { adoptInto(doc); } catch (e) { /* ignore */ } } // a page that replaced document.adoptedStyleSheets must not drop our sheets
       doRepairs();
@@ -1609,7 +1756,9 @@ SFW.runtime = (function () {
       }
       if (adapter.generic) {
         const g = closestFlat(b, adapter.generic);
-        if (g && useGenericItem(g)) return g;
+        // (g === b: the block is the item itself, so the unit is b either way; useGenericItem() is a bounded text walk of
+        // the whole item, and lists / tables hit this case for every row)
+        if (g && g !== b && useGenericItem(g)) return g;
       }
       return b;
     }
@@ -1734,7 +1883,9 @@ SFW.runtime = (function () {
       let media = false;
       let frames = null; // embedded frames the engine cannot look into (sandboxed without allow-scripts)
       let sig = "";
-      const mediaSel = adapter.media || "";
+      // The generic media selector (img, picture, video, canvas, object, embed, svg image) is the same test as a local name
+      // in GENERIC_MEDIA_LN or "image" (checked next to it below), so on the generic adapter it is not matched again per element.
+      const mediaSel = adapter.media && adapter.media !== GENERIC_MEDIA_SEL ? adapter.media : "";
       const noMediaSel = adapter.mediaIgnore || ""; // profile pictures / emoji images: present in every post, not a picture post
       const ownSel = adapter.own || ""; // nested adapter items are units of their own (never part of a container's text)
       const prev = U.get(u);
@@ -1746,12 +1897,16 @@ SFW.runtime = (function () {
         const n = rootNode.nodeType === 1 ? rootNode : null;
         const handleEl = (e) => {
           const tag = e.localName;
-          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel))) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
+          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || GENERIC_MEDIA_LN.has(tag) || (mediaSel && nMatches(e, mediaSel))) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
           if (e.hasAttributes()) {
             if (!media && wantBg && nHasAttr(e, "style") && BG_URL.test(nGetAttr(e, "style")) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
-            for (let i = 0; i < ATTR_TEXT.length; i++) {
-              const v = nGetAttr(e, ATTR_TEXT[i]);
-              if (v) add(v);
+            // one selector test instead of five reads for the many elements that carry none of them (same reads, same order
+            // when one is there); only once runCanary() saw the captured matches() answer correctly
+            if (!attrPre || nMatches(e, ATTR_TEXT_SEL)) {
+              for (let i = 0; i < ATTR_TEXT.length; i++) {
+                const v = nGetAttr(e, ATTR_TEXT[i]);
+                if (v) add(v);
+              }
             }
             if (tag === "a") { const h = nGetAttr(e, "href"); if (h) { const s = slugText(h); if (s) add(s); } }
             else if (tag === "img" || tag === "source") {
@@ -1803,7 +1958,9 @@ SFW.runtime = (function () {
           } else if (cur.nodeType === 1) {
             let skip = false;
             const tg = cur.tagName;
-            if (SKIP.has(tg) || S.shield.isEditor(cur)) skip = true;
+            // (a nested block of a shallow unit is skipped whatever else is true of it: tested before isEditor, whose
+            // isContentEditable may have to bring style up to date first)
+            if (SKIP.has(tg) || (!deep && cur !== u && isBlockTag(tg)) || S.shield.isEditor(cur)) skip = true;
             else if (cur !== u) {
               if (nHasAttr(cur, "data-sfw") && !(mine && mine.has(cur))) skip = true; // nested shielded / revealed unit (not our own targets)
               else if (ownSel && nMatches(cur, ownSel)) skip = true; // nested unit: classified on its own
@@ -2008,6 +2165,36 @@ SFW.runtime = (function () {
       return liveNow && !!adapter.exempt && u.nodeType === 1 && !!closestFlat(u, adapter.exempt);
     }
 
+    // Verdict memo for decide(). A text of at most S.classify.WINDOW characters is classified in one window with no time
+    // deadline, so S.classify.text is then a pure function of the text, the context fields it reads (hot as 0/1/2, reply,
+    // launchWindow, source) and the lexicon (its version is part of the memo: a term feed starts a new one). A remembered
+    // result is exactly what a new call would return. Pages re-render the same words constantly (list re-renders, recycled
+    // rows, a parent block re-read after a child changed) and each re-render paid the full classification again. Bounded by
+    // the characters held; callers only read results. The canary and the health check never go through it: they keep calling
+    // the classifier itself, so a page that breaks a builtin is still noticed.
+    function classifyMemo(t, cx) {
+      if (typeof t !== "string" || !(t.length <= S.classify.WINDOW)) return S.classify.text(t, cx);
+      let key = null;
+      try {
+        const ver = S.lexicon.version;
+        if (ver !== cmemoVer || !cmemo) { cmemo = new MAP_CTOR(); cmemoChars = 0; cmemoVer = ver; }
+        let h = cx && typeof cx.hot === "number" ? cx.hot : 0; // the same normalisation as classify's hotOf()
+        h = h >= 2 ? 2 : h >= 1 ? 1 : 0;
+        key = h + (cx && cx.reply === true ? "r" : "-") + (cx && cx.launchWindow === true ? "l" : "-") + (cx && typeof cx.source === "string" ? cx.source : "text") + "\u0000" + t;
+        const hit = mGet(cmemo, key);
+        if (hit !== undefined && hit !== null && typeof hit === "object") return hit;
+      } catch (e) { key = null; } // a page that broke Map: no memo, the classifier answers every time
+      const r = S.classify.text(t, cx);
+      if (key !== null && r && typeof r === "object" && r.truncated !== true) {
+        try {
+          if (cmemoChars + key.length > CMEMO_CHARS) { mClear(cmemo); cmemoChars = 0; }
+          mSet(cmemo, key, r);
+          cmemoChars += key.length;
+        } catch (e) { /* no memo */ }
+      }
+      return r;
+    }
+
     function decide(u, generic) {
       if (isExempt(u) || S.shield.isEditor(u)) return { u, dec: "clear", fp: "exempt", cfp: "exempt", hot: 0, generic, media: false };
       // A small card (article / li / figure ...) that holds a shielded block is covered whole, whether it was escalated to or is
@@ -2086,7 +2273,7 @@ SFW.runtime = (function () {
         const polMedia = ex.media && !warmOnly && !chrome;
         const opts = { mode: cfg.mode, hot: uHot, kind: !text.trim() && !warmOnly && !chrome ? "media" : "item", hasMedia: polMedia, highRisk: adapter.highRisk, ocrDone: true };
         const oneWith = (t, cx, o) => {
-          const res = S.classify.text(t, cx);
+          const res = classifyMemo(t, cx);
           let d = S.policy.decide(res, o);
           if (d === "shield" && res && res.flags && (res.flags.franchise || res.flags.entity)) strong = true;
           if (configPending) {
@@ -2194,13 +2381,15 @@ SFW.runtime = (function () {
         }
       }
       const preps = new Map();
+      const pendEls = [];
       for (const p of plans) {
         if (p.same || p.dec === "clear" || (p.dec === "pending" && !p.budget && p.wait)) continue;
         const c = U.get(p.u);
         if (c && c.targets && c.targets.length && c.targets.every((t) => t.isConnected && S.shield.state(t).mode !== "none" && !S.shield.hasEditor(t))) continue;
-        if (p.dec === "pending" && !S.shield.hasEditor(p.u)) { preps.set(p.u, [{ el: p.u, needPos: true }]); continue; }
+        if (p.dec === "pending" && !S.shield.hasEditor(p.u)) { preps.set(p.u, [{ el: p.u, needPos: true }]); aPush(pendEls, p.u); continue; }
         try { preps.set(p.u, S.shield.prepare(p.u)); } catch (e) { preps.set(p.u, [{ el: p.u, needPos: true }]); }
       }
+      warmThemes(pendEls); // read pass (prepare() does the same for the shields' targets): the writes below reuse it
       for (const p of plans) {
         try { applyPlan(p, preps.get(p.u)); } catch (e) {
           stats.errors++;
@@ -2991,16 +3180,26 @@ SFW.runtime = (function () {
       if (forUser) titleRevealedFor = loc.href;
     }
 
+    // Everything a URL change can change in decide(): the adapter (by host or markup), whether its thread rules apply on this
+    // path, the page heat (URL, title, h1, context) and the URL / title verdict, and the live-stream exemption.
+    function urlContextKey() {
+      return (adapter ? adapter.id + (adapter.threadActive ? "+t" : "-t") : "") + "|" + pageHot + "|" + (pageWant ? 1 : 0) + "|" + (liveNow ? 1 : 0);
+    }
+
     function checkUrl() {
       if (loc.href === lastHref) return;
       lastHref = loc.href;
       stats.urlChanges++;
       pageRevealedKey = pageRevealedKey === loc.href ? pageRevealedKey : null;
       titleRevealedFor = null;
+      const before = urlContextKey();
       recomputeUrlContext();
       checkLive();
       evalPage();
-      rescanAll(false);
+      // A unit's verdict depends on the URL only through this context (adapter, thread pages, page heat, live state); new
+      // or changed content arrives as records of its own. Re-judging the whole document is needed when that context moved,
+      // not on every in-app navigation (SPA routers push a URL on every click, and the rescan ran inside their pushState).
+      if (urlContextKey() !== before) rescanAll(false);
     }
 
     // ---- guards ------------------------------------------------------------------------------------------------------
@@ -3058,6 +3257,7 @@ SFW.runtime = (function () {
 
     // Hover cards, hover-autoplay and framework handlers must never fire for events that originate in a shield.
     function suppress(ev) {
+      if (!shieldMarks) return; // no element of this document can carry data-sfw="shield" yet (ensureMark)
       try {
         const c = shieldedAt(ev.target);
         if (c) ev.stopImmediatePropagation();
@@ -3067,7 +3267,7 @@ SFW.runtime = (function () {
     function onClick(ev) {
       try {
         const t = ev.target;
-        const c = shieldedAt(t);
+        const c = shieldMarks ? shieldedAt(t) : null;
         if (c) {
           const st = S.shield.state(c);
           const onOverlay = t.localName === "sfw-shield";
