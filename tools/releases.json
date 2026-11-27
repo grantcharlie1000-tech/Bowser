@@ -1,5 +1,29 @@
 [
  {
+  "tag": "v0.0.43",
+  "date": "2026-11-27",
+  "prs": [
+   [
+    206,
+    "Pin Stable to v0.0.42"
+   ],
+   [
+    208,
+    "Cut idle and launch cost against Helium"
+   ],
+   [
+    209,
+    "Cut-out split panes, tab tear-off and Never hibernate"
+   ],
+   [
+    210,
+    "release: prepare v0.0.43"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 0256a8f3b60554ef506f66df4c02173e088ee6eb. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.42",
   "date": "2026-11-23",
   "prs": [
