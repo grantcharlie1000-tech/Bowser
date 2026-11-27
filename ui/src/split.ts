@@ -41,13 +41,6 @@ function face(fav: string, priv: boolean): HTMLElement {
 /** Builds the picker into `root` and returns its message handlers. */
 function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolean): void } {
   const column = el('div', 'sv-column');
-  // The pane's place (a half or a quarter) in a soft badge, the heading under it.
-  const head = el('div', 'sv-head');
-  const badge = el('span', 'sv-badge');
-  badge.setAttribute('aria-hidden', 'true');
-  const title = el('h1', 'sv-title');
-  title.id = 'sv-title';
-  head.append(badge, title);
 
   const search = el('label', 'sv-search');
   search.append(icon('search', { className: 'sv-search-icon' }));
@@ -66,7 +59,7 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
   const list = el('div', 'sv-list');
   list.id = 'sv-list';
   list.setAttribute('role', 'listbox');
-  list.setAttribute('aria-labelledby', 'sv-title');
+  list.setAttribute('aria-label', 'Tabs');
   const empty = el('p', 'sv-empty');
   // Quiet actions under the list: leave the space empty (the window gets a hole there, so another
   // app's window can sit in it), or close this side.
@@ -81,7 +74,7 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
   const cut = action('window', 'Cut out this space', 'Leave this space empty to show the window behind');
   const close = action('close', 'Close this side', 'Close this side (Esc)');
   actions.append(cut, close);
-  column.append(head, search, list, empty, actions);
+  column.append(search, list, empty, actions);
 
   let tabs: readonly PickTab[] = [];
   let closed: readonly PickClosed[] = [];
@@ -205,8 +198,6 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
     show(msg: SplitPickMsg, first: boolean): void {
       tabs = msg.tabs;
       closed = msg.closed;
-      title.textContent = pickHeading(msg.side);
-      badge.replaceChildren(icon(dropCard(msg.side).glyph, { size: 20 }));
       root.setAttribute('aria-label', pickHeading(msg.side));
       if (first) {
         input.value = '';

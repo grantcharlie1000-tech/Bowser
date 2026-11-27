@@ -19,7 +19,7 @@
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
 }
 
-/* ---- Empty side: one centred column (badge and heading, search pill, lists, quiet actions) ----
+/* ---- Empty side: one centred column (search pill, lists, quiet actions) ----
    It follows the start page drawn by the same host: a pill field with a soft shadow, open lists
    with no card round them, and single-line rows (title, then the host in the second colour). */
 .sv-column {
@@ -30,35 +30,6 @@
   width: min(480px, calc(100% - 2 * var(--bw-space-4)));
   max-height: calc(100vh - max(24px, 14vh) - var(--bw-space-4));
   margin: max(24px, 14vh) auto 0;
-}
-
-.sv-head {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--bw-space-3);
-  text-align: center;
-}
-
-.sv-badge {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: var(--bw-r-island);
-  background: var(--bw-accent-soft);
-  color: var(--bw-accent);
-}
-
-.sv-title {
-  max-width: 100%;
-  margin: 0;
-  overflow: hidden;
-  font-size: calc(15px * var(--bw-font-scale));
-  line-height: calc(22px * var(--bw-font-scale));
-  font-weight: var(--bw-weight-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sv-search {
