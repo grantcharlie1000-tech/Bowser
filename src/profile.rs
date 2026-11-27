@@ -1107,6 +1107,8 @@ pub fn spawn_guest_window() -> bool {
 /// cannot be found.
 fn launch_command() -> Option<std::process::Command> {
     let mut command = std::process::Command::new(std::env::current_exe().ok()?);
+    // Only the window a tab was dragged out to opens at the drop point, never a later one.
+    command.env_remove(WINDOW_AT_ENV);
     if let Some(root) = data_root_override() {
         command.arg("--data-dir").arg(root);
     }
@@ -1148,6 +1150,30 @@ pub fn can_open_in_new_window(url: &url::Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
         && url.username().is_empty()
         && url.password().is_none()
+}
+
+/// The environment variable that places a new window: `x,y`, the screen position of its top-left
+/// corner (a tab dragged out of a window, `win32::tear_off`).
+pub const WINDOW_AT_ENV: &str = "BOWSER_WINDOW_AT";
+
+/// Starts a new Bowser process for `profile` with `url` in its initial tab, its window's top-left
+/// corner at screen position `at`.
+pub fn spawn_window_with_url_at(profile: &Profile, url: &url::Url, at: (i32, i32)) -> bool {
+    can_open_in_new_window(url)
+        && profile_command(profile, true, Some(url))
+            .is_some_and(|mut command| command.env(WINDOW_AT_ENV, format!("{},{}", at.0, at.1)).spawn().is_ok())
+}
+
+/// The position [`WINDOW_AT_ENV`] holds, if it holds a valid one.
+pub fn window_at_from_env() -> Option<(i32, i32)> {
+    parse_window_at(&std::env::var(WINDOW_AT_ENV).ok()?)
+}
+
+fn parse_window_at(text: &str) -> Option<(i32, i32)> {
+    let (x, y) = text.split_once(',')?;
+    let (x, y) = (x.trim().parse::<i32>().ok()?, y.trim().parse::<i32>().ok()?);
+    // Screen coordinates of any real desktop are far inside this.
+    ((-100_000..=100_000).contains(&x) && (-100_000..=100_000).contains(&y)).then_some((x, y))
 }
 
 /// Starts a new Bowser process for `profile` and opens `url` in its initial tab.
@@ -1291,6 +1317,15 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_window_position_is_two_bounded_integers() {
+        assert_eq!(parse_window_at("120,-40"), Some((120, -40)));
+        assert_eq!(parse_window_at(" 5 , 6 "), Some((5, 6)));
+        for bad in ["", "1", "1,2,3", "a,b", "1,999999"] {
+            assert_eq!(parse_window_at(bad), None, "{bad}");
+        }
     }
 
     #[test]

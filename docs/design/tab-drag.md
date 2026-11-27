@@ -185,14 +185,21 @@ slot, as for a tab. Under reduced motion the island still follows the pointer, a
 animates. In the vertical sidebar only the keyboard chord moves a group (Ctrl+Shift+Up/Down on its
 header); dragging a group header there is not built.
 
-## Future: drag out into a new window
+## Drag out into a window (November 2026)
 
-Not built. The pieces are ready for it:
+A committed release while floating sends `end` with `m:"drop"` (also under reduced motion), and a
+cancel (Escape, blur, lost capture) sends `settle`. On a `drop` of a floating ghost, Rust
+(`src/win32/tear_off.rs`) looks at the cursor:
 
-- the ghost is a top-level window in screen coordinates;
-- the page already reports "floating";
-- `end` could gain an `m:"window"` mode that asks Rust to open a window at the cursor with that tab
-  (Chromium's `DetachIntoNewBrowserAndRunMoveLoop`).
+- over this window's strip or page: nothing new (a split opens if a zone showed, else the ghost
+  glides home);
+- over another Bowser window (`instance::bowser_window_at`): the tab's address goes there with the
+  link handoff (`WM_COPYDATA`, `instance::deliver_to`), that window comes forward and the tab closes
+  here;
+- anywhere else (another app, the desktop, this window's toolbar): a new window opens with the tab,
+  its top-left placed so the pointer is on its tab strip (`BOWSER_WINDOW_AT`, read once in `run`
+  and clamped to the monitor's work area), and the tab closes here.
 
-Re-attaching to another window's strip would need a window finder under the cursor, as Chromium's
-`GetDragTargetForPoint` has.
+The ghost fades where it is when the tab moves. Each window is its own process, so the page loads
+again and its back/forward history stays behind. Private tabs never move. The only tab of a window
+moves into another window and then the window closes; dropped elsewhere it stays.

@@ -41,23 +41,14 @@ function face(fav: string, priv: boolean): HTMLElement {
 /** Builds the picker into `root` and returns its message handlers. */
 function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolean): void } {
   const column = el('div', 'sv-column');
-  const head = el('div', 'sv-head');
-  const title = el('h1', 'sv-title');
-  title.id = 'sv-title';
-  const close = el('button', 'bw-icon-btn is-lg sv-close');
-  close.type = 'button';
-  close.setAttribute('aria-label', 'Close this side');
-  close.dataset.tip = 'Close this side';
-  close.append(icon('close'));
-  head.append(title, close);
 
   const search = el('label', 'sv-search');
   search.append(icon('search', { className: 'sv-search-icon' }));
-  const input = el('input', 'bw-input sv-input');
+  const input = el('input', 'sv-input');
   input.type = 'text';
   input.spellcheck = false;
   input.autocomplete = 'off';
-  input.placeholder = 'Search tabs or enter an address';
+  input.placeholder = 'Search tabs or type an address';
   input.setAttribute('role', 'combobox');
   input.setAttribute('aria-autocomplete', 'list');
   input.setAttribute('aria-controls', 'sv-list');
@@ -68,11 +59,22 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
   const list = el('div', 'sv-list');
   list.id = 'sv-list';
   list.setAttribute('role', 'listbox');
-  list.setAttribute('aria-labelledby', 'sv-title');
+  list.setAttribute('aria-label', 'Tabs');
   const empty = el('p', 'sv-empty');
-  const hint = el('p', 'sv-hint');
-  hint.textContent = 'Enter opens the highlighted tab, or goes to the address you typed.';
-  column.append(head, search, list, empty, hint);
+  // Quiet actions under the list: leave the space empty (the window gets a hole there, so another
+  // app's window can sit in it), or close this side.
+  const actions = el('div', 'sv-actions');
+  const action = (glyph: Parameters<typeof icon>[0], label: string, tip: string): HTMLButtonElement => {
+    const button = el('button', 'sv-action');
+    button.type = 'button';
+    button.append(icon(glyph), document.createTextNode(label));
+    button.dataset.tip = tip;
+    return button;
+  };
+  const cut = action('window', 'Cut out this space', 'Leave this space empty to show the window behind');
+  const close = action('close', 'Close this side', 'Close this side (Esc)');
+  actions.append(cut, close);
+  column.append(search, list, empty, actions);
 
   let tabs: readonly PickTab[] = [];
   let closed: readonly PickClosed[] = [];
@@ -116,9 +118,14 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
     const meta = el('span', 'bw-row-meta');
     meta.dir = 'auto';
     if (row.kind === 'tab') {
-      name.textContent = guardTitle(row.tab.title);
-      meta.textContent = row.tab.private ? `${row.tab.host} · Private` : row.tab.host;
+      name.textContent = guardTitle(row.tab.title.trim() !== '' ? row.tab.title : row.tab.host || 'New tab');
+      meta.textContent = row.tab.host;
       node.append(face(row.tab.fav, row.tab.private), text);
+      if (row.tab.private) {
+        const tag = el('span', 'sv-private');
+        tag.textContent = 'Private';
+        node.append(tag);
+      }
     } else {
       name.textContent = guardTitle(row.page.title);
       meta.textContent = row.page.host;
@@ -185,12 +192,12 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
     }
   });
   close.addEventListener('click', () => sendSplit({ v: 1, t: 'split', a: 'close' }));
+  cut.addEventListener('click', () => sendSplit({ v: 1, t: 'split', a: 'cutout' }));
 
   return {
     show(msg: SplitPickMsg, first: boolean): void {
       tabs = msg.tabs;
       closed = msg.closed;
-      title.textContent = pickHeading(msg.side);
       root.setAttribute('aria-label', pickHeading(msg.side));
       if (first) {
         input.value = '';

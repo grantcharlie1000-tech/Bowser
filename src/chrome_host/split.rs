@@ -296,6 +296,7 @@ mod tests {
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"reopen","n":7}"#), SplitCommand::Reopen { n: 7 });
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"go","text":"example.com"}"#), SplitCommand::Go("example.com".into()));
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"close"}"#), SplitCommand::Close);
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"cutout"}"#), SplitCommand::CutOut);
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"focus"}"#), SplitCommand::Focus);
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"closeprivate"}"#), SplitCommand::ClosePrivate);
         assert_eq!(

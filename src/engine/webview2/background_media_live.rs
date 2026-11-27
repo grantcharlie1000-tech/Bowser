@@ -186,7 +186,7 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         assert_eq!(field(&pre_sweep_state, "paused"), Some("false"));
         assert_eq!(field(&pre_sweep_state, "ended"), Some("false"));
         assert_eq!(field(&pre_sweep_state, "muted"), Some("false"));
-        engine.suspend_hidden_tabs(policy.suspend_after.as_millis() as u64).unwrap();
+        engine.suspend_hidden_tabs(policy.suspend_after.as_millis() as u64, &std::collections::HashSet::new()).unwrap();
         assert!(pump(15, || {
             let state = engine.core.borrow();
             state.suspended.contains(&idle) && state.suspend_checks.get(&media).is_none_or(|pending| pending.completed_at.get().is_some())

@@ -24,7 +24,7 @@ Sources: Microsoft Learn (Geometry, Layering, Motion, Typography in Windows 11) 
 
 **Command palette (Ctrl+K).** The pattern is Arc/Vivaldi quick-command, 560px wide, anchored 12% from the top, 44px input, 36px results, one overlay. Opens in 83ms fade plus 8px rise.
 
-**Split view.** Arc and Vivaldi use two panes with a 4px gutter and an 8px page radius. Show a 2px accent edge on the focused pane. The divider is draggable at 8px hit width.
+**Split view.** Arc and Vivaldi use two panes with a 4px gutter and an 8px page radius. Bowser draws no accent edge on the focused pane: all panes share one hairline. The divider is draggable at 8px hit width.
 
 **Icons.** 16px glyph in a 20px box, 1.5px stroke on a 24 grid, round caps, matching `icons/menu` and `icons/rail`. Use a single family only.
 

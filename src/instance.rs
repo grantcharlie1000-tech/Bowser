@@ -204,6 +204,34 @@ pub fn deliver(dir: &Path, urls: &[Url]) -> Result<(), DeliverError> {
     Ok(())
 }
 
+/// The other Bowser window under screen point (`x`, `y`): the top-level window there (followed to
+/// its owner, so an overlay or popup of that window counts) when it is a Bowser main window that is
+/// not `own`. `None` over the desktop, another app or `own`.
+pub fn bowser_window_at(x: i32, y: i32, own: HWND) -> Option<HWND> {
+    use windows::Win32::{
+        Foundation::POINT,
+        UI::WindowsAndMessaging::{GA_ROOTOWNER, GetAncestor, WindowFromPoint},
+    };
+    let under = unsafe { WindowFromPoint(POINT { x, y }) };
+    if under.is_invalid() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(under, GA_ROOTOWNER) };
+    (!root.is_invalid() && root != own && is_bowser_window(root)).then_some(root)
+}
+
+/// Hands `urls` to one Bowser window, `target` (a tab dragged onto it), and brings it forward.
+pub fn deliver_to(target: HWND, urls: &[Url]) -> bool {
+    let Some(bytes) = encode_urls(urls) else {
+        return false;
+    };
+    if !send_copydata(target.0 as isize, &bytes) {
+        return false;
+    }
+    focus(target);
+    true
+}
+
 /// URLs from a `WM_COPYDATA` lparam, when it is a Bowser handoff.
 ///
 /// # Safety

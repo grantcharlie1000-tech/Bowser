@@ -70,6 +70,7 @@ export type SplitCommand =
   | { v: 1; t: 'split'; a: 'reopen'; n: number }
   | { v: 1; t: 'split'; a: 'go'; text: string }
   | { v: 1; t: 'split'; a: 'close' }
+  | { v: 1; t: 'split'; a: 'cutout' }
   | { v: 1; t: 'split'; a: 'focus' }
   | { v: 1; t: 'split'; a: 'closeprivate' }
   | { v: 1; t: 'split'; a: 'over'; id: number; x: number; y: number }
@@ -207,6 +208,7 @@ export function validSplitCommand(cmd: SplitCommand): boolean {
     case 'go':
       return exactKeys(cmd, ['v', 't', 'a', 'text']) && isStr(cmd.text, MAX_TEXT) && cmd.text.trim() !== '';
     case 'close':
+    case 'cutout':
     case 'focus':
     case 'closeprivate':
       return exactKeys(cmd, ['v', 't', 'a']);

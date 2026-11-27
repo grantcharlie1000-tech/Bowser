@@ -86,6 +86,8 @@ pub struct SessionTab {
     /// The manual tab group the tab is in: an id of [`Session::groups`]. Saved as an optional
     /// `group` line after the tab, which older builds skip.
     pub group: Option<u32>,
+    /// "Never hibernate" is on for the tab. Saved as an optional `awake` line, which older builds skip.
+    pub awake: bool,
 }
 
 /// A manual tab group (`tab_groups::TabGroupKey::Manual`) and how it looks. Saved as a
@@ -207,6 +209,7 @@ impl Session {
                 pinned,
                 used: 0,
                 group: None,
+                awake: false,
             });
         }
         (!kept.is_empty()).then_some(Self {
@@ -238,6 +241,9 @@ impl Session {
             // Older builds skip a line they do not know, so this stays readable by them.
             if tab.used != 0 {
                 text.push_str(&format!("used\t{}\n", tab.used));
+            }
+            if tab.awake {
+                text.push_str("awake\t1\n");
             }
             if let Some(group) = tab.group.filter(|id| self.groups.iter().any(|group| group.id == *id)) {
                 text.push_str(&format!("group\t{group}\n"));
@@ -365,6 +371,12 @@ impl Session {
                 }
                 continue;
             }
+            if line == "awake\t1" {
+                if let Some(tab) = tabs.last_mut() {
+                    tab.awake = true;
+                }
+                continue;
+            }
             if let Some(group) = line.strip_prefix("group\t") {
                 if let (Some(tab), Ok(group)) = (tabs.last_mut(), group.trim().parse::<u32>()) {
                     tab.group = (group != 0).then_some(group);
@@ -406,6 +418,7 @@ impl Session {
                 pinned,
                 used: 0,
                 group: None,
+                awake: false,
             });
         }
         if tabs.is_empty() {
@@ -1219,6 +1232,18 @@ mod tests {
     }
 
     #[test]
+    fn never_hibernate_round_trips_and_older_text_reads_as_off() {
+        let mut session = sample();
+        session.tabs[1].awake = true;
+        let text = session.serialize();
+        assert!(text.contains("awake\t1\n"));
+        let parsed = Session::parse(&text).unwrap();
+        assert!(parsed.tabs[1].awake);
+        assert!(!parsed.tabs[0].awake);
+        assert!(!sample().serialize().contains("awake\t"));
+    }
+
+    #[test]
     fn manual_tab_groups_round_trip_with_their_name_colour_and_fold() {
         let mut session = sample();
         session.tabs[0].group = Some(3);
@@ -1274,7 +1299,7 @@ mod tests {
     #[test]
     fn layouts_of_three_and_four_panes_round_trip_and_bad_lines_drop_the_layout() {
         let mut session = sample();
-        let tab = |n: usize| SessionTab { url: format!("https://t{n}.test/"), title: format!("T{n}"), pinned: false, used: 0, group: None };
+        let tab = |n: usize| SessionTab { url: format!("https://t{n}.test/"), title: format!("T{n}"), pinned: false, used: 0, group: None, awake: false };
         session.tabs = (0..5).map(tab).collect();
         let quad = SessionSplit {
             left: 0,

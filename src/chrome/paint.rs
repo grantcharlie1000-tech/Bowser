@@ -896,8 +896,9 @@ impl ChromeSurface {
         if let Some(panes) = panes {
             // --- split view ---
             // Separate rounded pages (two to four) with gaps between them (Chrome's split): every
-            // corner is rounded, the gaps take the window colour like the margins, a pill grip
-            // marks each divider and the focused page carries a 2 DIP accent edge.
+            // corner is rounded, the gaps take the window colour like the margins and a pill grip
+            // marks each divider. Every page has the same hairline: the focused page has no box
+            // round it, so the page you work in looks like any page.
             for divider in panes.dividers.into_iter().flatten() {
                 self.fill_rect(divider, view.palette.window, dirty);
             }
@@ -907,13 +908,8 @@ impl ChromeSurface {
             for empty in self.split_empty.into_iter().flatten() {
                 self.round(empty, radius, Rgba { a: 255, ..view.palette.window }, dirty);
             }
-            for (index, pane) in panes.panes.into_iter().enumerate() {
-                if let Some(pane) = pane.filter(|_| index != panes.focused) {
-                    self.border(pane, radius, 1.0, colour, dirty);
-                }
-            }
-            if let Some(focus) = panes.panes[panes.focused] {
-                self.border(focus, radius, m.px(2) as f32, view.palette.omnibox_focus_border, dirty);
+            for pane in panes.panes.into_iter().flatten() {
+                self.border(pane, radius, 1.0, colour, dirty);
             }
             self.paint_split_grips(view, &panes, dirty);
             // --- end split view ---

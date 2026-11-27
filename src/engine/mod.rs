@@ -361,14 +361,19 @@ pub trait EngineAdapter {
     /// script again, which proves its renderer answers. It never runs for a failed request, a
     /// closed controller or an engine that cannot ask, so silence never clears a hang prompt.
     fn probe_responsive(&mut self, _tab: crate::tabs::TabId, _done: Box<dyn FnOnce()>) {}
-    /// Suspends controllers that have been hidden for at least the supplied duration.
-    fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
+    /// Suspends controllers that have been hidden for at least the supplied duration, except the
+    /// tabs in `keep_awake` (the user chose "Never hibernate" for them).
+    fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64, _keep_awake: &std::collections::HashSet<crate::tabs::TabId>) -> windows::core::Result<()> {
         Ok(())
     }
     /// Earliest deadline for a hidden controller with a completed document. In-flight native
     /// callbacks wake maintenance when they finish.
-    fn next_hidden_suspend(&self, _after: std::time::Duration) -> Option<std::time::Instant> {
+    fn next_hidden_suspend(&self, _after: std::time::Duration, _keep_awake: &std::collections::HashSet<crate::tabs::TabId>) -> Option<std::time::Instant> {
         None
+    }
+    /// Wakes a suspended tab without showing it (the user chose "Never hibernate" for it).
+    fn resume_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
+        Ok(())
     }
     /// Completed automatic suspensions, revalidated against the current hidden document.
     fn take_suspended_tabs(&mut self) -> Vec<crate::tabs::TabId> {
