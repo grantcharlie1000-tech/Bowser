@@ -8,6 +8,7 @@ pub mod assets;
 #[cfg(test)]
 mod fingerprint;
 pub mod host;
+mod shared_renderer; // one BrowsingInstance (one renderer) for the chrome views of an environment
 pub mod handshake;
 pub mod json;
 pub mod protocol;

@@ -104,7 +104,7 @@ In Settings (Tabs, right after New tabs) the start page is three groups: **Start
 background, dim), **Speed dials** (led by its switch, then the rows that tune them) and **Bookmark rows** (led
 by its switch, then the list rows). A row whose switch is off is disabled and dimmed rather than left looking
 live, the custom colour only wakes for a Custom background, and while the new tab page is Blank there is no
-start page, so the groups rest and the two switches say "Not shown: New tab page is Blank"
+start page, so the groups rest, dimmed, with no extra note
 (`settings-start.ts`).
 
 ## Settings keys (`settings.txt`)

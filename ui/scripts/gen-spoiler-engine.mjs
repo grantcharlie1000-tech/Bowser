@@ -4,7 +4,8 @@
 // This is a temporary stand-in for a build output of extensions/spoiler-firewall/build/build.mjs
 // (an ES module, dist/ui/engine.mjs). It reads engine/{normalize,lexicon,classify,policy}.js in that
 // order and wraps them as build.mjs's closure() does (same banner comment per fragment, CRLF
-// normalised, ASCII-escaped), so the engine text is byte-identical to the shipped bundle's. Nothing
+// normalised, ASCII-escaped), so it is the same engine source the shipped bundle is built from (the
+// Bowser bundle then strips its comments and indentation; build/minify.mjs changes no token). Nothing
 // from the DOM runtime (adapters, styles, shield, hooks, runtime) is included.
 //
 //   node scripts/gen-spoiler-engine.mjs           write src/spoiler-engine.gen.ts

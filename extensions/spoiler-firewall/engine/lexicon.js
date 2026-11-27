@@ -575,15 +575,16 @@ SFW.lexicon = (function () {
     const killSets = s.kills.map((a) => new Set(a)); // read-only (classify only calls has())
     const trieTok = newNode(), trieSub = newNode(), trieRR = newNode();
     const byCat = {};
-    const ZERO = [0];
+    // one template per shape holding its keys in compile()'s order: a term is a copy of it with the values filled in (the
+    // same keys in the same order as compile() makes; this runs cold in every document, so it does as little as it can)
+    const tpls = s.shapes.map((sh) => { const o = {}; for (let i = 0; i < sh.k.length; i++) o[sh.k[i]] = undefined; return o; });
     for (const row of s.terms) {
       const sh = s.shapes[row[0]];
       const c = row[1], flags = row[3];
-      const vals = { c: c, n: c.length, offs: row[2] === 0 ? ZERO.slice() : row[2].split(",").map(Number), cat: sh.cat, kind: sh.kind };
-      for (let i = 0; i < sh.b.length; i++) vals[sh.b[i]] = (flags & (2 << i)) !== 0;
-      for (let i = 0; i < sh.r.length; i++) vals[sh.r[i]] = sh.r[i] === "kills" ? killSets[row[4 + i]] : row[4 + i];
-      const t = {};
-      for (let i = 0; i < sh.k.length; i++) t[sh.k[i]] = vals[sh.k[i]]; // same key order as compile() (same object shape)
+      const t = Object.assign({}, tpls[row[0]]);
+      t.c = c; t.n = c.length; t.offs = row[2] === 0 ? [0] : row[2].split(",").map(Number); t.cat = sh.cat; t.kind = sh.kind;
+      for (let i = 0; i < sh.b.length; i++) t[sh.b[i]] = (flags & (2 << i)) !== 0;
+      for (let i = 0; i < sh.r.length; i++) t[sh.r[i]] = sh.r[i] === "kills" ? killSets[row[4 + i]] : row[4 + i];
       (byCat[t.cat] || (byCat[t.cat] = [])).push(t);
       insert(t.sub ? trieSub : trieTok, t);
       if (flags & 1) insert(trieRR, t);

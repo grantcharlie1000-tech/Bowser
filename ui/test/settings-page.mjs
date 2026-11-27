@@ -242,7 +242,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=false\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=last_session\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\nstart_search=true\nstart_clock=true\nstart_wallpaper=none\nstart_wallpaper_dim=20\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=300\nsidebar_collapsed=true\nsleep_enabled=false\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=false\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=last_session\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\nstart_dials=false\nstart_search=true\nstart_clock=true\nstart_wallpaper=none\nstart_wallpaper_dim=20\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -1358,25 +1358,21 @@ test('the Start page section: a row that cannot act rests (disabled, dimmed) unt
   snap({ widgets: true, widgetBg: 'custom' });
   assert.equal(off('startWidgetColor'), false);
 
-  // A Blank new tab page shows no start page at all: everything rests and the two switches say why.
-  const notes = () => ['startDials', 'startWidgets'].map((id) => row(id).querySelector('.sp-start-note'));
+  // A Blank new tab page shows no start page at all: everything rests, with no info note on the switches.
   const described = () => row('startDials').querySelector('[role="switch"]').getAttribute('aria-describedby') ?? '';
-  assert.ok(notes().every((note) => note.hidden), 'no note while the start page is shown');
-  assert.doesNotMatch(described(), /sp-f-startDials/, 'a hidden note is not read out either');
   snap({ dials: true, widgets: true, widgetBg: 'custom' }, { tabs_new_tab_page: 'blank' });
   for (const id of ['startDials', 'startWidgets', ...dialRows, ...widgetRows]) assert.equal(off(id), true, `${id} rests on a Blank new tab page`);
-  for (const note of notes()) {
-    assert.equal(note.hidden, false);
-    assert.equal(note.textContent, 'Not shown: New tab page is Blank');
+  for (const id of ['startDials', 'startWidgets']) {
+    assert.equal(row(id).querySelector('.sp-flag'), null, `${id}: no info note`);
+    assert.doesNotMatch(row(id).textContent, /Not shown/, id);
   }
-  assert.match(described(), /sp-f-startDials/);
+  assert.doesNotMatch(described(), /sp-f-startDials/);
   // The homepage and startup do not depend on the start page.
   assert.equal(row('startHomepage').querySelector('input').disabled, false);
   // Homepage or a specific page still leaves the start page for an empty tab.
   for (const page of ['start', 'homepage', 'url']) {
     snap({ dials: true }, { tabs_new_tab_page: page });
     assert.equal(off('startTitles'), false, page);
-    assert.ok(notes().every((note) => note.hidden), page);
     assert.doesNotMatch(described(), /sp-f-startDials/, page);
   }
 

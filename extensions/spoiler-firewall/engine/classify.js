@@ -209,14 +209,18 @@ SFW.classify = (function () {
   // The franchise name is fuzzy but its numeral must match exactly.
   function fuzzyScan(v, lex, hits) {
     const S = v.s, f = v.f, sid = v.sid, n = v.n;
+    // token starts, in order (the only positions a candidate may start at), found once instead of once per fuzzy term
+    const starts = [];
+    for (let s = 0; s < n; s++) if (f[s] & 1) starts.push(s);
     for (let z = 0; z < lex.fuzzy.length; z++) {
       if (OVER || (DEADLINE !== 0 && Date.now() > DEADLINE)) { OVER = true; return; }
       const fz = lex.fuzzy[z];
       const L = fz.c.length;
       if (!fz.term) fz.term = { c: fz.c, n: L, offs: [0], cat: fz.cat, kind: "", sub: false };
       const c1 = fz.c.charCodeAt(1), c2 = fz.c.charCodeAt(2);
-      for (let s = 0; s < n; s++) {
-        if (!(f[s] & 1) || S.charAt(s) !== fz.first) continue;
+      for (let si = 0; si < starts.length; si++) {
+        const s = starts[si];
+        if (S.charAt(s) !== fz.first) continue;
         // cheap necessary condition for <= 1 edit near the start (insert/delete/substitute/transpose of char 1 or 2)
         if (fz.d === 1) {
           const b1 = S.charCodeAt(s + 1), b2 = S.charCodeAt(s + 2);
@@ -226,6 +230,9 @@ SFW.classify = (function () {
           const e = s + len;
           if (e > n) break;
           if (sid[s] !== sid[e - 1]) continue;
+          // a name without a numeral only counts when the candidate ends a token (tested below as well): test it before the
+          // edit distance, which is the expensive part
+          if (!fz.nums && !(f[e - 1] & 2)) continue;
           const cand = S.slice(s, e);
           if (cand === fz.c) continue; // exact forms are handled by the trie
           if (fz.d === 1 ? !within1(fz.c, cand) : dl(fz.c, cand, fz.d) > fz.d) continue;

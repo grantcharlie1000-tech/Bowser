@@ -1594,6 +1594,23 @@ impl BlockerState {
         }
     }
 
+    /// Builds, ahead of the first tab, what that tab's controller setup needs at the global level:
+    /// the DevTools pattern table and the request-filter plan. Pure caching (both are built on
+    /// first use anyway, and dropped when the rules change), so blocking is unchanged; it only
+    /// moves the work out from between controller creation and the first navigation.
+    pub fn warm_for_first_tab(&self) {
+        match self.global_level() {
+            Level::None => return,
+            Level::Trackers => {
+                self.devtools_trackers.get_or_init(|| DevtoolsPatterns::new(&self.trackers));
+            }
+            Level::Ads => {
+                self.devtools.get_or_init(|| DevtoolsPatterns::new(&self.matcher));
+            }
+        }
+        let _ = self.request_filters();
+    }
+
     /// WebView2 request filters for the rules DevTools cannot enforce; see
     /// [`Blocker::request_filters`]. The same for every page, so a tab installs them once.
     ///
@@ -3441,6 +3458,19 @@ mod level_tests {
         assert_eq!(s.level_for(PAGE, true), Level::Ads);
         assert!(s.should_block_private(TRACKER, PAGE) && s.should_block_private(AD, PAGE));
         assert!(s.is_blocking(PAGE, true));
+    }
+
+    #[test]
+    fn warming_for_the_first_tab_changes_no_blocking_output() {
+        let (mut s, _dir) = state("warm");
+        for level in [Level::Ads, Level::Trackers, Level::None] {
+            s.level = level;
+            let before = (s.blocked_url_patterns(PAGE), s.request_filters());
+            let (mut fresh, _fresh_dir) = state("warm-fresh");
+            fresh.level = level;
+            fresh.warm_for_first_tab();
+            assert_eq!((fresh.blocked_url_patterns(PAGE), fresh.request_filters()), before, "{level:?}");
+        }
     }
 
     #[test]

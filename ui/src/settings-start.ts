@@ -1,4 +1,4 @@
-import { el, icon } from './dom';
+import { el } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
   DIM_STEPS, GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_CHOICES, WALL_ART, WIDGET_BGS, dimStep, normaliseAddress, startupChoice,
@@ -25,7 +25,6 @@ export const TITLE_ARIA: Readonly<Record<TitleMode, string>> = {
   auto: 'Under tiles without a chosen image, on hover for the rest',
   never: 'Never',
 };
-export const START_OFF_NOTE = 'Not shown: New tab page is Blank';
 export const STARTUP_LABELS: Readonly<Record<StartupChoice, string>> = {
   last_session: 'Your tabs',
   homepage: 'Tabs + homepage',
@@ -55,17 +54,6 @@ export function parsePageLines(text: string): string[] | null {
     out.push(url);
   }
   return out;
-}
-
-function rowNote(row: HTMLElement, id: string, text: string): HTMLElement {
-  const note = el('span', 'sp-flag sp-start-note');
-  note.id = `sp-f-${id}`;
-  note.hidden = true;
-  const words = el('span');
-  words.textContent = text;
-  note.append(icon('info', { size: 12, fine: true }), words);
-  row.querySelector('.sp-text')?.append(note);
-  return note;
 }
 
 function rest(row: HTMLElement, off: boolean): void {
@@ -107,7 +95,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   const dials = host.card('startpage', 'Dials');
   const dialsOn = host.switchControl((on) => host.change((s) => { s.dials = on; }));
   const dialsRow = host.row(dials, 'startDials', dialsOn.root).root;
-  const dialsNote = rowNote(dialsRow, 'startDials', START_OFF_NOTE);
   const reopen = host.segmentedControl<GroupReopen>('Open the start page on', GROUP_REOPEN.map((key) => [key, GROUP_REOPEN_LABELS[key], GROUP_REOPEN_ARIA[key]] as const), (value) => host.change((s) => { s.groupReopen = value; }));
   const reopenRow = host.row(dials, 'startGroupReopen', reopen.root).root;
   const titles = host.segmentedControl<TitleMode>('Show titles', (['always', 'auto', 'never'] as const).map((key) => [key, TITLE_LABELS[key], TITLE_ARIA[key]] as const), (value) => host.change((s) => { s.titles = value; }));
@@ -206,7 +193,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   const widgets = host.card('startpage', 'Widgets');
   const widgetsOn = host.switchControl((on) => host.change((s) => { s.widgets = on; }));
   const widgetsRow = host.row(widgets, 'startWidgets', widgetsOn.root).root;
-  const widgetsNote = rowNote(widgetsRow, 'startWidgets', START_OFF_NOTE);
   const wcols = host.segmentedControl<string>('List columns', ['1', '2', '3', '4'].map((n) => [n, n] as const), (value) => host.change((s) => { s.widgetColumns = Number(value); }));
   const wcolsRow = host.row(widgets, 'startWidgetColumns', wcols.root).root;
   const wbg = host.segmentedControl<WidgetBg>('List background', WIDGET_BGS.map((key) => [key, BG_LABELS[key], BG_ARIA[key]] as const), (value) => host.change((s) => { s.widgetBg = value; }));
@@ -218,17 +204,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   const wcolorRow = host.row(widgets, 'startWidgetColor', wcolor).root;
   const wdrag = host.switchControl((on) => host.change((s) => { s.widgetDrag = on; }));
   const wdragRow = host.row(widgets, 'startWidgetDrag', wdrag.root).root;
-
-  const paintNote = (control: HTMLElement, note: HTMLElement, show: boolean): void => {
-    if (note.hidden === show) note.hidden = !show;
-    const now = control.getAttribute('aria-describedby') ?? '';
-    const ids = now.split(' ').filter((id) => id !== '' && id !== note.id);
-    if (show) ids.push(note.id);
-    const next = ids.join(' ');
-    if (next === now) return;
-    if (next !== '') control.setAttribute('aria-describedby', next);
-    else control.removeAttribute('aria-describedby');
-  };
 
   return {
     apply(start, readable, shown = true): void {
@@ -259,8 +234,6 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       dim.disable(!dimLive);
       rest(dimRow, readable && !dimLive);
       away(dimRow, readable && !dimLive);
-      paintNote(dialsOn.root, dialsNote, readable && !shown);
-      paintNote(widgetsOn.root, widgetsNote, readable && !shown);
       for (const control of [dialsOn, widgetsOn]) control.disable(!live);
       for (const row of [dialsRow, widgetsRow]) rest(row, readable && !shown);
       const dialsLive = live && start.dials;
