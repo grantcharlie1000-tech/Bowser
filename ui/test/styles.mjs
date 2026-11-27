@@ -217,6 +217,24 @@ test('tab selection is instant and the settle frame still wins', () => {
   assert.ok(settle > instant.index, '.strip.settle .tab must come after the active rule');
 });
 
+// Every frame of a CSS transition repaints the strip, the compositor presents it and DWM composes it:
+// a 167ms shadow fade on the tab that loses the selection cost about ten frames per Ctrl+Tab (the
+// power benchmark's switching case). Losing the selection is as instant as gaining it.
+test('losing the tab selection starts no transition: the strip repaints once per switch', () => {
+  const transitionOf = (selector) => {
+    const rule = new RegExp(`${selector.replace(/[.\[\]()]/g, '\\$&')}\\{([^}]*)\\}`).exec(css);
+    return rule && /transition:([^;}]*)/.exec(rule[1])?.[1];
+  };
+  const base = transitionOf('.strip .tab');
+  assert.ok(base, 'the strip tab declares its transition');
+  assert.match(base, /^transform /, 'a tab moves by transform');
+  assert.doesNotMatch(base, /box-shadow|background|opacity/, 'no fade runs when a tab loses the selection');
+  assert.equal(/\.strip \.tab::?before\{[^}]*transition/.exec(css), null, 'the raised surface follows the selection at once');
+  assert.match(css, /\.strip \.tab::?after\{transition:opacity /, 'the hover wash still fades');
+  assert.match(css, /\.strip \.tab:where\(\.landing\)\{transition:transform [^;}]*, ?box-shadow /, 'a dropped tab still eases its shadow back');
+  assert.match(css, /\.strip \.tab\.dragging\{[^}]*transition:box-shadow /, 'a held tab still eases its lift');
+});
+
 test('panel styles carry no legacy 13px Segoe UI block', () => {
   for (const file of ['panels.css', 'dialog.css', 'rail.css', 'components.css']) {
     const text = readFileSync(join(stylesDir, file), 'utf8');

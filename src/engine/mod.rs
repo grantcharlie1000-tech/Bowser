@@ -628,6 +628,9 @@ pub struct EngineEvents {
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
+    /// Benchmark log only: one call per live renderer process (the process id as the count), or one
+    /// with 0 when there is none. Used to see whether a first navigation swapped renderers.
+    pub renderer_pid_event: Option<std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64, &str)>>,
     /// Synthetic-profile diagnostics only. No URLs or arbitrary page titles are recorded.
     pub diagnostic_navigation: Option<DiagnosticNavigationCallback>,
     /// Explicit detail-only native configure spans/counts; absent from ordinary timing arms.

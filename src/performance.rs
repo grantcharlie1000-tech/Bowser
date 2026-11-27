@@ -816,6 +816,10 @@ impl PerfLog {
         }
         self.record_fields(event, &format!("{tab},{navigation},{},{token}", success.map(|value| value.to_string()).unwrap_or_default()))
     }
+    /// Benchmark-only process probe row: the token is a sanitized frame scheme and host.
+    pub fn record_probe(&self, event: &str, tab: u64, token: &str, pid: u64) -> io::Result<()> {
+        self.record_fields(event, &format!("{tab},,,{token},content,0,0,{pid}"))
+    }
     pub fn record_detail_count(&self, event: &str, tab: u64, count: u64) -> io::Result<()> {
         self.record_fields(event, &format!("{tab},,,,content,0,0,{count}"))
     }

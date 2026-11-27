@@ -43,7 +43,11 @@
   color: var(--bw-text-dim);
   cursor: default;
   touch-action: none;
-  transition: transform var(--bw-dur-base) var(--bw-ease-out), box-shadow var(--bw-dur-base) var(--bw-ease-out);
+  /* Position only. Losing the selection is instant, like gaining it: a fading shadow and surface
+     would repaint the strip on every frame of a 167ms transition at every tab switch (about ten
+     frames of renderer, GPU and compositor work per Ctrl+Tab). The drag and landing rules below keep
+     their own shadow transitions. */
+  transition: transform var(--bw-dur-base) var(--bw-ease-out);
 }
 
 .strip .tab[hidden] { display: none; }
@@ -71,9 +75,11 @@
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
-  transition:
-    opacity var(--bw-dur-fast) var(--bw-ease-fade),
-    background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+/* Only the hover wash fades. The raised surface (::before) follows the selection at once. */
+.strip .tab::after {
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
 /* The selected tab is always the widest: 1.5x an inactive tab's share of the row, and never below
@@ -129,6 +135,10 @@
 /* Released: the dropped tab keeps its place above its neighbours until it lands. Its shadow eases back
    to the tab's own through the base box-shadow transition; transform shares that 167ms ease-out. */
 .strip .tab.landing { z-index: 5; }
+/* :where() keeps this at the base rule's specificity, so .strip.settle .tab still wins for the settle frame. */
+.strip .tab:where(.landing) {
+  transition: transform var(--bw-dur-base) var(--bw-ease-out), box-shadow var(--bw-dur-base) var(--bw-ease-out);
+}
 
 /* Lifted (docs/design/tab-drag.md): the native ghost carries the tab off the strip, so the tab's own
    copy is invisible and its box is the gap the neighbours open and close around. Instant both ways:

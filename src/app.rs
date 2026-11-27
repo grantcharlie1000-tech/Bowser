@@ -94,6 +94,61 @@ pub fn chrome_environment_step(
     }
 }
 
+/// How long the HTML chrome may wait for the gated tab's DOMContentLoaded before it starts
+/// anyway. Measured ContentLoading of a restored tab lands 1.2-1.4 s after launch (about 0.8-1.0 s
+/// after the gate is armed), so the fallback sits well past it.
+pub const CHROME_GATE_LIMIT_MS: u32 = 2_500;
+
+/// The HTML chrome start is held (`chrome_gate`) for one engine generation and one content tab.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ChromeGate {
+    generation: u64,
+    tab: TabId,
+}
+
+/// When the HTML chrome controllers (toolbar, tabs, rail; a second profile) are created relative to
+/// the content controller. Creating them in the same instant makes them compete with the restored
+/// page's controller for CPU on small machines, and the window shows native chrome meanwhile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChromeStart {
+    Now,
+    AfterController(TabId),
+}
+
+/// `content_tab` is the tab whose navigation was queued before the engine existed (session restore
+/// or launch URL); `None` for a blank start, which has no content controller to wait for.
+pub fn chrome_start(content_tab: Option<TabId>, controller_ready: bool) -> ChromeStart {
+    match content_tab {
+        Some(tab) if !controller_ready => ChromeStart::AfterController(tab),
+        _ => ChromeStart::Now,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChromeGateStep {
+    /// Not this gate's event (another tab's controller, or no gate).
+    Keep,
+    /// The gate belongs to a replaced engine or a closing window: forget it, post nothing.
+    Drop,
+    /// Start the chrome now.
+    Post,
+}
+
+/// `controller_tab` is the tab that just reported DOMContentLoaded or completion, or `None` for the fallback timer.
+pub(crate) fn chrome_gate_step(
+    gate: Option<ChromeGate>,
+    generation: u64,
+    closing: bool,
+    controller_tab: Option<TabId>,
+) -> ChromeGateStep {
+    match gate {
+        None => ChromeGateStep::Keep,
+        Some(gate) if closing || gate.generation != generation => ChromeGateStep::Drop,
+        Some(gate) if controller_tab.is_none_or(|tab| tab == gate.tab) => ChromeGateStep::Post,
+        Some(_) => ChromeGateStep::Keep,
+    }
+}
+
 const EDIT_HEIGHT: i32 = 28;
 const INPUT_PADDING: i32 = 8;
 
@@ -637,6 +692,9 @@ pub struct App {
     /// The engine's first creation attempt has finished, successfully or not. Until then the HTML
     /// chrome waits for the environment; afterwards a missing environment means native chrome.
     engine_creation_settled: bool,
+    /// HTML chrome start held back while the first content controller is created (see
+    /// `chrome_start`); released by that controller or by `CHROME_GATE_LIMIT_MS`.
+    chrome_gate: Option<ChromeGate>,
     pub closing: bool,
     /// When the window title last changed for blocked-request counts.
     title_synced_at: Option<Instant>,
@@ -5653,6 +5711,7 @@ impl App {
             prewarm_requested: false,
             chrome_environment: None,
             engine_creation_settled: false,
+            chrome_gate: None,
             closing: false,
             title_synced_at: None,
             title_dirty: false,
@@ -7210,6 +7269,10 @@ impl App {
     pub(crate) fn current_chrome_environment(app: &AppRef) -> Option<(u64, ICoreWebView2Environment)> {
         let state = app.try_borrow().ok()?;
         if state.closing || state.initializing || state.engine.is_none() { return None; }
+        // A held chrome start (`chrome_gate`) has no environment to give yet: every caller (the
+        // startup request, a wake) would otherwise start the views ahead of the gate. Its release
+        // clears the gate before it posts `WM_HTML_CHROME_ENV`.
+        if state.chrome_gate.is_some() { return None; }
         Some((state.engine_generation, state.chrome_environment.clone()?))
     }
 
@@ -7229,6 +7292,11 @@ impl App {
             );
             match step {
                 ChromeEnvironmentStep::Ready => {
+                    // A held chrome start (`chrome_gate`) is answered with `WM_HTML_CHROME_ENV` when it
+                    // releases: starting the views from here would bypass the gate.
+                    if state.chrome_gate.is_some() {
+                        return ChromeEnvironment::Pending;
+                    }
                     if let Some(environment) = state.chrome_environment.clone() {
                         return ChromeEnvironment::Ready(environment);
                     }
@@ -7247,6 +7315,10 @@ impl App {
         Self::start_engine_creation(app);
         let mut state = app.borrow_mut();
         if let Some(environment) = state.chrome_environment.clone() {
+            // The engine may have settled while it was being started: a held chrome start still waits.
+            if state.chrome_gate.is_some() {
+                return ChromeEnvironment::Pending;
+            }
             return ChromeEnvironment::Ready(environment);
         }
         if !state.initializing {
@@ -7259,25 +7331,74 @@ impl App {
 
     /// Records the outcome of engine creation for the HTML chrome and tells the window. Native
     /// mode never posts anything.
-    fn settle_chrome_environment(app: &AppRef, generation: u64, environment: Option<ICoreWebView2Environment>) {
+    fn settle_chrome_environment(
+        app: &AppRef,
+        generation: u64,
+        environment: Option<ICoreWebView2Environment>,
+        content_tab: Option<TabId>,
+    ) {
         if !crate::chrome_host::html_ui_enabled() {
             return;
         }
-        let (hwnd, retired) = {
+        let (hwnd, retired, start) = {
             let mut state = app.borrow_mut();
             if state.closing || state.engine_generation != generation { return; }
             state.engine_creation_settled = true;
             let environment = if state.engine.is_some() { environment } else { None };
+            let has_environment = environment.is_some();
             let retired = std::mem::replace(&mut state.chrome_environment, environment);
-            (state.hwnd, retired)
+            // Only a working environment is worth waiting for; a failure posts at once.
+            let start = if has_environment { chrome_start(content_tab, false) } else { ChromeStart::Now };
+            if let ChromeStart::AfterController(tab) = start {
+                state.chrome_gate = Some(ChromeGate { generation, tab });
+            }
+            (state.hwnd, retired, start)
         };
         drop(retired);
+        if matches!(start, ChromeStart::AfterController(_)) {
+            // The content controller is being created; the chrome starts from its creation (or this
+            // timer, if it never comes) instead of competing with it.
+            if !win32::arm_chrome_gate(hwnd, CHROME_GATE_LIMIT_MS) {
+                Self::release_chrome_gate(app, None);
+            }
+            return;
+        }
         win32::post(
             hwnd,
             win32::WM_HTML_CHROME_ENV,
             windows::Win32::Foundation::WPARAM(0),
             windows::Win32::Foundation::LPARAM(0),
         );
+    }
+
+    /// Starts the held HTML chrome once the gated tab's DOMContentLoaded or completion arrives (`controller_tab`) or the
+    /// fallback timer fires (`None`). A gate of a replaced engine or a closing window is dropped.
+    pub(crate) fn release_chrome_gate(app: &AppRef, controller_tab: Option<TabId>) {
+        let hwnd = {
+            let Ok(mut state) = app.try_borrow_mut() else { return; };
+            let step = chrome_gate_step(state.chrome_gate, state.engine_generation, state.closing, controller_tab);
+            match step {
+                ChromeGateStep::Keep => return,
+                ChromeGateStep::Drop => {
+                    state.chrome_gate = None;
+                    None
+                }
+                ChromeGateStep::Post => {
+                    state.chrome_gate = None;
+                    let _ = state.log.record("html_chrome_gate_released");
+                    Some(state.hwnd)
+                }
+            }
+        };
+        if let Some(hwnd) = hwnd {
+            win32::disarm_chrome_gate(hwnd);
+            win32::post(
+                hwnd,
+                win32::WM_HTML_CHROME_ENV,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            );
+        }
     }
 
     /// Drops the app's reference to the shared environment. Called when the window closes, after
@@ -7507,6 +7628,9 @@ impl App {
                             Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, true, false);
                         }
                         // --- end split view ---
+                        // The chrome gate is not released here: the toolbar/tabs/rail controllers would
+                        // run inside the Navigate -> NavigationStarting window. It is released by the
+                        // gated tab's DOMContentLoaded (or completion) (`navigation_progress`).
                     }
                 }))
             },
@@ -7617,6 +7741,12 @@ impl App {
                     engine::NavigationProgressEvent::Completed(id) => (id, 3),
                 };
                 if let Some(app) = nav_progress_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
+                    // The gated tab's DOMContentLoaded (or completion, whichever comes first) starts the
+                    // held HTML chrome: ContentLoading is still before the page's first paint, and the
+                    // chrome's renderer and controllers would compete with it.
+                    if stage >= 2 {
+                        Self::release_chrome_gate(&app, Some(tab_id));
+                    }
                     let active = app.borrow().tab_model.active() == tab_id;
                     let progress_event = match stage {
                         1 => NavigationProgressEvent::Advanced(
@@ -7869,6 +7999,16 @@ impl App {
                     }
                 }))
             },
+            renderer_pid_event: {
+                let log = app.borrow().log.clone();
+                // Opt-in (env var): listing processes at controller_ready perturbs the timeline it measures.
+                (log.enabled() && std::env::var_os("BOWSER_LOG_RENDERER_PIDS").is_some()).then(|| {
+                    Rc::new(move |event: &'static str, tab: TabId, pid: u64, token: &str| {
+                        let token: String = token.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).collect();
+                        let _ = log.record_probe(event, u64::from(tab.0), &token, pid);
+                    }) as Rc<dyn Fn(&'static str, TabId, u64, &str)>
+                })
+            },
         };
         let allowed_file = app.borrow().allowed_benchmark_file.clone();
         let plan = extension_startup_plan(app, &profile);
@@ -7933,9 +8073,14 @@ impl App {
         }
         match result {
             Ok(engine) => {
+                // The queued navigation's tab, read before `complete_engine_creation` takes it.
+                let content_tab = {
+                    let state = app.borrow();
+                    state.pending.as_ref().map(|_| state.pending_tab.unwrap_or_else(|| state.tab_model.active()))
+                };
                 // Keep the captured generation through configuration and environment publication.
                 Self::complete_engine_creation(app, generation, engine);
-                Self::settle_chrome_environment(app, generation, environment);
+                Self::settle_chrome_environment(app, generation, environment, content_tab);
             }
             Err(error) => {
                 let (queue, hwnd) = {
@@ -7943,7 +8088,7 @@ impl App {
                     state.initializing = false;
                     (state.engine_notices.clone(), state.hwnd)
                 };
-                Self::settle_chrome_environment(app, generation, None);
+                Self::settle_chrome_environment(app, generation, None, None);
                 Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::CreationFailed(error.code().0));
             }
         }
@@ -8034,10 +8179,22 @@ impl App {
         let prewarm_requested = std::mem::take(&mut state.prewarm_requested);
         drop(state);
         Self::repost_engine_notices(app);
+        let content_requested = pending.is_some();
         if let Some(pending) = pending {
             Self::navigate_tab(app, pending_tab.unwrap_or(active_tab), &pending);
         } else if prewarm_requested {
             let _ = Self::with_engine(app, |engine| engine.prewarm_tab(active_tab));
+        }
+        if content_requested || prewarm_requested {
+            // The first content controller is now being created (the browser process does that work);
+            // build the blocker tables its setup needs while this thread would only wait, instead of
+            // between that controller's creation and its first navigation.
+            let blocker = app.borrow().blocker.clone();
+            if let Some(blocker) = blocker
+                && let Ok(state) = blocker.try_borrow()
+            {
+                state.warm_for_first_tab();
+            }
         }
         if automatic { return; }
         let split = { app.borrow().split_view };
@@ -8296,6 +8453,13 @@ impl App {
         Self::schedule_background_maintenance(app);
     }
 
+    /// Whether the shown tab is still loading its first document (not yet usable).
+    pub(crate) fn active_page_loading(app: &AppRef) -> bool {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state.tabs.iter().any(|tab| tab.id == active && tab.loading && !tab.page_usable)
+    }
+
     fn tab_page_loaded(app: &AppRef, tab_id: TabId) {
         let active = {
             let mut state = app.borrow_mut();
@@ -8316,6 +8480,9 @@ impl App {
         };
         // The address pill's connection icon depends on the load outcome, so repaint it.
         Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+        if active {
+            win32::content_loaded_popup_prewarm(app.borrow().hwnd);
+        }
         if !active {
             // A newly completed hidden document can now run the safety probe. Defer scheduling
             // because the native completion can arrive with the engine detached from App.
@@ -12033,6 +12200,7 @@ mod tests {
             prewarm_requested: false,
             chrome_environment: None,
             engine_creation_settled: false,
+            chrome_gate: None,
             closing: false,
             title_synced_at: None,
             title_dirty: false,
@@ -12768,6 +12936,26 @@ mod tests {
         assert!(!session_arm_allowed(false, false, false));
         assert!(!session_arm_allowed(true, true, false), "a queued save builds no snapshot");
         assert!(!session_arm_allowed(true, false, true));
+    }
+
+    #[test]
+    fn chrome_waits_for_the_restored_tab_controller_only_when_content_is_queued() {
+        assert_eq!(chrome_start(None, false), ChromeStart::Now, "a blank start has no controller to wait for");
+        assert_eq!(chrome_start(Some(TabId(3)), false), ChromeStart::AfterController(TabId(3)));
+        assert_eq!(chrome_start(Some(TabId(3)), true), ChromeStart::Now, "an existing controller needs no wait");
+    }
+
+    #[test]
+    fn the_chrome_gate_releases_for_its_own_navigation_progress_or_the_timer_only() {
+        let gate = Some(ChromeGate { generation: 4, tab: TabId(2) });
+        assert_eq!(chrome_gate_step(None, 4, false, Some(TabId(2))), ChromeGateStep::Keep);
+        assert_eq!(chrome_gate_step(gate, 4, false, Some(TabId(9))), ChromeGateStep::Keep, "another tab's navigation");
+        assert_eq!(chrome_gate_step(gate, 4, false, Some(TabId(2))), ChromeGateStep::Post);
+        assert_eq!(chrome_gate_step(gate, 4, false, None), ChromeGateStep::Post, "the fallback timer");
+        assert_eq!(chrome_gate_step(gate, 5, false, None), ChromeGateStep::Drop, "a replaced engine");
+        assert_eq!(chrome_gate_step(gate, 5, false, Some(TabId(2))), ChromeGateStep::Drop);
+        assert_eq!(chrome_gate_step(gate, 4, true, None), ChromeGateStep::Drop, "a closing window");
+        assert!(CHROME_GATE_LIMIT_MS >= 2_000 && CHROME_GATE_LIMIT_MS <= 3_000, "past a normal restore's ContentLoading, short of a stalled start");
     }
 
     #[test]

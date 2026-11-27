@@ -18,7 +18,7 @@ use webview2_com::{
     AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, CoreWebView2CustomSchemeRegistration,
     CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
     FrameCreatedEventHandler, FrameNavigationStartingEventHandler, FocusChangedEventHandler, IFixedEnvironmentOptions4,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler, ExecuteScriptCompletedHandler,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, ExecuteScriptCompletedHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
     WebResourceRequestedEventHandler, Microsoft::Web::WebView2::Win32::*,
 };
@@ -50,6 +50,7 @@ use super::{assets::SPLIT_START_URL, protocol::SplitCommand};
 // --- end split view ---
 use crate::shortcuts::{self, Command as Shortcut};
 use super::handshake::{self, ChromeView, DocumentToken, Session, StateIdentity};
+use super::shared_renderer::{self, Coordinator, HostId, Step};
 
 const VK_BACK: u32 = 0x08;
 const VK_ESCAPE: u32 = 0x1B;
@@ -461,6 +462,8 @@ struct State {
     is_current: Rc<dyn Fn() -> bool>,
     view: View,
     diagnostic_id: u64,
+    /// Identity in the shared-renderer coordinator (see `shared_renderer.rs`).
+    shared_id: HostId,
     focus_trace: Option<crate::performance::FocusTrace>,
     /// The window the controller is a child of; `applied_bounds` are in its client coordinates.
     parent: HWND,
@@ -916,8 +919,13 @@ impl ChromeHost {
         };
         for remove in removers { remove(); }
         let closed = unsafe { controller.Close() }.is_ok();
-        let state = self.state.borrow();
-        state._env.detail(if closed { "chrome_host_close_succeeded" } else { "chrome_host_close_failed" }, state.view, state.diagnostic_id);
+        let shared_id = {
+            let state = self.state.borrow();
+            state._env.detail(if closed { "chrome_host_close_succeeded" } else { "chrome_host_close_failed" }, state.view, state.diagnostic_id);
+            state.shared_id
+        };
+        // Nothing may wait for, or open through, this view any longer.
+        run_steps(with_coordinator(|c, now| c.gone(shared_id, now)));
     }
 
     fn observe(&self, result: Result<()>) -> Result<()> {
@@ -1067,6 +1075,7 @@ fn configure(
             is_current: setup.is_current.clone(),
             view: setup.view,
             diagnostic_id: setup.env.next_diagnostic_id(),
+            shared_id: next_shared_id(),
             focus_trace,
             parent: setup.parent,
             applied_bounds: LOADING_BOUNDS,
@@ -1179,8 +1188,133 @@ fn prepare(
     current()?;
     install_handlers(host, environment, setup, &webview)?;
     current()?;
-    let start = wide(setup.view.start_url());
+    start_page(host, setup)
+}
+
+/// What a configured host still has to be given: its page.
+#[derive(Clone)]
+struct Pending {
+    id: HostId,
+    state: Weak<RefCell<State>>,
+}
+
+thread_local! {
+    /// Which chrome views load on their own and which are opened by a loaded chrome view so they share
+    /// its renderer process (`shared_renderer.rs`).
+    static COORDINATOR: RefCell<Coordinator<Pending>> = RefCell::new(Coordinator::default());
+    static NEXT_SHARED_ID: Cell<HostId> = const { Cell::new(1) };
+    static OPEN_TIMER: Cell<usize> = const { Cell::new(0) };
+    static CLOCK: Instant = Instant::now();
+}
+
+fn next_shared_id() -> HostId {
+    NEXT_SHARED_ID.with(|next| { let id = next.get(); next.set(id + 1); id })
+}
+
+fn now_ms() -> u64 {
+    CLOCK.with(|start| start.elapsed().as_millis() as u64)
+}
+
+/// Runs `f` on the coordinator. A re-entrant call (a close while a decision is being made) is a no-op;
+/// the pending views are then picked up by the next event or by the timer.
+fn with_coordinator(f: impl FnOnce(&mut Coordinator<Pending>, u64) -> Vec<Step<Pending>>) -> Vec<Step<Pending>> {
+    COORDINATOR.with(|c| c.try_borrow_mut().map(|mut c| f(&mut c, now_ms())).unwrap_or_default())
+}
+
+/// Decides how this configured host gets its page: loading it itself (the first chrome view of the
+/// environment, or any view when the shared-renderer path is unavailable) or waiting to be opened by
+/// a loaded sibling. The host's own direct load happens here so its error fails the creation.
+fn start_page(host: &ChromeHost, setup: &Setup) -> Result<()> {
+    let (id, pending) = {
+        let state = host.state.borrow();
+        (state.shared_id, Pending { id: state.shared_id, state: Rc::downgrade(&host.state) })
+    };
+    let env = Rc::as_ptr(&setup.env.inner) as usize;
+    let steps = with_coordinator(|c, now| c.register(id, env, setup.view.start_url(), setup.view != View::Split, pending, now));
+    let mut own = Ok(());
+    let mut rest = Vec::new();
+    for step in steps {
+        match step {
+            Step::Navigate(pending) if pending.id == id => own = navigate_pending(&pending),
+            other => rest.push(other),
+        }
+    }
+    run_steps(rest);
+    own
+}
+
+/// Loads a pending host's own start url.
+fn navigate_pending(pending: &Pending) -> Result<()> {
+    let Some(shared) = pending.state.upgrade() else { return Ok(()); };
+    let (webview, url, live) = {
+        let state = shared.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+        (state.webview.clone(), state.view.start_url(), !state.closed && (state.is_current)())
+    };
+    if !live { return Ok(()); }
+    let start = wide(url);
     unsafe { webview.Navigate(PCWSTR(start.as_ptr())) }
+}
+
+/// Carries out coordinator decisions, then re-arms the timer for the next deadline.
+fn run_steps(steps: Vec<Step<Pending>>) {
+    for step in steps {
+        match step {
+            Step::Navigate(pending) => {
+                if navigate_pending(&pending).is_err() {
+                    let failed = pending.state.upgrade().and_then(|s| s.try_borrow().ok().map(|s| s.on_failed.clone()));
+                    if let Some(failed) = failed { failed(); }
+                }
+            }
+            Step::Open { opener, url } => open_through(opener, url),
+        }
+    }
+    rearm_open_timer();
+}
+
+/// Asks the loaded chrome view `opener` to `window.open` the waiting view's start url. Its
+/// `NewWindowRequested` handler answers with the waiting view's pre-created WebView.
+fn open_through(opener: HostId, url: &'static str) {
+    let webview = LIVE_HOSTS.with(|hosts| {
+        hosts.borrow().iter().filter_map(Weak::upgrade).find_map(|shared| {
+            let state = shared.try_borrow().ok()?;
+            (state.shared_id == opener && !state.closed).then(|| state.webview.clone())
+        })
+    });
+    let started = match (webview, shared_renderer::open_script(url)) {
+        (Some(webview), Some(script)) => {
+            let script = wide(&script);
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, _| {
+                if status.is_err() { run_steps(with_coordinator(|c, now| c.open_failed(now))); }
+                Ok(())
+            }));
+            unsafe { webview.ExecuteScript(PCWSTR(script.as_ptr()), &handler) }.is_ok()
+        }
+        _ => false,
+    };
+    if !started {
+        run_steps(with_coordinator(|c, now| c.open_failed(now)));
+    }
+}
+
+fn rearm_open_timer() {
+    use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+    let next = COORDINATOR.with(|c| c.try_borrow().ok().and_then(|c| c.next_deadline()));
+    unsafe {
+        let old = OPEN_TIMER.with(|t| t.replace(0));
+        if old != 0 { let _ = KillTimer(None, old); }
+        if let Some(deadline) = next {
+            let delay = deadline.saturating_sub(now_ms()).clamp(1, u32::MAX as u64) as u32;
+            let id = SetTimer(None, 0, delay, Some(open_timer_proc));
+            OPEN_TIMER.with(|t| t.set(id));
+        }
+    }
+}
+
+unsafe extern "system" fn open_timer_proc(_: HWND, _: u32, id: usize, _: u32) {
+    use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+    unsafe { let _ = KillTimer(None, id); }
+    OPEN_TIMER.with(|t| if t.get() == id { t.set(0); });
+    run_steps(with_coordinator(|c, now| c.tick(now)));
 }
 
 /// The getter may pump. Only a controller still authorized by its creation lease may attach.
@@ -1356,15 +1490,38 @@ fn install_handlers(
             let _ = w.remove_FrameCreated(token);
         }));
 
-        // Popups are swallowed.
+        // Popups are swallowed, except the one `window.open` this host itself started for a waiting
+        // chrome view (`shared_renderer.rs`): exactly that view's start url, from the chosen opener.
         #[cfg(test)] let window_probe=crate::extension_window_probe::Observer::prepare("privileged-chrome-host",webview);
         #[cfg(test)] let request_probe=window_probe.clone();
+        let opener_weak = weak.clone();
         webview.add_NewWindowRequested(
             &NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
                     #[cfg(test)] let request_id=request_probe.enter(_sender.as_ref(),&args);
+                    let mut uri = PWSTR::null();
+                    let requested = args.Uri(&mut uri).ok().map(|()| CoTaskMemPWSTR::from(uri).to_string());
+                    let opener = opener_weak.upgrade().and_then(|s| s.try_borrow().ok().filter(|s| !s.closed).map(|s| s.shared_id));
+                    let claimed = match (opener, requested) {
+                        (Some(opener), Some(uri)) => COORDINATOR.with(|c| c.try_borrow_mut().ok().and_then(|mut c| c.accept(opener, &uri))),
+                        _ => None,
+                    };
+                    #[allow(unused_mut)]
+                    let mut decision = "blocked-existing-policy";
+                    if let Some(pending) = claimed {
+                        decision = "shared-renderer-open";
+                        let webview = pending.state.upgrade().and_then(|s| s.try_borrow().ok().filter(|s| !s.closed).map(|s| s.webview.clone()));
+                        match webview {
+                            Some(webview) if args.SetNewWindow(&webview).is_ok() => {}
+                            // The view could not be handed over: load it on its own after all.
+                            _ => { let _ = navigate_pending(&pending); }
+                        }
+                        // The next waiting view may go now.
+                        run_steps(with_coordinator(|c, now| c.tick(now)));
+                    }
                     args.SetHandled(true)?;
-                    #[cfg(test)] request_probe.finish(request_id,&args,"blocked-existing-policy",false);
+                    #[cfg(test)] request_probe.finish(request_id,&args,decision,false);
+                    let _ = decision;
                 }
                 Ok(())
             })),
@@ -1374,6 +1531,27 @@ fn install_handlers(
         let w = webview.clone();
         removers.push(Box::new(move || {
             let _ = w.remove_NewWindowRequested(token);
+        }));
+
+        // A loaded chrome page may now open the views waiting behind it (`shared_renderer.rs`).
+        let loaded_weak = weak.clone();
+        webview.add_NavigationCompleted(
+            &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+                let (Some(sender), Some(args)) = (sender, args) else { return Ok(()); };
+                let mut success = windows::core::BOOL::default();
+                if args.IsSuccess(&mut success).is_err() || !success.as_bool() { return Ok(()); }
+                let mut source = PWSTR::null();
+                if sender.Source(&mut source).is_err() { return Ok(()); }
+                if !is_start_url(view, &CoTaskMemPWSTR::from(source).to_string()) { return Ok(()); }
+                let id = loaded_weak.upgrade().and_then(|s| s.try_borrow().ok().filter(|s| !s.closed).map(|s| s.shared_id));
+                if let Some(id) = id { run_steps(with_coordinator(|c, now| c.loaded(id, now))); }
+                Ok(())
+            })),
+            &mut token,
+        )?;
+        let w = webview.clone();
+        removers.push(Box::new(move || {
+            let _ = w.remove_NavigationCompleted(token);
         }));
 
         // Downloads are cancelled.
@@ -1415,12 +1593,17 @@ fn install_handlers(
                     args.ProcessFailedKind(&mut kind).ok().map(|()| kind)
                 });
                 if process_failure_is_fatal(kind) {
+                    let mut shared_id = None;
                     if let Some(shared) = failed_weak.upgrade() {
                         if let Ok(mut state) = shared.try_borrow_mut() {
                             if let Some(document) = &mut state.document { document.fail(); }
                             state.revealed = false;
+                            shared_id = Some(state.shared_id);
                         }
                     }
+                    // The renderer is shared: every chrome view of the environment hears this and falls
+                    // back; none of them may be asked to open a replacement.
+                    if let Some(id) = shared_id { run_steps(with_coordinator(|c, now| c.failed(id, now))); }
                     on_failed();
                 }
                 Ok(())

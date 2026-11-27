@@ -652,6 +652,11 @@ struct WindowChrome {
     /// The user deliberately took the omnibox (Ctrl+L, a new tab, a click), as opposed to it merely
     /// holding the focus it started with.
     omnibox_claimed: bool,
+    /// Enter was pressed in the omnibox and the page it opened has not committed yet, with no focus
+    /// change since. The page takes the keyboard when it commits, whatever was typed or claimed
+    /// before the Enter: a new tab has no page controller at the Enter, so the move made then is
+    /// a no-op.
+    omnibox_submitted: bool,
     /// The last `state` JSON posted to the HTML toolbar, so unchanged state is not sent again.
     html_last_state: Option<String>,
     /// CSS px the toolbar page's download button takes from the pill (`0` or `DL_BUTTON_SLOT`), and the
@@ -747,6 +752,8 @@ struct WindowChrome {
     flyout_failed: bool,
     /// The hover layer was asked for since the toolbar activated (see `ensure_hover_layer`).
     hover_requested: bool,
+    /// The popup prewarm waits for the first page of this window to load (see `defer_popup_prewarm`).
+    popup_prewarm_deferred: bool,
     /// The exit flush ran (`flush_for_exit`), so a close after an ended session does not repeat it.
     exit_flushed: bool,
 }
@@ -892,6 +899,7 @@ impl WindowChrome {
             html_omnibox_focused: false,
             omnibox_edited: false,
             omnibox_claimed: false,
+            omnibox_submitted: false,
             html_last_state: None,
             html_dl_slot: 0,
             html_dl_last: None,
@@ -943,6 +951,7 @@ impl WindowChrome {
             flyout_requested: false,
             flyout_failed: false,
             hover_requested: false,
+            popup_prewarm_deferred: false,
             exit_flushed: false,
         }
     }
@@ -4523,6 +4532,11 @@ unsafe extern "system" fn window_proc(
                 surface_recovery::tick(hwnd);
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == CHROME_GATE_TIMER => {
+                let _ = KillTimer(Some(hwnd), CHROME_GATE_TIMER);
+                if let Some(app) = app { App::release_chrome_gate(app, None); }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == ENGINE_RECOVERY_TIMER => {
                 if let Some(app) = app {
                     App::process_engine_notices(app);
@@ -4978,6 +4992,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), chrome_recovery::TIMER);
                 let _ = KillTimer(Some(hwnd), surface_recovery::TIMER);
                 let _ = KillTimer(Some(hwnd), ENGINE_RECOVERY_TIMER);
+                let _ = KillTimer(Some(hwnd), CHROME_GATE_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_BACKGROUND_MAINTENANCE_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
@@ -6220,9 +6235,11 @@ fn workspace_glyph_name(icon: crate::workspaces::WorkspaceIcon) -> &'static str 
 /// Whether a page that just committed should take the keyboard from the omnibox (V35): only when the
 /// omnibox has it, the user has neither typed in it nor deliberately taken it, and the page is a
 /// real one (a blank or new tab is waiting for the user to type) and no menu or popup is open, since
-/// moving the keyboard would dismiss it. Pure.
-fn should_focus_page_after_commit(omnibox_focused: bool, edited: bool, claimed: bool, blank_page: bool, popup_open: bool) -> bool {
-    omnibox_focused && !edited && !claimed && !blank_page && !popup_open
+/// moving the keyboard would dismiss it. Enter in the omnibox (`submitted`) hands the keyboard to the
+/// page it opens whatever was typed or claimed before: left in the omnibox, the caret would blink
+/// forever behind a settled page. Pure.
+fn should_focus_page_after_commit(omnibox_focused: bool, edited: bool, claimed: bool, submitted: bool, blank_page: bool, popup_open: bool) -> bool {
+    omnibox_focused && (submitted || (!edited && !claimed)) && !blank_page && !popup_open
 }
 
 fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
@@ -6232,12 +6249,14 @@ fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
             s.html_omnibox_focused || (!s.edit.is_invalid() && unsafe { GetFocus() } == s.edit),
             s.omnibox_edited,
             s.omnibox_claimed,
+            s.omnibox_submitted,
             s.urls.get(&id).is_none_or(|url| url.is_empty()),
         )
     });
-    let Some((focused, edited, claimed, blank)) = state else { return };
+    let Some((focused, edited, claimed, submitted, blank)) = state else { return };
     let popup_open = html_popup::is_active(hwnd) || menu::is_tracking();
-    if should_focus_page_after_commit(focused, edited, claimed, blank, popup_open) {
+    if should_focus_page_after_commit(focused, edited, claimed, submitted, blank, popup_open) {
+        let _ = with_chrome(hwnd, |s| s.omnibox_submitted = false);
         App::focus_page(app);
     }
 }
@@ -9809,6 +9828,7 @@ fn html_env_settled(hwnd: HWND) {
     let Some((generation, environment)) = App::current_chrome_environment(&app) else { return; };
     let begin = with_chrome(hwnd, |s| s.begin_html_hosts(generation, Instant::now())).unwrap_or(false);
     if !begin { return; }
+    let _ = app.borrow().log.record("html_chrome_hosts_started");
     let attachment_owner = Rc::downgrade(&app);
     let env = ChromeEnv::new(environment, App::diagnostic_detail_log(&app), App::diagnostic_interaction_log(&app), Rc::new(move |pid| {
         attachment_owner.upgrade().is_some_and(|app| App::chrome_browser_process_attached(&app, generation, pid))
@@ -9838,8 +9858,37 @@ pub(super) fn request_popup_prewarm(hwnd: HWND) {
     }
     unsafe { let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER); }
     // A hover layer that failed since is asked for again on its next use.
-    let _ = with_chrome(hwnd, |s| s.hover_requested = false);
+    let _ = with_chrome(hwnd, |s| { s.hover_requested = false; s.popup_prewarm_deferred = false; });
     prewarm_html_popup(hwnd);
+}
+
+/// Longest the popup host waits for the first page of a window before it is created anyway.
+const POPUP_PREWARM_PAGE_WAIT_MS: u32 = 2500;
+
+/// Startup only: the popup host shares the WebView2 browser process with the page being restored,
+/// so while that page is still loading its creation waits for the load to finish (or a timeout).
+/// Any real use of a popup asks for the host directly (`request_popup_prewarm`) and is not delayed.
+pub(super) fn defer_popup_prewarm(hwnd: HWND) {
+    let loading = app_of(hwnd).is_some_and(|app| App::active_page_loading(&app));
+    if !loading {
+        request_popup_prewarm(hwnd);
+        return;
+    }
+    let armed = unsafe { SetTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER, POPUP_PREWARM_PAGE_WAIT_MS, None) } != 0;
+    if armed {
+        let _ = with_chrome(hwnd, |s| s.popup_prewarm_deferred = true);
+    } else {
+        request_popup_prewarm(hwnd);
+    }
+}
+
+/// The window's page finished loading: a deferred popup prewarm may proceed (shortly, so the page's
+/// first paint is not contended either).
+pub(crate) fn content_loaded_popup_prewarm(hwnd: HWND) {
+    if hwnd.is_invalid() || !with_chrome(hwnd, |s| std::mem::take(&mut s.popup_prewarm_deferred)).unwrap_or(false) {
+        return;
+    }
+    unsafe { let _ = SetTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER, 150, None); }
 }
 // --- end popup surfaces ---
 // --- end popup host ---
@@ -9963,6 +10012,19 @@ const HTML_WAIT_TIMER: usize = 0x5f4;
 /// How long a starting window shows plain chrome while the engine environment for its HTML chrome
 /// starts (the same span `chrome_recovery` gives each step of a host's start).
 const HTML_WAIT_LIMIT: Duration = Duration::from_secs(15);
+
+/// Fallback for `App::release_chrome_gate`: starts the HTML chrome even if the content controller
+/// it waits for never arrives.
+const CHROME_GATE_TIMER: usize = 0x5f5;
+
+pub(crate) fn arm_chrome_gate(hwnd: HWND, limit_ms: u32) -> bool {
+    if hwnd.is_invalid() { return false; }
+    unsafe { SetTimer(Some(hwnd), CHROME_GATE_TIMER, limit_ms, None) != 0 }
+}
+
+pub(crate) fn disarm_chrome_gate(hwnd: HWND) {
+    unsafe { let _ = KillTimer(Some(hwnd), CHROME_GATE_TIMER); }
+}
 
 pub(crate) fn arm_engine_recovery_timeout(hwnd: HWND) -> bool {
     if hwnd.is_invalid() { return false; }
@@ -10474,6 +10536,11 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);
             // OB-11: after a refusal (or empty text) the address field keeps the keyboard.
             if App::submit_opened(&app, &text) {
+                // A new tab has no page controller yet, so the move below can be a no-op: the
+                // commit then hands over the keyboard (`omnibox_submitted`). Left in the omnibox
+                // for good, its caret blinks forever, a steady compositor and GPU cost behind a
+                // settled page.
+                let _ = with_chrome(hwnd, |s| s.omnibox_submitted = true);
                 App::focus_page(&app);
             }
         }
@@ -10517,6 +10584,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             // --- end omnibox suggest ---
             let _ = with_chrome(hwnd, |s| {
                 s.html_omnibox_focused = on;
+                s.omnibox_submitted = false;
                 if !on {
                     s.omnibox_claimed = false;
                     s.omnibox_edited = false;
@@ -12081,7 +12149,11 @@ fn html_edit(hwnd: HWND, seq: u32, text: &str) {
         s.completion.as_ref().map(|c| c.completed_suffix.clone())
     })
     .flatten();
-    App::prewarm(&app, text);
+    // No `App::prewarm` here, unlike the native field. Prewarming creates the tab's content
+    // WebView2 controller, and while that creation is in flight the toolbar's key pipeline stalls:
+    // keys sent in that window are held in the shared input queue until the next key arrives.
+    // A burst (paste, automation) followed by Enter then loses the Enter. The first typed character
+    // is exactly when the creation would start, so the controller is created at submit instead.
     if text.is_empty() {
         super::html_hover::suggest_close(hwnd); // --- omnibox suggest ---
         return;
@@ -12825,6 +12897,7 @@ pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
     let _ = with_chrome(hwnd, |s| {
         s.omnibox_claimed = true;
         s.omnibox_edited = false;
+        s.omnibox_submitted = false;
     });
     // While the HTML toolbar is active, its page owns the omnibox and the native input stays hidden.
     if let Some(host) = with_chrome(hwnd, |s| {
@@ -13542,6 +13615,7 @@ mod tests {
     fn the_main_window_timer_ids_are_unique_and_outside_hover_ranges() {
         let ids = [
             ENGINE_RECOVERY_TIMER,
+            CHROME_GATE_TIMER,
             surface_recovery::TIMER,
             chrome_recovery::TIMER,
             HTML_WAIT_TIMER,
@@ -13778,14 +13852,21 @@ mod tests {
     #[test]
     fn a_committed_page_takes_the_keyboard_only_from_an_untouched_omnibox() {
         // The omnibox holds the focus it started with and the page is a real one: move to the page.
-        assert!(should_focus_page_after_commit(true, false, false, false, false));
+        assert!(should_focus_page_after_commit(true, false, false, false, false, false));
         // Typing, a deliberate Ctrl+L / new tab / click, a blank page, no omnibox focus, or an open
         // menu or popup (the import offer): leave it.
-        assert!(!should_focus_page_after_commit(true, true, false, false, false));
-        assert!(!should_focus_page_after_commit(true, false, true, false, false));
-        assert!(!should_focus_page_after_commit(true, false, false, true, false));
-        assert!(!should_focus_page_after_commit(false, false, false, false, false));
-        assert!(!should_focus_page_after_commit(true, false, false, false, true));
+        assert!(!should_focus_page_after_commit(true, true, false, false, false, false));
+        assert!(!should_focus_page_after_commit(true, false, true, false, false, false));
+        assert!(!should_focus_page_after_commit(true, false, false, false, true, false));
+        assert!(!should_focus_page_after_commit(false, false, false, false, false, false));
+        assert!(!should_focus_page_after_commit(true, false, false, false, false, true));
+        // Enter in the omnibox hands the keyboard to the page it opens, after typing and a claim
+        // alike (a new tab's Ctrl+T / Ctrl+L), but still not to a blank page, a closed omnibox or
+        // an open popup.
+        assert!(should_focus_page_after_commit(true, true, true, true, false, false));
+        assert!(!should_focus_page_after_commit(true, true, true, true, true, false));
+        assert!(!should_focus_page_after_commit(false, true, true, true, false, false));
+        assert!(!should_focus_page_after_commit(true, true, true, true, false, true));
     }
 
     #[test]

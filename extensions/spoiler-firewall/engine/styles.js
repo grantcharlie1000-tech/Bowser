@@ -18,17 +18,13 @@ ${SHIELDED}{
   -webkit-user-select:none!important;user-select:none!important;
   transition:none!important;animation:none!important;
 }
-${SHIELDED} *,${SHIELDED} *::before,${SHIELDED} *::after{
-  visibility:hidden!important;transition:none!important;animation:none!important;
-  -webkit-user-select:none!important;user-select:none!important;
-}
-${HOST_SHIELDED},${HOST_SHIELDED} *,${HOST_SHIELDED} *::before,${HOST_SHIELDED} *::after{
+${HOST_SHIELDED}{
   visibility:hidden!important;transition:none!important;animation:none!important;
   -webkit-user-select:none!important;user-select:none!important;
 }
 [data-sfw-pos]{position:relative!important}
 /* region cover: work that did not fit in a time budget stays hidden (layout untouched) until it has been classified */
-[data-sfw-defer],[data-sfw-defer] *,[data-sfw-defer] *::before,[data-sfw-defer] *::after{visibility:hidden!important}
+[data-sfw-defer]{visibility:hidden!important}
 /* the overlay is the only thing that stays visible */
 ${SHIELDED} > sfw-shield,${HOST_SHIELDED} > sfw-shield,sfw-shield{visibility:visible!important}
 ${SHIELDED} ${SHIELDED} > sfw-shield{visibility:hidden!important}
@@ -77,9 +73,32 @@ sfw-shield[data-k="page"]{position:fixed!important;border-radius:0!important}
 body[data-sfw~="shield"] > sfw-shield{position:fixed!important;border-radius:0!important}
 sfw-shield[data-k="notice"]{position:fixed!important;inset:auto 14px 14px auto!important;width:auto!important;height:auto!important;
   border-radius:12px!important;container-type:normal!important;contain:none!important;overflow:visible!important}
-html[data-sfw-page~="shield"] > body,html[data-sfw-page~="shield"] > body *{visibility:hidden!important}
+html[data-sfw-page~="shield"] > body{visibility:hidden!important}
 html[data-sfw-page~="shield"]{overflow:hidden!important}
 `;
+
+  // Descendant rules, kept out of PAGE_CSS until a mark they key on is about to be written (runtime ensureMark, one more
+  // constructable sheet adopted right after the page sheet, empty until then). Their rightmost compound is universal, so
+  // the style engine tries them on every element of every style recalculation in every scope the sheet is adopted in,
+  // whether or not any element carries the mark. They hide what a page made visible explicitly (visibility:visible on a
+  // descendant) under a shield, a region cover or the page cover. Moved out of PAGE_CSS unchanged. Where one of them ties
+  // with another rule on the same box (same specificity, both !important, different values) the outcome keeps its order:
+  // [data-sfw-mc]::after (quarantine sheet) still comes later (this sheet sits between the page and quarantine sheets),
+  // and the fallback label of a shield nested under a shielded shadow host, which came after the :host() rule in
+  // PAGE_CSS, is restated after it here (its visibility is the only property the two share).
+  const DESC = {
+    shield: `${SHIELDED} *,${SHIELDED} *::before,${SHIELDED} *::after,
+${HOST_SHIELDED} *,${HOST_SHIELDED} *::before,${HOST_SHIELDED} *::after{
+  visibility:hidden!important;transition:none!important;animation:none!important;
+  -webkit-user-select:none!important;user-select:none!important;
+}
+${SHIELDED}[data-sfw-fb]::after{visibility:visible!important}
+`,
+    defer: `[data-sfw-defer] *,[data-sfw-defer] *::before,[data-sfw-defer] *::after{visibility:hidden!important}
+`,
+    page: `html[data-sfw-page~="shield"] > body *{visibility:hidden!important}
+`,
+  };
 
   // Media quarantine for high-risk hosts: hidden until the owning unit has been classified clear in a cold context.
   // While the OCR gate checks an image (host.ocr), a media-only wrapper gets a quiet "Checking image" veil (it fades in
@@ -236,5 +255,5 @@ input[type="image"]${k},[poster]${k}{visibility:hidden!important}
 }
 `;
 
-  return { PAGE_CSS, QUARANTINE_CSS, SHIELD_CSS, OPAQUE_RULE, REDUCED_RULE, quarantine, avatarNot };
+  return { PAGE_CSS, DESC, QUARANTINE_CSS, SHIELD_CSS, OPAQUE_RULE, REDUCED_RULE, quarantine, avatarNot };
 })();

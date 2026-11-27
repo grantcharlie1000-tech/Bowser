@@ -1028,15 +1028,16 @@ SFW.lexicon = (function () {
     const killSets = s.kills.map((a) => new Set(a)); // read-only (classify only calls has())
     const trieTok = newNode(), trieSub = newNode(), trieRR = newNode();
     const byCat = {};
-    const ZERO = [0];
+    // one template per shape holding its keys in compile()'s order: a term is a copy of it with the values filled in (the
+    // same keys in the same order as compile() makes; this runs cold in every document, so it does as little as it can)
+    const tpls = s.shapes.map((sh) => { const o = {}; for (let i = 0; i < sh.k.length; i++) o[sh.k[i]] = undefined; return o; });
     for (const row of s.terms) {
       const sh = s.shapes[row[0]];
       const c = row[1], flags = row[3];
-      const vals = { c: c, n: c.length, offs: row[2] === 0 ? ZERO.slice() : row[2].split(",").map(Number), cat: sh.cat, kind: sh.kind };
-      for (let i = 0; i < sh.b.length; i++) vals[sh.b[i]] = (flags & (2 << i)) !== 0;
-      for (let i = 0; i < sh.r.length; i++) vals[sh.r[i]] = sh.r[i] === "kills" ? killSets[row[4 + i]] : row[4 + i];
-      const t = {};
-      for (let i = 0; i < sh.k.length; i++) t[sh.k[i]] = vals[sh.k[i]]; // same key order as compile() (same object shape)
+      const t = Object.assign({}, tpls[row[0]]);
+      t.c = c; t.n = c.length; t.offs = row[2] === 0 ? [0] : row[2].split(",").map(Number); t.cat = sh.cat; t.kind = sh.kind;
+      for (let i = 0; i < sh.b.length; i++) t[sh.b[i]] = (flags & (2 << i)) !== 0;
+      for (let i = 0; i < sh.r.length; i++) t[sh.r[i]] = sh.r[i] === "kills" ? killSets[row[4 + i]] : row[4 + i];
       (byCat[t.cat] || (byCat[t.cat] = [])).push(t);
       insert(t.sub ? trieSub : trieTok, t);
       if (flags & 1) insert(trieRR, t);
@@ -1544,14 +1545,18 @@ SFW.classify = (function () {
   // The franchise name is fuzzy but its numeral must match exactly.
   function fuzzyScan(v, lex, hits) {
     const S = v.s, f = v.f, sid = v.sid, n = v.n;
+    // token starts, in order (the only positions a candidate may start at), found once instead of once per fuzzy term
+    const starts = [];
+    for (let s = 0; s < n; s++) if (f[s] & 1) starts.push(s);
     for (let z = 0; z < lex.fuzzy.length; z++) {
       if (OVER || (DEADLINE !== 0 && Date.now() > DEADLINE)) { OVER = true; return; }
       const fz = lex.fuzzy[z];
       const L = fz.c.length;
       if (!fz.term) fz.term = { c: fz.c, n: L, offs: [0], cat: fz.cat, kind: "", sub: false };
       const c1 = fz.c.charCodeAt(1), c2 = fz.c.charCodeAt(2);
-      for (let s = 0; s < n; s++) {
-        if (!(f[s] & 1) || S.charAt(s) !== fz.first) continue;
+      for (let si = 0; si < starts.length; si++) {
+        const s = starts[si];
+        if (S.charAt(s) !== fz.first) continue;
         // cheap necessary condition for <= 1 edit near the start (insert/delete/substitute/transpose of char 1 or 2)
         if (fz.d === 1) {
           const b1 = S.charCodeAt(s + 1), b2 = S.charCodeAt(s + 2);
@@ -1561,6 +1566,9 @@ SFW.classify = (function () {
           const e = s + len;
           if (e > n) break;
           if (sid[s] !== sid[e - 1]) continue;
+          // a name without a numeral only counts when the candidate ends a token (tested below as well): test it before the
+          // edit distance, which is the expensive part
+          if (!fz.nums && !(f[e - 1] & 2)) continue;
           const cand = S.slice(s, e);
           if (cand === fz.c) continue; // exact forms are handled by the trie
           if (fz.d === 1 ? !within1(fz.c, cand) : dl(fz.c, cand, fz.d) > fz.d) continue;

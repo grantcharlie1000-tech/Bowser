@@ -10,7 +10,17 @@ SFW.shield = (function () {
   const states = new WeakMap(); // container -> state
   const shielded = new Set(); // containers currently in "shielded" or "revealed" state
   const hosts = new WeakMap(); // overlay host -> container
-  const deps = { rootOf: null, sheet: null, css: null, onReveal: null, onReblur: null, reduced: false };
+  // ensure(kind, el): called synchronously before this module writes a mark the page sheet's descendant rules key on
+  // (data-sfw="shield": "shield"; data-sfw-page: "page"), so the rules are in place before any style is computed with it.
+  // sheet: the overlay sheet, or a function that returns it (created on the first overlay).
+  const deps = { rootOf: null, sheet: null, css: null, onReveal: null, onReblur: null, reduced: false, ensure: null };
+  function ensure(kind, el) {
+    if (deps.ensure) { try { deps.ensure(kind, el); } catch (e) { /* ignore */ } }
+  }
+  // data-sfw-hold writes, reported to the same-world play() hook (SFW.hooks.noteHold): it walks ancestors only while one is set
+  function setHold(el) { nSet(el, "data-sfw-hold", "1"); noteHold(el, true); }
+  function dropHold(el) { nDel(el, "data-sfw-hold"); noteHold(el, false); } // (still reported as held if the removal threw)
+  function noteHold(el, on) { try { if (SFW.hooks && SFW.hooks.noteHold) SFW.hooks.noteHold(el, on); } catch (e) { /* ignore */ } }
   // captured at load: a page that later patches Object.keys / Element.prototype.setAttribute cannot disable the shields
   const OKEYS = Object.keys;
   const CALL = Function.prototype.call;
@@ -265,9 +275,11 @@ SFW.shield = (function () {
     if (kind) host.setAttribute("data-k", kind);
     const root = SFW.hooks.attachClosed(host);
     // the setter captured at load: a page that deleted ShadowRoot.prototype.adoptedStyleSheets afterwards cannot unstyle overlays
-    if (deps.sheet) {
-      if (SR_SHEETS && SR_SHEETS.set) SR_SHEETS.set.call(root, [deps.sheet]);
-      else if ("adoptedStyleSheets" in root) root.adoptedStyleSheets = [deps.sheet];
+    let sheet = deps.sheet;
+    if (typeof sheet === "function") { try { sheet = sheet(); } catch (e) { sheet = null; } }
+    if (sheet) {
+      if (SR_SHEETS && SR_SHEETS.set) SR_SHEETS.set.call(root, [sheet]);
+      else if ("adoptedStyleSheets" in root) root.adoptedStyleSheets = [sheet];
     }
     const cover = buildCover(doc, variant);
     root.appendChild(cover);
@@ -335,12 +347,12 @@ SFW.shield = (function () {
 
   // ---- element helpers ---------------------------------------------------------------------------------------
   function holdMedia(st) {
-    try { nSet(st.container, "data-sfw-hold", "1"); } catch (e) { /* ignore */ }
+    try { setHold(st.container); } catch (e) { /* ignore */ }
     const list = deepAll(st.container, "video,audio");
     for (const m of list) {
       try {
         if (!st.held.includes(m)) {
-          if (!nHas(m, "data-sfw-hold")) { nSet(m, "data-sfw-hold", "1"); st.held.push(m); }
+          if (!nHas(m, "data-sfw-hold")) { setHold(m); st.held.push(m); }
         }
         // what the page had asked for is remembered: when the unit turns out CLEAN (a "Checking" cover that was only a precaution, a
         // budget overflow) the video resumes; a user reveal or a spoiler verdict never restores it
@@ -365,9 +377,9 @@ SFW.shield = (function () {
   }
 
   function releaseMedia(st) {
-    for (const m of st.held) { try { nDel(m, "data-sfw-hold"); } catch (e) { /* ignore */ } }
+    for (const m of st.held) { try { dropHold(m); } catch (e) { /* ignore */ } }
     st.held.length = 0;
-    try { nDel(st.container, "data-sfw-hold"); } catch (e) { /* ignore */ }
+    try { dropHold(st.container); } catch (e) { /* ignore */ }
   }
 
   // Light-DOM descendants plus open/closed shadow roots known to the runtime.
@@ -381,7 +393,8 @@ SFW.shield = (function () {
       const all = node.querySelectorAll ? node.querySelectorAll("*") : [];
       for (let i = 0; i < all.length && i < 3000; i++) {
         const e = all[i];
-        if (e.localName.indexOf("-") < 0 && !e.hasAttribute("data-sfw-sr") && !e.shadowRoot) continue;
+        // (a same-world runtime knows closed roots from the attachShadow hook's map, without the data-sfw-sr mark)
+        if (e.localName.indexOf("-") < 0 && !e.hasAttribute("data-sfw-sr") && !e.shadowRoot && !(SFW.hooks && SFW.hooks.rootOf && SFW.hooks.rootOf(e))) continue;
         const sr = (deps.rootOf && deps.rootOf(e)) || e.shadowRoot;
         if (sr) walk(sr, depth + 1);
       }
@@ -444,6 +457,7 @@ SFW.shield = (function () {
       st.variant = variant;
       st.fp = fp;
     }
+    ensure("shield", container);
     nSet(container, "data-sfw", "shield");
     if (opts.needPos && !st.pos && !nHas(container, "data-sfw-pos")) { nSet(container, "data-sfw-pos", ""); st.pos = true; }
     inertChildren(st);
@@ -508,6 +522,7 @@ SFW.shield = (function () {
     if (!st || st.mode !== "revealed") return false;
     st.mode = "shielded";
     st.revealedFp = null;
+    ensure("shield", container);
     nSet(container, "data-sfw", "shield");
     inertChildren(st);
     holdMedia(st);
@@ -562,7 +577,7 @@ SFW.shield = (function () {
     if (!st) return "none";
     const hostGone = st.host && st.host.parentNode !== overlayParent(container);
     if (st.mode === "shielded") {
-      if (nGet(container, "data-sfw") !== "shield") nSet(container, "data-sfw", "shield");
+      if (nGet(container, "data-sfw") !== "shield") { ensure("shield", container); nSet(container, "data-sfw", "shield"); }
       if (st.pos && !nHas(container, "data-sfw-pos")) nSet(container, "data-sfw-pos", "");
       if (hostGone || (st.fb && st.variant !== "pending" && !nHas(container, "data-sfw-fb"))) {
         st.removals++;
@@ -624,8 +639,9 @@ SFW.shield = (function () {
     if (st && st.mode === "shielded" && st.host && st.host.parentNode === root) return true;
     if (!st) { st = { container: root, mode: "shielded", variant: variant || "page", host: null, root: null, cover: null, hide: null, held: [], inerted: [], page: true, removals: 0, fb: false, timer: 0, fp: null, revealedFp: null }; pages.set(doc, st); }
     st.mode = "shielded";
+    ensure("page", root);
     nSet(root, "data-sfw-page", "shield");
-    nSet(root, "data-sfw-hold", "1");
+    setHold(root);
     try { for (const m of doc.querySelectorAll("video,audio")) { if (!m.paused) m.pause(); m.muted = true; } } catch (e) { /* ignore */ }
     if (st.host) dropHost(st);
     const o = createOverlay(doc, st.variant === "error" ? "page" : "page", "page", doc.body || root);
@@ -644,7 +660,7 @@ SFW.shield = (function () {
     st.mode = "revealed";
     const root = doc.documentElement;
     nDel(root, "data-sfw-page");
-    nDel(root, "data-sfw-hold");
+    dropHold(root);
     st.cover.classList.add("out");
     const host = st.host;
     st.timer = setTimeout(() => { st.timer = 0; try { if (host.parentNode) host.parentNode.removeChild(host); } catch (e) { /* ignore */ } }, deps.reduced ? 0 : 240);
@@ -657,7 +673,7 @@ SFW.shield = (function () {
     const st = pages.get(doc);
     if (!st) return;
     const root = doc.documentElement;
-    if (root) { nDel(root, "data-sfw-page"); nDel(root, "data-sfw-hold"); }
+    if (root) { nDel(root, "data-sfw-page"); dropHold(root); }
     if (st.host) { try { st.host.remove(); } catch (e) { /* ignore */ } }
     pages.delete(doc);
   }

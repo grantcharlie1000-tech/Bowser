@@ -5,7 +5,7 @@
 //! search engine falls back to Optimised. Values are clamped to a safe range.
 //!
 //! ```text
-//! sleep_enabled=true
+//! sleep_enabled=false
 //! sleep_after_secs=300
 //! blocker_enabled=true
 //! blocker_allow=example.com,other.org
@@ -504,7 +504,8 @@ pub struct Settings {
     /// Opera-style rail panel width in logical 96 DPI pixels.
     pub side_panel_width: u16,
     /// Whether hidden tabs sleep (are discarded) after `sleep_after_secs` even without memory
-    /// pressure. Under memory pressure the long-hidden tabs are discarded regardless.
+    /// pressure. Off by default: hidden tabs stay loaded, so going back to one is instant. Under
+    /// memory pressure the long-hidden tabs are discarded regardless of this switch.
     pub sleep_enabled: bool,
     pub sleep_after_secs: u64,
     /// `blocker_enabled`: master switch for the ad/tracker blocker (default on).
@@ -684,7 +685,7 @@ impl Default for Settings {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_collapsed: true,
             side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
-            sleep_enabled: true,
+            sleep_enabled: false,
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
             blocker_enabled: true,
             blocker_allow: Vec::new(),
@@ -1537,7 +1538,7 @@ mod tests {
             Settings::parse("# c\nnonsense\nfoo=bar\n"),
             Settings::default()
         );
-        assert!(Settings::default().sleep_enabled);
+        assert!(!Settings::default().sleep_enabled, "tabs sleep only under memory pressure by default");
         assert_eq!(Settings::default().sleep_after_secs, 300);
     }
 

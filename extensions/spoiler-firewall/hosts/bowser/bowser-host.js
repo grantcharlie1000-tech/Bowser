@@ -157,7 +157,8 @@ const CONFIG = /*__SFW_CONFIG__*/null;
       }
     } catch (e) { /* built-in list only */ }
 
-    try { SFW.hooks.install(win); } catch (e) { /* hooks are best effort */ }
+    // same world as the runtime: shadow roots are read from the hook's map (no data-sfw-sr mark on hosts), holds are known
+    try { SFW.hooks.install(win, { sameWorld: true }); } catch (e) { /* hooks are best effort */ }
     SFW.runtime.start({
       kind: "bowser",
       config: config,

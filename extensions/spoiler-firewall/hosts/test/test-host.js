@@ -47,7 +47,7 @@
     privileged: null,
     frameIsTop: win.top === win,
   };
-  if (!tc.noHooks) SFW.hooks.install(win);
+  if (!tc.noHooks) SFW.hooks.install(win, { sameWorld: true }); // as the Bowser host
   let ctl = null;
   try { ctl = SFW.runtime.start(host); } catch (e) { reports["error.start.throw"] = 1; }
   Object.defineProperty(win, "__sfw", {
