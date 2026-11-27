@@ -578,6 +578,8 @@ pub trait TabEngine {
 pub type DiagnosticNavigationCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64, Option<bool>, &str)>;
 
 pub type DiagnosticDetailCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64)>;
+/// Benchmark log only: label, tab, renderer process id, and a short frame token.
+pub type RendererPidEventCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64, &str)>;
 
 #[derive(Clone, Default)]
 pub struct EngineEvents {
@@ -630,7 +632,7 @@ pub struct EngineEvents {
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
     /// Benchmark log only: one call per live renderer process (the process id as the count), or one
     /// with 0 when there is none. Used to see whether a first navigation swapped renderers.
-    pub renderer_pid_event: Option<std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64, &str)>>,
+    pub renderer_pid_event: Option<RendererPidEventCallback>,
     /// Synthetic-profile diagnostics only. No URLs or arbitrary page titles are recorded.
     pub diagnostic_navigation: Option<DiagnosticNavigationCallback>,
     /// Explicit detail-only native configure spans/counts; absent from ordinary timing arms.

@@ -797,7 +797,7 @@ fn renderer_memory(infos: &ICoreWebView2ProcessExtendedInfoCollection, sources: 
 /// once each as `kind<N>`. Shows which controller or navigation each renderer serves.
 fn log_renderer_pids(
     environment: &ICoreWebView2Environment,
-    log: Option<&Rc<dyn Fn(&'static str, TabId, u64, &str)>>,
+    log: Option<&super::RendererPidEventCallback>,
     label: &'static str,
     tab_id: TabId,
 ) {
@@ -871,7 +871,7 @@ fn frame_token(source: &str) -> String {
 /// `log_renderer_pids` now and again `delay_ms` later (benchmark log only).
 fn log_renderer_pids_twice(
     environment: &ICoreWebView2Environment,
-    log: Option<&Rc<dyn Fn(&'static str, TabId, u64, &str)>>,
+    log: Option<&super::RendererPidEventCallback>,
     now: &'static str,
     later: &'static str,
     tab_id: TabId,
